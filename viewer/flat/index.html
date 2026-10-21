@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>2D lane</title>
+  <style>
+    :root { --bg:#10110f; --ink:#f0eadc; --mute:#8d8778; --line:rgba(240,234,220,.12); --accent:#d4b43a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Segoe UI", sans-serif; }
+    nav { display: flex; gap: 16px; align-items: center; padding: 8px 14px; background: #141510; border-bottom: 1px solid var(--line); }
+    a { color: var(--ink); }
+    .mark { color: var(--accent); letter-spacing: .14em; text-transform: uppercase; font-size: 11px; }
+    main { max-width: 980px; margin: 0 auto; padding: 20px 16px 48px; }
+    p.lead { color: var(--mute); max-width: 640px; }
+    label { display: block; margin: 12px 0 4px; font-size: 13px; }
+    input[type="text"], textarea, select { width: 100%; background: #141510; color: var(--ink); border: 1px solid var(--line); padding: 8px; }
+    textarea { min-height: 64px; }
+    button { background: var(--accent); color: #141510; border: 0; padding: 8px 12px; cursor: pointer; margin-right: 8px; }
+    button:disabled { opacity: .4; cursor: default; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+    .parts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .part { width: 140px; background: #1a1c16; border: 1px solid var(--line); padding: 8px; cursor: pointer; }
+    .part.on { border-color: var(--accent); }
+    .part img { width: 100%; height: 88px; object-fit: contain; background: #2a2c24; }
+    .part span { display: block; font-size: 12px; margin-top: 4px; }
+    #source { max-width: 100%; max-height: 280px; background: #2a2c24; margin-top: 8px; }
+    #status { color: var(--mute); min-height: 1.2em; }
+    audio { width: 100%; margin-top: 8px; }
+  </style>
+</head>
+<body>
+<nav>
+  <a class="mark" href="../index.html">ai-asset-pipeline</a>
+  <a href="../index.html">3D</a>
+  <strong>2D</strong>
+</nav>
+<main>
+  <h1>Parts</h1>
+  <p class="lead">Drop one picture on a flat background. Split pulls the pieces apart with Apple Vision. Pieces that touch stay one piece, so make one object per picture. Name each crop, write how it moves, what it fires, and the line it says. Generate uses Qwen-Image 2.1 Turbo through mflux (FLAT2D_STILL=z-image switches to Z-Image Turbo). Sound writes a stand-in wav until SFX weights and FLAT2D_SFX_CMD are both set. Speak uses Kokoro through mlx-audio and stays off until that package is installed. A generated still is keyed on the magenta it was drawn on, and clear glass comes out see-through. Nothing here calls a paid API.</p>
+  <div class="row">
+    <label>Name<input id="stem" type="text" value="unit" spellcheck="false" /></label>
+    <label>Picture<input id="file" type="file" accept="image/png,image/jpeg,image/webp" /></label>
+    <label>Prompt<textarea id="prompt" placeholder="Describe one object…" title="One object per picture. Make each piece of a set as its own asset."></textarea></label>
+  </div>
+  <p>
+    <button id="drop" type="button">Drop</button>
+    <button id="split" type="button">Split</button>
+    <button id="gen" type="button" disabled title="Needs mflux.">Generate</button>
+    <button id="draft" type="button" disabled title="Needs FLAT2D_LLM_URL">Draft notes</button>
+  </p>
+  <p id="status"></p>
+  <label>Note<textarea id="note" placeholder="What this sheet is."></textarea></label>
+  <img id="source" alt="" hidden />
+  <div class="parts" id="parts"></div>
+  <section id="editor" hidden>
+    <h2 id="editor-title">Part</h2>
+    <label>Name<input id="name" type="text" spellcheck="false" /></label>
+    <label>Role
+      <select id="role">
+        <option>other</option>
+        <option>hull</option>
+        <option>leg</option>
+        <option>turret</option>
+        <option>weapon</option>
+      </select>
+    </label>
+    <label>How it moves<textarea id="motion"></textarea></label>
+    <label>What it fires<textarea id="projectile"></textarea></label>
+    <label>Line<textarea id="line" placeholder="One short spoken bark."></textarea></label>
+    <label>Speaker
+      <select id="speaker">
+        <option>af_heart</option>
+        <option>af_bella</option>
+        <option>af_sarah</option>
+        <option>am_adam</option>
+        <option>am_michael</option>
+        <option>bf_emma</option>
+        <option>bm_george</option>
+      </select>
+    </label>
+    <p>
+      <button id="save" type="button">Save</button>
+      <button id="sound" type="button" disabled title="Writes a stand-in wav until SFX weights and FLAT2D_SFX_CMD are set.">Sound</button>
+      <button id="speak" type="button" disabled title="Needs mlx-audio.">Speak</button>
+    </p>
+    <audio id="player" controls hidden></audio>
+    <audio id="voice" controls hidden></audio>
+  </section>
+</main>
+<script>
+const FACTORY = (location.protocol === "http:" || location.protocol === "https:")
+  ? location.origin
+  : "http://127.0.0.1:8766";
+const stemEl = document.getElementById("stem");
+const statusEl = document.getElementById("status");
+let parts = [];
+let selected = -1;
+let flags = { still: "", sfx: false, sfx_mode: "stub", llm: false, voice: false };
+
+function stem() {
+  return (stemEl.value || "unit").trim();
+}
+function say(text) { statusEl.textContent = text; }
+async function api(path, body) {
+  const res = await fetch(FACTORY + path, {
+    method: body ? "POST" : "GET",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+  return data;
+}
+function current() { return selected >= 0 ? parts[selected] : null; }
+function noteText() {
+  return document.getElementById("note").value;
+}
+function readEditor() {
+  const p = current();
+  if (!p) return;
+  p.name = document.getElementById("name").value;
+  p.role = document.getElementById("role").value;
+  p.motion = document.getElementById("motion").value;
+  p.projectile = document.getElementById("projectile").value;
+  p.line = document.getElementById("line").value;
+  p.speaker = document.getElementById("speaker").value;
+}
+function draw() {
+  const box = document.getElementById("parts");
+  box.innerHTML = "";
+  parts.forEach((p, i) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "part" + (i === selected ? " on" : "");
+    const img = document.createElement("img");
+    img.src = `${FACTORY}/2d/${encodeURIComponent(stem())}/${p.file}?t=${Date.now()}`;
+    img.alt = p.name || p.id;
+    const cap = document.createElement("span");
+    cap.textContent = p.name || p.id;
+    card.append(img, cap);
+    card.onclick = () => { readEditor(); selected = i; fill(); draw(); };
+    box.appendChild(card);
+  });
+}
+function fill() {
+  const ed = document.getElementById("editor");
+  const p = current();
+  ed.hidden = !p;
+  if (!p) return;
+  document.getElementById("editor-title").textContent = p.id;
+  document.getElementById("name").value = p.name || "";
+  document.getElementById("role").value = p.role || "other";
+  document.getElementById("motion").value = p.motion || "";
+  document.getElementById("projectile").value = p.projectile || "";
+  document.getElementById("line").value = p.line || "";
+  const speaker = document.getElementById("speaker");
+  speaker.value = p.speaker || flags.speaker || "af_heart";
+  if (speaker.value !== (p.speaker || flags.speaker || "af_heart")) {
+    speaker.value = "af_heart";
+  }
+  bindAudio("player", p.sound);
+  bindAudio("voice", p.voice);
+}
+function bindAudio(id, rel) {
+  const player = document.getElementById(id);
+  if (rel) {
+    player.hidden = false;
+    player.src = `${FACTORY}/2d/${encodeURIComponent(stem())}/${rel}?t=${Date.now()}`;
+  } else {
+    player.hidden = true;
+    player.removeAttribute("src");
+  }
+}
+function applySound() {
+  const sound = document.getElementById("sound");
+  const mode = flags.sfx_mode || "stub";
+  sound.disabled = mode === "no-runner";
+  if (mode === "no-runner") {
+    sound.title = "SFX weights are installed. Set FLAT2D_SFX_CMD to the local runner.";
+  } else if (mode === "ready") {
+    sound.title = "Render a one-shot effect.";
+  } else {
+    sound.title = "No SFX weights. Writes a stand-in wav.";
+  }
+}
+async function loadSheet() {
+  try {
+    const data = await api("/2d/" + encodeURIComponent(stem()));
+    const mech = new Map();
+    for (const row of data.mechanics || []) {
+      if (row.file) mech.set(row.file, row);
+      if (row.id) mech.set(row.id, row);
+    }
+    parts = (data.parts || []).map((p) => {
+      const extra = mech.get(p.file) || mech.get(p.id) || {};
+      return Object.assign({}, p, {
+        name: extra.name || p.name || "",
+        role: extra.role || p.role || "other",
+        motion: extra.motion || p.motion || "",
+        projectile: extra.projectile || p.projectile || "",
+        sound: extra.sound || p.sound || "",
+        line: extra.line || p.line || "",
+        speaker: extra.speaker || p.speaker || "af_heart",
+        voice: extra.voice || p.voice || "",
+      });
+    });
+    document.getElementById("note").value = data.note || "";
+    selected = parts.length ? 0 : -1;
+    const img = document.getElementById("source");
+    if (data.source) {
+      img.hidden = false;
+      img.src = `${FACTORY}/2d/${encodeURIComponent(stem())}/source?t=${Date.now()}`;
+    } else {
+      img.hidden = true;
+      img.removeAttribute("src");
+    }
+    draw();
+    fill();
+  } catch (e) {
+    if (e instanceof TypeError) return;
+    say(e.message);
+  }
+}
+async function refreshFlags() {
+  try {
+    flags = await api("/2d/status");
+  } catch (e) {
+    say("Factory is not running on port 8766.");
+    return;
+  }
+  const gen = document.getElementById("gen");
+  gen.disabled = !flags.still;
+  gen.title = flags.still ? "Generate a still." : "Install mflux to generate.";
+  document.getElementById("draft").disabled = !flags.llm;
+  applySound();
+  const speak = document.getElementById("speak");
+  speak.disabled = !flags.voice;
+  speak.title = flags.voice ? "Speak the line with Kokoro." : "Install mlx-audio to speak.";
+}
+document.getElementById("drop").onclick = async () => {
+  const file = document.getElementById("file").files[0];
+  if (!file) { say("Choose a picture first."); return; }
+  const data = await new Promise((ok) => {
+    const reader = new FileReader();
+    reader.onload = () => ok(String(reader.result).split(",")[1]);
+    reader.readAsDataURL(file);
+  });
+  try {
+    await api("/2d/drop", { stem: stem(), data });
+    document.getElementById("source").hidden = false;
+    document.getElementById("source").src = `${FACTORY}/2d/${encodeURIComponent(stem())}/source?t=${Date.now()}`;
+    say("Saved. Split pulls the pieces apart.");
+  } catch (e) { say(e.message); }
+};
+document.getElementById("split").onclick = async () => {
+  try {
+    const data = await api("/2d/split", { stem: stem() });
+    parts = data.parts || [];
+    selected = parts.length ? 0 : -1;
+    draw();
+    fill();
+    say(parts.length ? parts.length + (parts.length === 1 ? " part." : " parts.") : "No separate pieces.");
+  } catch (e) { say(e.message); }
+};
+document.getElementById("save").onclick = async () => {
+  readEditor();
+  try {
+    const data = await api("/2d/save", { stem: stem(), parts, note: noteText() });
+    parts = data.parts || parts;
+    draw();
+    fill();
+    say("Saved mechanics.");
+  } catch (e) { say(e.message); }
+};
+document.getElementById("sound").onclick = async () => {
+  readEditor();
+  const p = current();
+  if (!p) return;
+  try {
+    const data = await api("/2d/sound", { stem: stem(), part: p });
+    p.sound = data.sound;
+    fill();
+    say(data.stub ? "Stand-in sound written." : "Sound written.");
+  } catch (e) { say(e.message); }
+};
+document.getElementById("speak").onclick = async () => {
+  readEditor();
+  const p = current();
+  if (!p) return;
+  try {
+    const data = await api("/2d/speak", { stem: stem(), part: p });
+    p.voice = data.voice;
+    p.line = data.line;
+    p.speaker = data.speaker;
+    fill();
+    say("Line spoken.");
+  } catch (e) { say(e.message); }
+};
+document.getElementById("draft").onclick = async () => {
+  readEditor();
+  try {
+    const data = await api("/2d/draft", { stem: stem(), parts, note: noteText() });
+    parts = data.parts || parts;
+    draw();
+    fill();
+    say("Drafted from the local model.");
+  } catch (e) { say(e.message); }
+};
+document.getElementById("gen").onclick = async () => {
+  try {
+    await api("/2d/generate", { stem: stem(), prompt: document.getElementById("prompt").value });
+    document.getElementById("source").hidden = false;
+    document.getElementById("source").src = `${FACTORY}/2d/${encodeURIComponent(stem())}/source?t=${Date.now()}`;
+    say("Generated. Split pulls the pieces apart.");
+  } catch (e) { say(e.message); }
+};
+stemEl.addEventListener("change", () => { loadSheet(); });
+refreshFlags().then(loadSheet);
+</script>
+</body>
+</html>

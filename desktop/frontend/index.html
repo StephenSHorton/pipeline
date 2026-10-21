@@ -1,0 +1,5043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pipeline</title>
+  <style>
+    :root {
+      --bg: #10110f;
+      --ink: #f0eadc;
+      --mute: #8d8778;
+      --line: rgba(240, 234, 220, 0.12);
+      --accent: #d4b43a;
+      --olive: #6d7a4e;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
+    body {
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .topnav {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 4px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #141510;
+      min-width: 0;
+      z-index: 4;
+      min-height: 32px;
+    }
+    .workspace {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      min-height: 0;
+      min-width: 0;
+      background: #0c0d0b;
+    }
+    #gen-overlay {
+      position: absolute;
+      inset: 0;
+      grid-column: 1 / -1;
+      grid-row: 1;
+      z-index: 40;
+      display: grid;
+      place-items: center;
+      background: rgba(10, 11, 9, 0.88);
+      pointer-events: auto;
+    }
+    #gen-overlay[hidden] { display: none !important; }
+    .gen-overlay-card {
+      width: min(520px, 86%);
+      text-align: center;
+      padding: 28px 24px;
+      border: 1px solid var(--line);
+      background: #141510;
+    }
+    .gen-overlay-kicker {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .gen-overlay-title {
+      font-size: 22px;
+      letter-spacing: -0.03em;
+      margin: 0 0 8px;
+    }
+    .gen-overlay-step {
+      color: var(--mute);
+      font-size: 13px;
+      min-height: 1.4em;
+    }
+    .gen-overlay-bar {
+      margin: 18px 0 6px;
+      height: 4px;
+      background: rgba(240, 234, 220, 0.12);
+    }
+    .gen-overlay-bar > i {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.45s ease;
+    }
+    .gen-overlay-pct {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--mute);
+      letter-spacing: 0.06em;
+    }
+    .gen-overlay-log {
+      margin: 16px 0 0;
+      max-height: 180px;
+      overflow: auto;
+      text-align: left;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      color: var(--mute);
+      white-space: pre-wrap;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(240, 234, 220, 0.35) transparent;
+    }
+    .gen-overlay-log::-webkit-scrollbar { width: 3px; }
+    .gen-overlay-log::-webkit-scrollbar-thumb { background: rgba(240, 234, 220, 0.32); }
+    .asset-chip {
+      display: inline-flex;
+      align-items: stretch;
+      border: 1px solid var(--line);
+    }
+    .asset-chip button {
+      border: 0;
+    }
+    .asset-chip .asset-open { border-right: 1px solid var(--line); }
+    .asset-chip .asset-del {
+      padding: 6px 8px;
+      color: var(--mute);
+    }
+    .asset-chip .asset-del:hover { color: #c45c3a; }
+    .pal-swatches {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .pal-swatches button {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 1px solid var(--line);
+    }
+    .pal-swatches button[aria-pressed="true"] {
+      outline: 1px solid var(--accent);
+      outline-offset: 1px;
+    }
+    .cubby-rail {
+      position: absolute;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: calc(100% - 20px);
+      overflow-x: hidden;
+      overflow-y: auto;
+      pointer-events: none;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(240, 234, 220, 0.35) transparent;
+    }
+    .cubby-rail::-webkit-scrollbar { width: 3px; }
+    .cubby-rail::-webkit-scrollbar-thumb { background: rgba(240, 234, 220, 0.32); }
+    .cubby-rail-left { top: 10px; left: 10px; width: 348px; }
+    .cubby-rail-right { top: 10px; right: 10px; bottom: 10px; width: 300px; }
+    .cubby {
+      pointer-events: auto;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: rgba(16, 17, 15, 0.92);
+      border: 1px solid var(--line);
+    }
+    .cubby-bar {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+    }
+    .cubby-toggle {
+      flex: 1 1 auto;
+      width: auto;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      color: var(--mute);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 8px 8px 8px 12px;
+    }
+    .cubby-hide {
+      flex: 0 0 auto;
+      width: 30px;
+      border: 0;
+      background: transparent;
+      color: var(--mute);
+      padding: 0;
+      line-height: 1;
+      font-size: 14px;
+    }
+    .cubby-hide:hover { color: var(--ink); }
+    .cubby-toggle::after { content: " ▾"; }
+    .cubby.is-collapsed .cubby-toggle::after { content: " ▸"; }
+    .cubby.is-collapsed .cubby-body { display: none; }
+    .cubby.is-hidden { display: none !important; }
+    .cubby.is-required .cubby-toggle { color: var(--accent); }
+    .cubby-body {
+      min-width: 0;
+      padding: 0 12px 12px;
+    }
+    .cubby-tray {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+    .cubby-tray[hidden] { display: none !important; }
+    body.is-home .cubby-tray,
+    body.is-home .cubby-hide-all { display: none !important; }
+    .cubby-show {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 7px;
+    }
+    .field.is-required > .fname::after {
+      content: "";
+    }
+    .levers-required {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 10px 14px;
+    }
+    .levers-required .gen-poly-field { flex: 1 1 100%; min-width: 0; }
+    .levers-required .gen-look-field { flex: 1 1 100%; min-width: 0; }
+    .look-picks { grid-template-columns: 1fr 1fr; }
+    .gen-psx {
+      flex: 1 1 100%;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 14px;
+      font-size: 11px;
+      color: var(--mute);
+    }
+    .gen-psx[hidden] { display: none; }
+    .gen-psx label { display: inline-flex; align-items: center; gap: 6px; }
+    .gen-psx select, .gen-psx input { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); padding: 4px 6px; }
+    .gen-psx input { width: 64px; }
+    .poly-picks {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 4px;
+    }
+    .poly-picks label {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 96px;
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+    .poly-picks label:has(input:checked) {
+      border-color: var(--accent);
+      color: var(--ink);
+    }
+    .poly-picks input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .poly-picks strong {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--ink);
+    }
+    .poly-picks em {
+      font-style: normal;
+      font-size: 10px;
+      line-height: 1.35;
+      color: var(--mute);
+    }
+    .gen-thumbs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .gen-thumbs figure {
+      position: relative;
+      margin: 0;
+      width: 64px;
+      height: 64px;
+      border: 1px solid var(--line);
+      background: #1a1b17;
+    }
+    .gen-thumbs img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .gen-thumbs button {
+      position: absolute;
+      top: 0;
+      right: 0;
+      padding: 0 5px;
+      line-height: 16px;
+      border: 0;
+      background: rgba(16, 17, 15, 0.82);
+    }
+    .home-btn {
+      padding: 4px 8px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .workflow {
+      display: inline-flex;
+      border: 1px solid var(--line);
+    }
+    .workflow button {
+      border: 0;
+      background: transparent;
+      color: var(--mute);
+      padding: 6px 12px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .workflow button[aria-pressed="true"] {
+      background: var(--accent);
+      color: #141510;
+    }
+    body.is-2d .levers-required { display: none; }
+    .gen-steps { display: none; }
+    body.is-2d .gen-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .gen-step-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+    .gen-step-picks button[aria-pressed="true"] {
+      background: var(--accent);
+      color: #141510;
+      border-color: var(--accent);
+    }
+    .gen-step-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .gen-step-line[hidden] { display: none; }
+    .gen-step-line input[type="text"] {
+      flex: 1;
+      min-width: 0;
+      background: #0e0f0c;
+      color: var(--ink);
+      border: 1px solid rgba(240, 234, 220, 0.08);
+      padding: 8px 10px;
+      font: 14px/1.4 "IBM Plex Sans", sans-serif;
+    }
+    .gen-clip {
+      position: relative;
+      flex: 0 0 auto;
+      max-width: 140px;
+      overflow: hidden;
+      background: #10110f;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      font: 14px/1.4 "IBM Plex Sans", sans-serif;
+      cursor: pointer;
+    }
+    .gen-clip input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    #gen-clip-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    body.is-settings .stage-rail { display: none; }
+    .stage-rail {
+      display: inline-flex;
+      border: 1px solid var(--line);
+    }
+    .stage-rail button {
+      position: relative;
+      border: 0;
+      background: transparent;
+      color: var(--mute);
+      padding: 6px 12px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .stage-rail button + button { border-left: 1px solid var(--line); }
+    .stage-rail button.has-files { color: var(--ink); }
+    .stage-rail button[aria-pressed="true"] {
+      background: var(--accent);
+      color: #141510;
+    }
+    .stage-rail button.is-stale::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #d9774a;
+    }
+    .takes {
+      position: absolute;
+      left: 50%;
+      bottom: 56px;
+      transform: translateX(-50%);
+      z-index: 6;
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      max-width: calc(100% - 24px);
+      overflow-x: auto;
+      font: 11px/1.3 "IBM Plex Mono", ui-monospace, monospace;
+      color: var(--mute);
+    }
+    .takes:empty { display: none; }
+    .take {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      background: rgba(16, 17, 15, 0.86);
+      font: inherit;
+      color: var(--mute);
+    }
+    .take img, .take .take-blank {
+      width: 52px;
+      height: 52px;
+      object-fit: contain;
+      background: #1b1c18;
+    }
+    .take[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+    .takes-note {
+      align-self: center;
+      padding: 6px 10px;
+      background: rgba(16, 17, 15, 0.86);
+      border: 1px solid var(--line);
+    }
+    .takes-note.is-stale { color: #d9774a; }
+    .takes > button.takes-act { align-self: center; }
+    #ideas-stage, .ideas-more { display: none; }
+    body.is-ideas .workspace { display: block; height: 100%; overflow: hidden; }
+    body.is-ideas #ideas-stage {
+      display: block;
+      position: absolute;
+      inset: 0;
+      overflow: auto;
+      padding: 20px 20px 90px;
+    }
+    body.is-ideas #flat-stage,
+    body.is-ideas #mesh-pane,
+    body.is-ideas #stack-pane,
+    body.is-ideas .step-bar,
+    body.is-ideas .flat-revise,
+    body.is-ideas .takes { display: none !important; }
+    body.is-ideas .ideas-more { display: flex; flex: 1; gap: 6px; min-width: 0; }
+    .ideas-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .idea {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line);
+      background: #141510;
+    }
+    .idea img {
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: contain;
+      background: #1b1c18;
+      cursor: zoom-in;
+    }
+    .idea.is-kept { border-color: var(--accent); }
+    .idea.is-used { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .idea-acts { display: flex; gap: 6px; padding: 6px; }
+    .idea-acts button { flex: 1; }
+    .idea-slot {
+      display: grid;
+      place-items: center;
+      aspect-ratio: 1;
+      border: 1px dashed var(--line);
+      color: var(--mute);
+      font: 11px/1.3 "IBM Plex Mono", ui-monospace, monospace;
+    }
+    #export-stage { display: none; }
+    body.is-export .workspace { display: block; height: 100%; overflow: hidden; }
+    body.is-export #export-stage {
+      display: block;
+      position: absolute;
+      inset: 0;
+      overflow: auto;
+      padding: 20px 20px 110px;
+    }
+    body.is-export #flat-stage,
+    body.is-export #mesh-pane,
+    body.is-export #stack-pane,
+    body.is-export .step-bar,
+    body.is-export .flat-revise { display: none !important; }
+    .export-title { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+    .export-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 12px; }
+    .export-card { border: 1px solid var(--line); background: #141510; padding: 10px 12px; }
+    .export-card h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mute); }
+    .export-card img { width: 100%; max-height: 180px; object-fit: contain; background: #1b1c18; margin-bottom: 8px; }
+    .export-card ul { margin: 0; padding: 0; list-style: none; font: 12px/1.5 "IBM Plex Mono", ui-monospace, monospace; }
+    .export-card.is-missing { color: var(--mute); border-style: dashed; }
+    body.is-2d .workspace {
+      display: block;
+      height: 100%;
+      overflow: hidden;
+    }
+    body.is-2d #flat-stage {
+      display: block;
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+    body.is-2d #stack-pane { display: none; }
+    body.is-2d #mesh-pane {
+      position: absolute;
+      inset: 0;
+      background: transparent;
+      pointer-events: none;
+    }
+    body.is-2d #mesh-pane .cubby-rail { pointer-events: auto; }
+    body.is-2d #mesh-pane > .tag,
+    body.is-2d #mesh-pane > .pane-stats,
+    body.is-2d #mesh-pane > #status,
+    body.is-2d #mesh-pane canvas { display: none !important; }
+    body.is-2d #mesh-pane .cubby:not([data-cubby="audio"]) { display: none !important; }
+    .cubby.is-collapsed { display: none; }
+    .cubby[data-cubby="generate"],
+    .cubby-hide,
+    .cubby-hide-all,
+    #cubby-tray { display: none !important; }
+    .workspace-bar {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 6;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .step-bar {
+      position: static;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 0 0 auto;
+      max-width: none;
+    }
+    .step-bar button[aria-pressed="true"] {
+      background: var(--accent);
+      color: #141510;
+      border-color: var(--accent);
+    }
+    body.is-2d .step-3d { display: none; }
+    body:not(.is-2d) .step-2d,
+    body:not(.is-2d) .flat-revise { display: none; }
+    .flat-revise {
+      position: static;
+      flex: 1;
+      min-width: 0;
+      width: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .flat-revise input,
+    .ideas-more input {
+      flex: 1;
+      min-width: 0;
+      background: #10110f;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      font: 14px/1.4 "IBM Plex Sans", sans-serif;
+    }
+    .flat-revise button {
+      background: var(--accent);
+      color: #141510;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .flat-revise button:disabled { opacity: 0.7; cursor: wait; }
+    #ideas-go {
+      background: var(--accent);
+      color: #141510;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .flat-clip {
+      display: none;
+      position: relative;
+      align-items: center;
+      flex: 0 0 auto;
+      max-width: 140px;
+      overflow: hidden;
+      background: #10110f;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      font: 14px/1.4 "IBM Plex Sans", sans-serif;
+      cursor: pointer;
+    }
+    body.is-2d[data-flat-mode="motion"] .flat-clip { display: inline-flex; }
+    .flat-clip input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    #flat-clip-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #flat-stage {
+      display: none;
+      position: relative;
+      min-height: 0;
+      padding: 0;
+    }
+    .flat-stage-view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 28px 28px 72px;
+      box-sizing: border-box;
+      overflow: hidden;
+      background: #0c0d0b;
+    }
+    #flat-status {
+      position: absolute;
+      left: 16px;
+      top: 12px;
+      pointer-events: none;
+    }
+    #flat-hear {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      z-index: 4;
+    }
+    #flat-hear[hidden] { display: none; }
+    body.is-2d[data-flat-mode="pieces"] .flat-stage-view { padding-bottom: 148px; }
+    .flat-source {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      background: transparent;
+      margin: 0;
+    }
+    #flat-empty {
+      color: var(--mute);
+      font-size: 15px;
+    }
+    .flat-parts {
+      display: none;
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 60px;
+      z-index: 5;
+      gap: 10px;
+      flex-wrap: wrap;
+      pointer-events: auto;
+    }
+    body.is-2d[data-flat-mode="pieces"] .flat-parts:not(:empty) { display: flex; }
+    .flat-part { width: 120px; background: #1a1c16; border: 1px solid var(--line); padding: 6px; color: inherit; text-align: left; }
+    .flat-part.on { border-color: var(--accent); }
+    .flat-part img { width: 100%; height: 72px; object-fit: contain; background: #2a2c24; }
+    .flat-part span { display: block; font-size: 12px; margin-top: 4px; }
+    #audio-sfx, #audio-voice { width: 100%; margin-top: 8px; }
+    body.is-home .home-btn { display: none; }
+    body.is-home .topnav { display: none; }
+    #home {
+      display: none;
+      position: relative;
+      min-height: 0;
+      overflow: auto;
+    }
+    body.is-home {
+      overflow: hidden;
+      grid-template-rows: minmax(0, 1fr);
+    }
+    body.is-home #home {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+    body.is-home .workspace { display: none; }
+    body.is-home .topnav .assets { display: none; }
+    .home-life {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .life-dots {
+      position: absolute;
+      inset: 0;
+      background-image:
+        radial-gradient(rgba(240, 234, 220, 0.18) 1px, transparent 1.15px),
+        radial-gradient(rgba(240, 234, 220, 0.06) 1px, transparent 1.15px);
+      background-size: 20px 20px, 60px 60px;
+      background-position: 0 0, 10px 10px;
+    }
+    .life-line {
+      position: absolute;
+      height: 1px;
+      width: 42%;
+      background: linear-gradient(90deg, transparent, rgba(212, 180, 58, 0.38), transparent);
+      opacity: 0.9;
+      animation: life-drift 22s linear infinite;
+    }
+    .life-line.l1 { top: 22%; left: -10%; animation-duration: 16s; }
+    .life-line.l2 { top: 48%; left: 22%; width: 28%; opacity: 0.5; animation-duration: 21s; animation-direction: reverse; }
+    .life-line.l3 { top: 71%; left: -6%; width: 50%; animation-duration: 26s; }
+    .life-line.l4 { top: 36%; left: 8%; width: 34%; opacity: 0.35; animation-duration: 19s; }
+    @keyframes life-drift {
+      from { transform: translateX(-6vw); }
+      to { transform: translateX(58vw); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .life-line { animation: none; }
+    }
+    .home-stage {
+      position: relative;
+      z-index: 1;
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: clamp(20px, 3vh, 44px) clamp(24px, 5vw, 80px);
+      overflow: auto;
+    }
+    .home-cluster {
+      width: min(1280px, 74vw);
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: clamp(16px, 2.2vh, 32px);
+    }
+    .home-hero {
+      flex: 0 1 auto;
+      width: 100%;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      gap: clamp(12px, 1.6vh, 22px);
+    }
+    .home-logo {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .home-mark { width: clamp(64px, 6vw, 88px); height: auto; display: block; }
+    .home-word {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 13px;
+      letter-spacing: 0.42em;
+      text-transform: uppercase;
+      color: var(--ink);
+      padding-left: 0.42em;
+    }
+    .home-float {
+      width: 100%;
+      padding: clamp(18px, 2.2vh, 28px) clamp(18px, 2vw, 28px) clamp(14px, 1.8vh, 22px);
+      background: #171814;
+      border: 1px solid rgba(240, 234, 220, 0.18);
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.5);
+    }
+    #home .gen-thumbs figure {
+      width: 80px;
+      height: 80px;
+    }
+    #home .fname,
+    #home .hint { display: none; }
+    #home .gen { gap: clamp(12px, 1.6vh, 18px); }
+    .gen-prompt-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .gen-prompt-row .gen-prompt-field { flex: 1; min-width: 0; }
+    #gen-prompt {
+      display: block;
+      min-height: 42px;
+      max-height: 140px;
+      resize: none;
+      overflow: hidden;
+      line-height: 1.4;
+      padding: 10px 14px;
+    }
+    #home #gen-prompt {
+      border: 1px solid rgba(240, 234, 220, 0.08);
+      background: #0e0f0c;
+      font-size: 16px;
+    }
+    #gen-go { flex: 0 0 auto; align-self: center; }
+    @media (min-width: 1600px) {
+      .home-cluster { width: min(1360px, 68vw); }
+    }
+    #home .gen-file {
+      border-style: dashed;
+      padding: 7px 10px;
+    }
+    .home-float.is-drop { border-color: var(--accent); }
+    #home .gen-actions { display: flex; align-items: center; gap: 10px; }
+    #gen-go {
+      background: var(--accent);
+      color: #141510;
+      border-color: var(--accent);
+      font-weight: 600;
+      padding: 10px 22px;
+      letter-spacing: 0.04em;
+    }
+    #gen-go:hover { filter: brightness(1.08); }
+    #gen-go:disabled { opacity: 0.45; cursor: default; }
+    #gen-go[data-busy="1"] {
+      opacity: 1;
+      cursor: wait;
+    }
+    #home .gen-status[data-state="running"] {
+      color: var(--accent);
+      font-size: 14px;
+    }
+    .home-suggest {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+    .home-suggest button {
+      background: transparent;
+      color: var(--mute);
+      border-color: var(--line);
+      font-size: 12px;
+      padding: 6px 10px;
+    }
+    .home-suggest button:hover { color: var(--ink); border-color: var(--accent); }
+    .home-library {
+      flex: 0 1 auto;
+      width: 100%;
+      margin-top: 0;
+      max-height: min(28vh, 300px);
+      overflow: auto;
+    }
+    .home-library h3 {
+      margin: 0 0 12px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--mute);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+    }
+    .home-assets {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .home-card {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+      border: 1px solid var(--line);
+      background: #141510;
+      padding: 10px;
+      text-align: left;
+    }
+    .home-card .home-card-open {
+      border: 0;
+      background: transparent;
+      width: 100%;
+      text-align: left;
+      padding: 0;
+    }
+    .home-card .home-card-name {
+      border: 0;
+      background: transparent;
+      flex: 1;
+      min-width: 0;
+      width: auto;
+      text-align: left;
+      padding: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .home-card.is-picked { border-color: var(--accent); }
+    .home-card .asset-use,
+    .home-card .asset-open {
+      flex: 0 0 auto;
+      padding: 4px 8px;
+      background: transparent;
+      color: var(--mute);
+      border-color: transparent;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .home-card .asset-open:hover { color: var(--ink); border-color: var(--ink); }
+    .home-card .asset-use:hover,
+    .home-card .asset-use[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+    .home-card img {
+      width: 100%;
+      height: clamp(120px, 16vh, 180px);
+      object-fit: contain;
+      background: #10110f;
+    }
+    .home-card .home-card-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .home-card .asset-del {
+      flex: 0 0 auto;
+      padding: 4px 8px;
+      background: transparent;
+      color: var(--mute);
+      border-color: transparent;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .home-card .asset-del:hover { color: #c45c3a; border-color: #c45c3a; }
+    .home-empty {
+      color: var(--mute);
+      font-size: 13px;
+    }
+    #asset-delete:hover { color: #c45c3a; border-color: #c45c3a; }
+    .field > legend.fname {
+      padding: 0;
+    }
+    .rail-label {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    .rail-block {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .pane {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .pane + .pane { border-left: 1px solid var(--line); }
+    .pane > canvas {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+      touch-action: none;
+    }
+    .tag {
+      position: absolute;
+      right: 16px;
+      top: 14px;
+      z-index: 2;
+      pointer-events: none;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .pane-stats {
+      position: absolute;
+      left: 16px;
+      bottom: 12px;
+      z-index: 2;
+      pointer-events: none;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--mute);
+      line-height: 1.45;
+    }
+    .pane-stats b { color: var(--ink); font-weight: 500; }
+    .pane-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 32px;
+      text-align: center;
+      color: var(--mute);
+      font-size: 13px;
+      line-height: 1.5;
+      z-index: 2;
+    }
+    .pane-empty[hidden] { display: none; }
+    .dock-group {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+    .dock-sliders {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+    }
+    label.slider {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr) 44px;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--mute);
+    }
+    label.slider strong {
+      color: var(--ink);
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      text-align: right;
+      white-space: nowrap;
+      overflow: visible;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 2px;
+      background: var(--line);
+      border-radius: 0;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 8px;
+      height: 12px;
+      border-radius: 0;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    .mark {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .ver-chip {
+      margin-left: auto;
+      flex: 0 0 auto;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      color: var(--mute);
+      border: 1px solid var(--line);
+      padding: 3px 8px;
+      white-space: nowrap;
+    }
+    button.ver-chip {
+      background: transparent;
+      font: 10px/1 "IBM Plex Mono", ui-monospace, monospace;
+      letter-spacing: 0.08em;
+      color: var(--mute);
+    }
+    .home-settings-btn {
+      position: absolute;
+      top: 18px;
+      right: 20px;
+      z-index: 3;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 6px 10px;
+      background: #171814;
+    }
+    #settings {
+      display: none;
+      position: relative;
+      min-height: 0;
+      overflow: auto;
+    }
+    body.is-settings {
+      overflow: hidden;
+    }
+    body.is-settings #settings {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+    }
+    body.is-settings #home { display: none !important; }
+    body.is-settings .workspace { display: none; }
+    body.is-settings .topnav .assets,
+    body.is-settings #title,
+    body.is-settings #subtitle,
+    body.is-settings .cubby-hide-all,
+    body.is-settings .cubby-tray { display: none !important; }
+    body.is-settings .home-settings-btn { display: none; }
+    .settings-stage {
+      position: relative;
+      z-index: 1;
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: clamp(20px, 3vh, 44px) clamp(24px, 5vw, 80px);
+      overflow: auto;
+    }
+    .settings-card {
+      width: min(560px, 74vw);
+      padding: clamp(22px, 3vh, 32px) clamp(22px, 2.4vw, 32px);
+      background: #171814;
+      border: 1px solid rgba(240, 234, 220, 0.18);
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.5);
+    }
+    .settings-kicker {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .settings-card h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      letter-spacing: -0.03em;
+      font-weight: 500;
+    }
+    .settings-lead {
+      margin: 0 0 22px;
+      color: var(--mute);
+      font-size: 13px;
+    }
+    .settings-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 0;
+      border-top: 1px solid var(--line);
+    }
+    .settings-label {
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+    .settings-hint {
+      color: var(--mute);
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-all;
+    }
+    .settings-hint[data-state="ok"] { color: var(--olive); }
+    .settings-hint[data-state="error"] { color: #c45c3a; }
+    .settings-hint[data-state="running"] { color: var(--accent); }
+    .settings-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    #update-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      background: rgba(10, 11, 9, 0.88);
+    }
+    #update-overlay[hidden] { display: none !important; }
+    #ask {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: grid;
+      place-items: center;
+      background: rgba(10, 11, 9, 0.88);
+    }
+    #ask[hidden] { display: none !important; }
+    #ask-text {
+      margin: 0;
+      white-space: pre-wrap;
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    #ask-yes { background: #c45c3a; color: #141510; border-color: #c45c3a; font-weight: 600; }
+    #title {
+      margin: 0;
+      font: 500 14px/1.2 "IBM Plex Sans", "Segoe UI", sans-serif;
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+      color: var(--ink);
+      background: transparent;
+      border: 1px solid transparent;
+      padding: 2px 6px;
+      width: min(280px, 28vw);
+      min-width: 72px;
+    }
+    #title:not([readonly]):hover,
+    #title:not([readonly]):focus {
+      border-color: var(--line);
+      outline: none;
+    }
+    #title[readonly] { pointer-events: none; }
+    body.is-home #title { color: var(--mute); }
+    .sub { display: none; }
+    .stats {
+      position: absolute;
+      left: 22px;
+      bottom: 20px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 12px;
+      color: var(--mute);
+      line-height: 1.55;
+    }
+    .stats b { color: var(--ink); font-weight: 500; }
+    .controls { display: none; }
+    .lods {
+      position: static;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: none;
+    }
+    .lods:empty, .clips:empty, .assets:empty { display: none; }
+    .assets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-width: 0;
+    }
+    .blurb {
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--mute);
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .field > .fname {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    .hint {
+      font-size: 10px;
+      line-height: 1.35;
+      color: var(--mute);
+    }
+    .gen {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .gen textarea,
+    .gen input[type="text"],
+    .gen select {
+      background: #10110f;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 0;
+      padding: 7px 8px;
+      font: 12px/1.4 "IBM Plex Sans", sans-serif;
+      width: 100%;
+    }
+    .gen textarea {
+      min-height: 72px;
+      resize: vertical;
+    }
+    .gen fieldset {
+      border: 0;
+      margin: 0;
+      padding: 0;
+      min-width: 0;
+    }
+    #paint-color {
+      width: 100%;
+      height: 28px;
+      padding: 0;
+      border: 1px solid var(--line);
+      background: #10110f;
+    }
+    .gen-file {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      padding: 8px 10px;
+      font: 12px/1 "IBM Plex Sans", sans-serif;
+      cursor: pointer;
+      display: block;
+    }
+    .gen-file input[type="file"] {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+      font-size: 0;
+      overflow: hidden;
+    }
+    .gen-status {
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 11px;
+      color: var(--mute);
+      white-space: normal;
+      line-height: 1.4;
+    }
+    .gen-status[data-state="running"] { color: var(--accent); }
+    .gen-status[data-state="error"] { color: #c45c3a; }
+    .clips {
+      position: static;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: none;
+    }
+    button {
+      appearance: none;
+      background: #10110f;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 0;
+      padding: 6px 10px;
+      font: 12px/1 "IBM Plex Sans", sans-serif;
+      cursor: pointer;
+    }
+    button[aria-pressed="true"] {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button[hidden] { display: none !important; }
+    .ref {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: hidden;
+      max-width: none;
+    }
+    .ref figure {
+      margin: 0;
+      border: 1px solid var(--line);
+      background: #1a1b17;
+      padding: 4px;
+      width: 100%;
+      overflow: hidden;
+    }
+    .ref figure[data-role="shape"] { border-color: var(--accent); }
+    .ref img {
+      display: block;
+      width: 100%;
+      height: 96px;
+      object-fit: contain;
+      background: #cfc8b8;
+    }
+    .ref span {
+      display: block;
+      margin-top: 6px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    #status {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 3;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mute);
+      pointer-events: none;
+    }
+    #status[data-ready="true"] { display: none; }
+    a { color: inherit; }
+    @media (max-width: 900px) {
+      .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+      .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
+      .cubby-rail-left, .cubby-rail-right { width: min(348px, 92vw); }
+    }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body class="is-home">
+  <nav class="topnav" aria-label="Factory">
+    <div class="mark">ai-asset-pipeline</div>
+    <div class="stage-rail" id="stage-rail" role="group" aria-label="Stages">
+      <button type="button" data-stage="ideas" aria-pressed="false">Ideas</button>
+      <button type="button" data-stage="concept" aria-pressed="false">Concept</button>
+      <button type="button" data-stage="flat" aria-pressed="false">2D</button>
+      <button type="button" data-stage="mesh" aria-pressed="false">3D</button>
+      <button type="button" data-stage="stack" aria-pressed="false">Stack</button>
+      <button type="button" data-stage="export" aria-pressed="false">Export</button>
+    </div>
+    <button type="button" id="home-btn" class="home-btn" title="Back to the prompt page">Home</button>
+    <button type="button" id="cubby-hide-all" class="home-btn cubby-hide-all" title="Hide every cubby">Hide panels</button>
+    <div class="cubby-tray" id="cubby-tray" hidden></div>
+    <input id="title" type="text" value="New asset" readonly spellcheck="false" aria-label="Asset name" title="Rename this asset after generate" />
+    <button type="button" id="asset-delete" class="home-btn" hidden title="Delete this generation from disk">Delete</button>
+    <div class="sub" id="subtitle"></div>
+    <button type="button" id="nav-settings-btn" class="home-btn" title="Settings">Settings</button>
+    <button type="button" class="ver-chip" id="app-version" title="Open Settings">Pipeline</button>
+  </nav>
+  <main id="home">
+    <button type="button" id="home-settings-btn" class="home-settings-btn" title="Settings">Settings</button>
+    <div class="home-life" aria-hidden="true">
+      <div class="life-dots"></div>
+      <span class="life-line l1"></span>
+      <span class="life-line l2"></span>
+      <span class="life-line l3"></span>
+      <span class="life-line l4"></span>
+    </div>
+    <div class="home-stage">
+      <div class="home-cluster">
+      <div class="home-hero">
+        <div class="home-logo">
+          <svg class="home-mark" viewBox="0 0 80 56" role="img" aria-label="Pipeline">
+            <path d="M8 44h44l12-14H20z" fill="#d4b43a"/>
+            <path d="M14 30h44l12-14H26z" fill="#e8e2d2" opacity="0.4"/>
+            <path d="M20 16h44l12-12H32z" fill="#f0eadc" opacity="0.16"/>
+            <path d="M64 42h12" stroke="#d4b43a" stroke-width="2"/>
+            <circle cx="70" cy="42" r="2.2" fill="#d4b43a"/>
+          </svg>
+          <div class="home-word">PIPELINE</div>
+        </div>
+        <div class="home-float" aria-label="Choose a workflow and describe the asset">
+          <div id="gen-mount-home">
+        <form class="gen" id="gen" autocomplete="off">
+          <div class="workflow" id="home-workflow" role="group" aria-label="Workflow">
+            <button type="button" data-workflow="3d" aria-pressed="true">3D</button>
+            <button type="button" data-workflow="2d" aria-pressed="false">2D</button>
+          </div>
+          <div class="gen-prompt-row">
+            <label class="field is-required gen-prompt-field">
+              <span class="fname">Prompt</span>
+              <textarea id="gen-prompt" rows="1" placeholder="Describe one object…" title="One object per picture. Make each piece of a set as its own asset."></textarea>
+            </label>
+            <button type="submit" id="gen-go" title="Run this.">Generate</button>
+          </div>
+          <div class="gen-steps" id="gen-steps">
+            <div class="gen-step-picks" role="group" aria-label="Also do">
+              <button type="button" data-gen-step="pieces" aria-pressed="false">Pieces</button>
+              <button type="button" data-gen-step="motion" aria-pressed="false">Motion</button>
+              <button type="button" data-gen-step="say" aria-pressed="false">Say</button>
+              <button type="button" data-gen-step="sound" aria-pressed="false">Sound</button>
+            </div>
+            <div class="gen-step-line" data-for="pieces" hidden>
+              <input id="gen-pieces" type="text" placeholder="Name the pieces… (optional)" spellcheck="false" />
+            </div>
+            <div class="gen-step-line" data-for="motion" hidden>
+              <input id="gen-motion" type="text" placeholder="Name the motion… (optional)" spellcheck="false" />
+              <label class="gen-clip">
+                <span id="gen-clip-name">Clip</span>
+                <input id="gen-clip" type="file" accept="video/mp4,video/webm,image/png,image/jpeg,image/webp" multiple />
+              </label>
+            </div>
+            <div class="gen-step-line" data-for="say" hidden>
+              <input id="gen-say" type="text" placeholder="What it says… (optional)" spellcheck="false" />
+            </div>
+            <div class="gen-step-line" data-for="sound" hidden>
+              <input id="gen-sound" type="text" placeholder="The sound it makes… (optional)" spellcheck="false" />
+            </div>
+          </div>
+          <div class="gen-refs">
+            <span class="gen-file">
+              <input id="gen-file" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+              <span id="gen-file-label">Attach reference images</span>
+            </span>
+            <div class="gen-thumbs" id="gen-thumbs"></div>
+          </div>
+          <div class="levers-required">
+            <fieldset class="field is-required gen-poly-field">
+              <legend class="fname">Poly</legend>
+              <div class="poly-picks" id="gen-poly">
+                <label>
+                  <input type="radio" name="gen-poly" value="high" />
+                  <strong>High</strong>
+                  <em>Maximum fidelity<br>~full sculpt</em>
+                </label>
+                <label>
+                  <input type="radio" name="gen-poly" value="medium" checked />
+                  <strong>Medium</strong>
+                  <em>Keep fidelity, faster<br>~80k faces</em>
+                </label>
+                <label>
+                  <input type="radio" name="gen-poly" value="low" />
+                  <strong>Low</strong>
+                  <em>Low-poly attempt<br>~2k faces</em>
+                </label>
+              </div>
+            </fieldset>
+            <fieldset class="field gen-look-field">
+              <legend class="fname">Look</legend>
+              <div class="poly-picks look-picks" id="gen-look">
+                <label title="Painted mesh and sprite stack.">
+                  <input type="radio" name="gen-look" value="stack" checked />
+                  <strong>Standard</strong>
+                  <em>Painted mesh<br>+ sprite stack</em>
+                </label>
+                <label title="PS1 low-poly wearing the photo itself: ~1,200 flat triangles, 256 px atlas, .obj + .png for the game.">
+                  <input type="radio" name="gen-look" value="psx" />
+                  <strong>PSX photo</strong>
+                  <em>PS1 low-poly<br>real photo texture</em>
+                </label>
+              </div>
+            </fieldset>
+            <div class="gen-psx" id="gen-psx" hidden>
+              <label title="Where the subject looks in the photo. Side-on photos are also mirrored onto the far side.">Facing
+                <select id="gen-psx-facing">
+                  <option value="camera">At the camera</option>
+                  <option value="right">Right (side-on)</option>
+                  <option value="left">Left (side-on)</option>
+                  <option value="away">Away</option>
+                </select>
+              </label>
+              <label title="Height in game units (s&amp;box: inches). A person ~72, a cow ~58, a bust ~30.">Height
+                <input id="gen-psx-height" type="number" min="1" step="1" value="48" />
+              </label>
+            </div>
+          </div>
+          <div class="gen-actions">
+            <span class="gen-status" id="gen-status">factory…</span>
+          </div>
+        </form>
+          </div>
+        </div>
+        <div class="home-suggest" id="home-suggest">
+          <button type="button" data-suggest="A weathered handheld radio, scuffed paint">Weathered radio</button>
+          <button type="button" data-suggest="Brass lantern with coral growth and warm glass">Coral lantern</button>
+          <button type="button" data-suggest="Wooden crate with stencil marks, game-ready prop">Stenciled crate</button>
+        </div>
+      </div>
+      <section class="home-library" aria-label="Assets">
+        <h3>Assets</h3>
+        <div class="home-assets" id="home-assets"></div>
+      </section>
+      </div>
+    </div>
+  </main>
+  <main id="settings" hidden>
+    <div class="home-life" aria-hidden="true">
+      <div class="life-dots"></div>
+      <span class="life-line l1"></span>
+      <span class="life-line l2"></span>
+      <span class="life-line l3"></span>
+      <span class="life-line l4"></span>
+    </div>
+    <div class="settings-stage">
+      <div class="settings-card">
+        <div class="settings-kicker">Pipeline</div>
+        <h1>Settings</h1>
+        <p class="settings-lead">Version, updates, and the factory folder. That’s it.</p>
+        <section class="settings-row">
+          <div>
+            <div class="settings-label">Updates</div>
+            <div class="settings-hint" id="settings-update-status">Checking…</div>
+          </div>
+          <div class="settings-actions">
+            <button type="button" id="settings-check">Check for Updates</button>
+          </div>
+        </section>
+        <section class="settings-row">
+          <div>
+            <div class="settings-label">Factory folder</div>
+            <div class="settings-hint" id="settings-data-dir">…</div>
+          </div>
+          <div class="settings-actions">
+            <button type="button" id="settings-open-dir">Open</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <div class="workspace">
+    <section class="pane" id="mesh-pane" aria-label="Generated mesh">
+      <div class="cubby-rail cubby-rail-left" id="cubby-rail-left">
+        <div class="cubby is-collapsed" data-cubby="audio" data-side="left">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="false">Audio</button>
+            <button type="button" class="cubby-hide" title="Hide Audio" aria-label="Hide Audio">×</button>
+          </div>
+          <div class="cubby-body">
+            <span class="hint" id="audio-who">This asset</span>
+            <label class="field">
+              <span class="fname">What it says</span>
+              <textarea id="audio-line" rows="2" placeholder="One short spoken line."></textarea>
+            </label>
+            <label class="field">
+              <span class="fname">Speaker</span>
+              <select id="audio-speaker">
+                <option>af_heart</option>
+                <option>af_bella</option>
+                <option>af_sarah</option>
+                <option>am_adam</option>
+                <option>am_michael</option>
+                <option>bf_emma</option>
+                <option>bm_george</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="fname">The sound it makes</span>
+              <textarea id="audio-effect" rows="2" placeholder="One shot. A footstep, a bolt, a latch."></textarea>
+            </label>
+            <div class="dock-group">
+              <button id="audio-speak" type="button" disabled title="Install mlx-audio to speak.">Speak</button>
+              <button id="audio-sound" type="button" title="Writes a stand-in wav until SFX weights and FLAT2D_SFX_CMD are set.">Sound</button>
+            </div>
+            <p id="audio-status" class="blurb"></p>
+            <audio id="audio-voice" controls hidden></audio>
+            <audio id="audio-sfx" controls hidden></audio>
+          </div>
+        </div>
+        <div class="cubby is-required" data-cubby="generate" data-side="left">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="true">Generate</button>
+            <button type="button" class="cubby-hide" title="Hide Generate" aria-label="Hide Generate">×</button>
+          </div>
+          <div class="cubby-body" id="gen-mount-viewer"></div>
+        </div>
+        <div class="cubby is-collapsed" data-cubby="mesh" data-side="left">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="false">Mesh view</button>
+            <button type="button" class="cubby-hide" title="Hide Mesh view" aria-label="Hide Mesh view">×</button>
+          </div>
+          <div class="cubby-body">
+        <div class="rail-block">
+          <span class="hint">Left pane camera and shading.</span>
+          <div class="dock-group">
+            <button id="spin" type="button" aria-pressed="true" title="Slow auto-rotate around the mesh. Stack follows when Sync is on.">Orbit</button>
+            <button id="wire" type="button" aria-pressed="false" title="Show triangle edges instead of filled surfaces.">Wire</button>
+            <button id="tex" type="button" aria-pressed="true" title="Toggle the painted texture. Off shows clay color.">Texture</button>
+            <button id="move" type="button" aria-pressed="true" title="Play a gentle idle motion if this mesh is rigged.">Move</button>
+          </div>
+          <span class="hint">Game look: render small, upscale with crisp pixels.</span>
+          <div class="dock-group">
+            <button id="game-look" type="button" aria-pressed="false" title="Render at a low internal resolution and upscale with hard pixel edges, like the game will.">Pixel</button>
+            <button id="game-iso" type="button" aria-pressed="true" title="Isometric orthographic camera at a fixed pitch, snapped to whole pixels so edges don't crawl when it moves.">Iso</button>
+            <button id="game-outline" type="button" aria-pressed="true" title="Dark silhouette and light crease lines on the pixel grid, from depth and normals.">Outline</button>
+            <button id="game-shadow" type="button" aria-pressed="true" title="Soft cast shadows from the key light onto the ground.">Shadow</button>
+            <button id="game-dither" type="button" aria-pressed="false" title="Ordered dither between color steps. Only shows when Colors is on.">Dither</button>
+          </div>
+          <label class="slider" title="Screen pixels per game pixel. 3 to 5 is the chunky RTS look."><span>Px</span><input id="game-px" type="range" min="1" max="8" step="1" value="4" /><strong id="game-px-val">4</strong></label>
+          <label class="slider" title="Steps per color channel. Fewer steps flatten gradients into a small palette."><span>Colors</span><input id="game-levels" type="range" min="1" max="16" step="1" value="1" /><strong id="game-levels-val">off</strong></label>
+          <p class="blurb">
+            <button type="button" data-step="cleanup">Cleanup</button>
+            <button type="button" data-step="lods">Detail levels</button>
+          </p>
+        </div>
+          </div>
+        </div>
+        <div class="cubby is-collapsed" data-cubby="cleanup" data-side="left">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="false">Cleanup</button>
+            <button type="button" class="cubby-hide" title="Hide Cleanup" aria-label="Hide Cleanup">×</button>
+          </div>
+          <div class="cubby-body">
+        <div class="rail-block">
+          <span class="hint">Knock off generator scraps. Carve is a sphere delete in 3D.</span>
+          <div class="dock-group">
+            <button id="clean-floaters" type="button" title="Delete disconnected bits. Keeps the largest solid.">Floaters</button>
+            <button id="carve" type="button" aria-pressed="false" title="Click the mesh to delete a sphere of volume. Orbit with right-drag while this is on.">Carve</button>
+          </div>
+          <label class="slider" title="Carve sphere size, as a fraction of the mesh."><span>Radius</span><input id="carve-radius" type="range" min="0.02" max="0.35" step="0.01" value="0.08" /><strong id="carve-radius-val">0.08</strong></label>
+        </div>
+          </div>
+        </div>
+        <div class="cubby is-collapsed" data-cubby="paint" data-side="left">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="false">Paint</button>
+            <button type="button" class="cubby-hide" title="Hide Paint" aria-label="Hide Paint">×</button>
+          </div>
+          <div class="cubby-body">
+        <div class="rail-block">
+          <span class="hint">Color the mesh and the stack with the same 3D brush. Save writes files under out/.</span>
+          <div class="dock-group">
+            <button id="paint" type="button" aria-pressed="false" title="Click-drag to paint. Right-drag still orbits.">Paint</button>
+            <button id="paint-drop" type="button" aria-pressed="false" title="Next click samples color from the surface.">Drop</button>
+            <button id="paint-erase" type="button" aria-pressed="false" title="Brush restores the original colors.">Erase</button>
+            <button id="paint-undo" type="button" title="Undo the last stroke.">Undo</button>
+            <button id="paint-save" type="button" title="Write painted stack sheet and textured_paint.glb.">Save</button>
+          </div>
+          <label class="field">
+            <span class="fname">Color</span>
+            <input id="paint-color" type="color" value="#2ecc71" title="Brush color" />
+          </label>
+          <label class="slider" title="Paint sphere size, as a fraction of the mesh."><span>Brush</span><input id="paint-radius" type="range" min="0.01" max="0.2" step="0.005" value="0.04" /><strong id="paint-radius-val">0.04</strong></label>
+        </div>
+          </div>
+        </div>
+        <div class="cubby is-collapsed" data-cubby="lods" data-side="left">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="false">LODs</button>
+            <button type="button" class="cubby-hide" title="Hide LODs" aria-label="Hide LODs">×</button>
+          </div>
+          <div class="cubby-body">
+        <div class="rail-block">
+          <span class="hint">Swap the left mesh. High is the sculpt; Game is the reduced one.</span>
+          <div class="lods" id="lods"></div>
+          <div class="clips" id="clips"></div>
+        </div>
+        <aside class="ref" id="ref"></aside>
+          </div>
+        </div>
+      </div>
+      <div class="tag">Generated mesh</div>
+      <div class="pane-stats" id="stats">Loading mesh…</div>
+      <div id="status">Loading mesh…</div>
+    </section>
+    <section id="ideas-stage" aria-label="Ideas">
+      <div class="ideas-grid" id="ideas-grid"></div>
+      <p class="blurb" id="ideas-status"></p>
+    </section>
+    <section id="export-stage" aria-label="Export">
+      <h2 class="export-title">Export</h2>
+      <p class="blurb" id="export-lead"></p>
+      <div class="export-body" id="export-body"></div>
+    </section>
+    <section id="flat-stage" aria-label="2D sheet">
+      <div class="flat-stage-view">
+        <p id="flat-empty">No picture yet.</p>
+        <img id="flat-source" class="flat-source" alt="" hidden />
+        <img id="flat-strip" class="flat-source" alt="" hidden />
+      </div>
+      <p id="flat-status" class="blurb"></p>
+      <div class="flat-parts" id="flat-parts"></div>
+      <audio id="flat-hear" hidden controls></audio>
+    </section>
+    <section class="pane" id="stack-pane" aria-label="Sprite stack">
+      <div class="tag">Sprite stack</div>
+      <div class="pane-stats" id="stack-stats"></div>
+      <div class="pane-empty" id="stack-empty">No sprite stack yet. Generate writes out/&lt;stem&gt;/stack/.</div>
+      <div class="cubby-rail cubby-rail-right" id="stack-dock">
+        <div class="cubby" data-cubby="stack-look" data-side="right">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="true">Look</button>
+            <button type="button" class="cubby-hide" title="Hide Look" aria-label="Hide Look">×</button>
+          </div>
+          <div class="cubby-body">
+        <p class="blurb">Voxel cubes are the asset. Round welds neighbors into one surface. Pixel is the screen-space look. Plane and Contour stay parked.</p>
+        <div class="dock-group" id="stack-looks">
+          <button id="look-voxel" type="button" aria-pressed="true" title="Instanced cubes per texel. The factory asset.">Voxel</button>
+          <button id="look-plane" type="button" aria-pressed="false" title="Parked. One textured quad per slice.">Plane</button>
+          <button id="look-contour" type="button" aria-pressed="false" title="Parked. Marching-squares slabs. Not the product path.">Contour</button>
+        </div>
+        <div class="dock-group" id="stack-sliders">
+          <button id="stack-pixel" type="button" aria-pressed="true" title="Render the stack at a low internal resolution, then upscale with t3ssel8r's pixel-art AA. Does not change the cubes.">Pixel</button>
+          <button id="stack-main" type="button" aria-pressed="true" title="Keep only the largest connected voxel piece. Off keeps Hunyuan scraps.">Main</button>
+          <button id="stack-outline" type="button" aria-pressed="true" title="1-pixel screen-space outlines from the depth buffer, at the internal pixel grid.">Outline</button>
+          <button id="stack-spin" type="button" aria-pressed="true" title="Keep this camera at the same angle and slow turn as the mesh.">Sync</button>
+          <button id="stack-shade" type="button" aria-pressed="true" title="Darken lower slabs so height is easier to read.">Shade</button>
+          <button id="stack-reset" type="button" title="Restore factory stack look: 120 texels, spacing/height 1, contrast and saturation 1.20.">Reset</button>
+          <button id="stack-paint" type="button" aria-pressed="false" title="Same paint mode as the left pane.">Paint</button>
+        </div>
+          <p class="blurb">
+            <button type="button" data-step="stack-sliders">Spacing</button>
+            <button type="button" data-step="stack-palette">Palette</button>
+          </p>
+          </div>
+        </div>
+        <div class="cubby is-collapsed" data-cubby="stack-sliders" data-side="right">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="false">Stack</button>
+            <button type="button" class="cubby-hide" title="Hide Stack" aria-label="Hide Stack">×</button>
+          </div>
+          <div class="cubby-body">
+        <div class="dock-sliders">
+          <label class="slider" title="Internal pixel size. 1 is native. 3–4 is the t3ssel8r-style chunk."><span>Px</span><input id="pixel-size" type="range" min="1" max="8" step="1" value="3" /><strong id="pixel-size-val">3</strong></label>
+          <label class="slider" title="Merge neighboring voxels into one surface. 0 is cubes. Low values are a tiny blend (squared curve). 1 is a smooth iso. Factory is 0.45."><span>Round</span><input id="round" type="range" min="0" max="1" step="0.01" value="0.45" /><strong id="round-val">0.45</strong></label>
+          <label class="slider" title="Gap between slabs. 1 is packed. Raise it to pull the loaf apart."><span>Spacing</span><input id="spacing" type="range" min="0.5" max="18" step="0.05" value="1" /><strong id="spacing-val">1.0</strong></label>
+          <label class="slider" title="Thickness of each slab. Raise to fill gaps between layers."><span>Height</span><input id="height" type="range" min="0.1" max="4" step="0.05" value="1" /><strong id="height-val">1.00</strong></label>
+          <label class="slider" title="How many slabs from the bottom. Lower crops the top of the object."><span>Layers</span><input id="layers" type="range" min="4" max="256" step="1" value="87" /><strong id="layers-val">87</strong></label>
+          <label class="slider" title="XY resolution of each slab. Lower is chunkier pixels; higher is finer."><span>Texels</span><input id="texels" type="range" min="16" max="256" step="8" value="120" /><strong id="texels-val">120</strong></label>
+          <label class="slider" title="Overall brightness of the stack."><span>Bright</span><input id="bright" type="range" min="0.3" max="2.2" step="0.05" value="1" /><strong id="bright-val">1.00</strong></label>
+          <label class="slider" title="Contrast. 1.20 is the factory look."><span>Contrast</span><input id="contrast" type="range" min="0.3" max="2.2" step="0.05" value="1.20" /><strong id="contrast-val">1.20</strong></label>
+          <label class="slider" title="Color intensity. 0 is grey, 1.20 is the factory look."><span>Saturate</span><input id="saturate" type="range" min="0" max="2.2" step="0.05" value="1.20" /><strong id="saturate-val">1.20</strong></label>
+        </div>
+          </div>
+        </div>
+        <div class="cubby is-collapsed" data-cubby="stack-palette" data-side="right">
+          <div class="cubby-bar">
+            <button type="button" class="cubby-toggle" aria-expanded="false">Palette</button>
+            <button type="button" class="cubby-hide" title="Hide Palette" aria-label="Hide Palette">×</button>
+          </div>
+          <div class="cubby-body">
+        <div class="rail-block">
+          <div class="rail-label">Palette</div>
+          <span class="hint">Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.</span>
+          <label class="slider" title="How many distinct colors to keep."><span>Colors</span><input id="pal-count" type="range" min="2" max="32" step="1" value="8" /><strong id="pal-count-val">8</strong></label>
+          <button id="pal-reduce" type="button" title="Keep unique hues (chroma-weighted), not random k-means.">Reduce</button>
+          <div class="pal-swatches" id="pal-swatches"></div>
+          <label class="slider" title="Metallic for the selected color."><span>Metal</span><input id="pal-metal" type="range" min="0" max="1" step="0.05" value="0" /><strong id="pal-metal-val">0.00</strong></label>
+          <label class="slider" title="Roughness for the selected color. Low is glossy."><span>Rough</span><input id="pal-rough" type="range" min="0" max="1" step="0.05" value="0.70" /><strong id="pal-rough-val">0.70</strong></label>
+          <label class="slider" title="Emissive glow for the selected color."><span>Glow</span><input id="pal-emit" type="range" min="0" max="1" step="0.05" value="0" /><strong id="pal-emit-val">0.00</strong></label>
+        </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <div class="takes" id="takes" aria-label="Takes"></div>
+    <div class="workspace-bar">
+      <div class="step-bar" id="step-bar">
+        <button type="button" class="step-3d" data-step="mesh">Look</button>
+        <button type="button" class="step-3d" data-step="stack-look">Sprite stack</button>
+        <button type="button" class="step-3d" data-step="paint">Paint</button>
+        <button type="button" class="step-3d" data-step="audio">Audio</button>
+        <button type="button" class="step-3d" id="game-look-bar" aria-pressed="false" title="Game look: render both panes small with crisp pixels, iso camera and shadows. Settings are under Look.">Pixel</button>
+        <button type="button" class="step-2d" data-mode="picture" aria-pressed="true">Picture</button>
+        <button type="button" class="step-2d" data-mode="motion">Motion</button>
+        <button type="button" class="step-2d" data-mode="pieces">Pieces</button>
+        <button type="button" class="step-2d" data-mode="say">Say</button>
+        <button type="button" class="step-2d" data-mode="sound">Sound</button>
+      </div>
+      <form class="ideas-more" id="ideas-more" autocomplete="off">
+        <input id="ideas-prompt" type="text" placeholder="Describe one object…" title="One object per picture. Make each piece of a set as its own asset." spellcheck="false" />
+        <button type="button" id="ideas-clear" title="Delete the ideas you did not keep.">Clear unkept</button>
+        <button type="submit" id="ideas-go" title="Draw four more from this prompt.">More ideas</button>
+      </form>
+      <form class="flat-revise" id="flat-revise" autocomplete="off">
+        <input id="flat-revise-prompt" type="text" placeholder="Describe a change…" spellcheck="false" />
+        <label class="flat-clip" id="flat-clip-label">
+          <span id="flat-clip-name">Clip</span>
+          <input id="flat-clip" type="file" accept="video/mp4,video/webm,image/png,image/jpeg,image/webp" multiple />
+        </label>
+        <button type="submit">Generate</button>
+      </form>
+    </div>
+    <div id="ask" hidden>
+      <div class="gen-overlay-card">
+        <div class="gen-overlay-kicker">Delete</div>
+        <p id="ask-text"></p>
+        <div class="ask-actions">
+          <button type="button" id="ask-no">Cancel</button>
+          <button type="button" id="ask-yes">Delete</button>
+        </div>
+      </div>
+    </div>
+    <div id="update-overlay" hidden>
+      <div class="gen-overlay-card">
+        <div class="gen-overlay-kicker">Update</div>
+        <h2 class="gen-overlay-title" id="update-overlay-title">Updating…</h2>
+        <div class="gen-overlay-step" id="update-overlay-step">Pipeline will restart.</div>
+      </div>
+    </div>
+    <div id="gen-overlay" hidden>
+      <div class="gen-overlay-card">
+        <div class="gen-overlay-kicker" id="gen-overlay-kicker">Factory</div>
+        <h2 class="gen-overlay-title" id="gen-overlay-title">Generating</h2>
+        <div class="gen-overlay-step" id="gen-overlay-step"></div>
+        <div class="gen-overlay-bar" aria-hidden="true"><i id="gen-overlay-fill"></i></div>
+        <div class="gen-overlay-pct" id="gen-overlay-pct">0%</div>
+        <pre class="gen-overlay-log" id="gen-overlay-log"></pre>
+      </div>
+    </div>
+  </div>
+  <script src="/wails/runtime.js"></script>
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+    import { createStackLab } from "/stack-lab.js";
+    import { createPixelLook, bindPixelLookUi } from "/pixel-look.js";
+
+    const params = new URLSearchParams(location.search);
+    let asset = params.get("asset") || "";
+    const FACTORY = "";
+    const WAILS_UPLOAD = "github.com/StephenSHorton/pipeline/desktop/internal/factory.Service.SaveUpload";
+    const WAILS_GENERATE = "github.com/StephenSHorton/pipeline/desktop/internal/factory.Service.StartGenerate";
+    const WAILS_CHECK = "github.com/StephenSHorton/pipeline/desktop/internal/update.Service.CheckForUpdate";
+    const WAILS_INSTALL = "github.com/StephenSHorton/pipeline/desktop/internal/update.Service.DownloadAndInstall";
+    const WAILS_VERSION = "github.com/StephenSHorton/pipeline/desktop/internal/update.Service.GetVersion";
+    const WAILS_DATADIR = "github.com/StephenSHorton/pipeline/desktop/internal/factory.Service.DataDir";
+    const WAILS_OPEN_DIR = "github.com/StephenSHorton/pipeline/desktop/internal/factory.Service.OpenDataDir";
+
+    function arrayBufferToBase64(buf) {
+      const bytes = new Uint8Array(buf);
+      const chunk = 0x8000;
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      }
+      return btoa(binary);
+    }
+
+    function wailsByName(method, ...args) {
+      const call = window.wails && window.wails.Call;
+      if (!call || typeof call.ByName !== "function") return null;
+      return call.ByName(method, ...args);
+    }
+
+    async function uploadImage(file) {
+      const buf = await file.arrayBuffer();
+      if (!buf.byteLength) {
+        throw new Error("could not read image");
+      }
+      const b64 = arrayBufferToBase64(buf);
+      const viaWails = wailsByName(WAILS_UPLOAD, file.name, b64);
+      if (viaWails) {
+        const res = await viaWails;
+        if (!res || !res.ok || !res.path) {
+          throw new Error((res && res.error) || "upload failed");
+        }
+        return res;
+      }
+      return factoryJson(`/upload?name=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, data: b64 }),
+      });
+    }
+
+    function selectedPoly() {
+      const picked = document.querySelector('input[name="gen-poly"]:checked');
+      return picked ? picked.value : "medium";
+    }
+
+    // Look: "stack" (painted mesh + sprite stack) or "psx" (PS1 low-poly wearing the photo).
+    function selectedLook() {
+      const picked = document.querySelector('input[name="gen-look"]:checked');
+      return picked ? picked.value : "stack";
+    }
+
+    function lookSpec() {
+      if (selectedLook() !== "psx") return { quality: "stack" };
+      const height = Number(document.getElementById("gen-psx-height").value);
+      return {
+        quality: "psx",
+        facing: document.getElementById("gen-psx-facing").value,
+        psx_height: height > 0 ? height : 48,
+      };
+    }
+
+    document.querySelectorAll('input[name="gen-look"]').forEach((el) => {
+      el.addEventListener("change", () => {
+        document.getElementById("gen-psx").hidden = selectedLook() !== "psx";
+      });
+    });
+
+    let workflow = "3d";
+    let flatParts = [];
+    let flatIndex = -1;
+    let flatFlags = {};
+    let audioAsset = { id: "asset", line: "", speaker: "af_heart", projectile: "", sound: "", voice: "" };
+    // Paths the cubby just wrote on the asset row. A piece with no wav must not hide that player.
+    let assetHear = { sound: "", voice: "" };
+
+    function setWorkflow(next, opts) {
+      workflow = next === "2d" ? "2d" : "3d";
+      document.body.classList.toggle("is-2d", workflow === "2d");
+      document.querySelectorAll("[data-workflow]").forEach((btn) => {
+        btn.setAttribute("aria-pressed", String(btn.getAttribute("data-workflow") === workflow));
+      });
+      const prompt = document.getElementById("gen-prompt");
+      const fileLabel = document.getElementById("gen-file-label");
+      if (prompt) prompt.placeholder = "Describe the thing…";
+      if (fileLabel) fileLabel.textContent = workflow === "2d" ? "Attach a flat picture" : "Attach reference images";
+      if (workflow === "2d") setFlatMode(document.body.dataset.flatMode || "picture");
+      if (typeof syncGalleryPick === "function") syncGalleryPick();
+      // openAsset passes skipAudio. load() awaits loadAudio, and a second call can showStage after the packed center.
+      if (asset && !(opts && opts.skipAudio)) {
+        loadAudio();
+        if (workflow === "2d") drawFlat();
+      }
+    }
+
+    document.querySelectorAll("[data-workflow]").forEach((btn) => {
+      btn.addEventListener("click", () => setWorkflow(btn.getAttribute("data-workflow")));
+    });
+
+    // Stages and takes. The factory saves a take after each run; the rail steps between stages
+    // and the strip steps back to an earlier take of the open stage. See docs/unified-pipeline.md.
+    const STAGE_VIEW = {
+      ideas: { workflow: "2d", mode: "picture", name: "idea" },
+      concept: { workflow: "2d", mode: "picture", name: "concept" },
+      flat: { workflow: "2d", mode: "pieces", name: "2D sheet" },
+      mesh: { workflow: "3d", name: "3D mesh" },
+      stack: { workflow: "3d", name: "sprite stack" },
+      export: { name: "export" },
+    };
+    const TAKE_SHOTS = {
+      concept: [/^flat\/source\.png$/, /^lifted\.png$/, /^input\.(png|jpe?g|webp)$/],
+      flat: [/^flat\/sheets\/.+\.png$/, /^flat\/parts\/.+\.png$/, /^flat\/source\.png$/],
+      mesh: [/^preview\.png$/],
+      stack: [/^stack\/preview\.png$/],
+      export: [/^export\/stack\/preview\.png$/, /^export\/concept\.(png|jpe?g|webp)$/],
+    };
+    let flowStage = "";
+    let exporting = false;
+    let exportDoc = null;
+    let exportStem = "";
+    let flowState = null;
+    let flowTimer = 0;
+    const takesEl = document.getElementById("takes");
+
+    function flowEntry(stage) {
+      return (flowState && flowState.stages.find((s) => s.stage === stage)) || null;
+    }
+
+    function takeShot(stage, files) {
+      for (const re of TAKE_SHOTS[stage] || []) {
+        const hit = (files || []).find((f) => re.test(f));
+        if (hit) return hit;
+      }
+      return "";
+    }
+
+    function conceptStill() {
+      const files = (flowEntry("concept") || {}).files || [];
+      const still = files.find((f) => f === "flat/source.png")
+        || files.find((f) => f === "lifted.png")
+        || files.find((f) => /^input\.(png|jpe?g|webp)$/.test(f));
+      return still ? `out/${asset}/${still}` : "";
+    }
+
+    function queueFlowRefresh() {
+      clearTimeout(flowTimer);
+      flowTimer = setTimeout(() => refreshFlow().catch(console.warn), 300);
+    }
+
+    async function refreshFlow() {
+      if (!asset) {
+        flowState = null;
+        renderFlow();
+        return;
+      }
+      const stem = asset;
+      const data = await factoryJson("/flow/" + encodeURIComponent(stem)).catch(() => null);
+      if (stem !== asset) return;
+      flowState = data && data.ok ? data : null;
+      if (!flowStage || !STAGE_VIEW[flowStage]) {
+        const live = (stage) => !!(flowEntry(stage) || {}).live;
+        if (live("ideas") && !live("concept")) return enterStage("ideas");
+        if (workflow === "2d") flowStage = live("flat") ? "flat" : "concept";
+        else if (live("mesh") || live("stack") || !live("concept")) flowStage = live("mesh") || !live("stack") ? "mesh" : "stack";
+        else return enterStage("concept");
+      }
+      renderFlow();
+      if (flowStage === "export" && exportStem !== asset) await loadExport();
+    }
+
+    function renderFlow() {
+      document.querySelectorAll("#stage-rail [data-stage]").forEach((btn) => {
+        const entry = flowEntry(btn.dataset.stage);
+        btn.setAttribute("aria-pressed", String(btn.dataset.stage === flowStage));
+        btn.classList.toggle("has-files", !!(entry && entry.live));
+        btn.classList.toggle("is-stale", !!(entry && entry.stale.length));
+        const n = entry ? entry.takes.length : 0;
+        btn.title = n ? `${n} take${n === 1 ? "" : "s"}` : "Nothing yet";
+      });
+      document.body.classList.toggle("is-ideas", !!asset && flowStage === "ideas");
+      document.body.classList.toggle("is-export", !!asset && flowStage === "export");
+      if (!takesEl) return;
+      takesEl.innerHTML = "";
+      if (flowStage === "ideas") return;
+      const entry = flowEntry(flowStage);
+      if (!asset || !entry) return;
+      const note = (text, stale) => {
+        const el = document.createElement("span");
+        el.className = "takes-note" + (stale ? " is-stale" : "");
+        el.textContent = text;
+        takesEl.appendChild(el);
+      };
+      const act = (text, title, fn) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "takes-act";
+        btn.textContent = text;
+        btn.title = title;
+        btn.addEventListener("click", fn);
+        takesEl.appendChild(btn);
+      };
+      entry.takes.forEach((take, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "take";
+        btn.setAttribute("aria-pressed", String(take.id === entry.pick && !entry.unsaved));
+        const shot = takeShot(flowStage, take.files);
+        if (shot) {
+          const img = document.createElement("img");
+          img.alt = "";
+          img.loading = "lazy";
+          img.src = `/out/${encodeURIComponent(asset)}/takes/${flowStage}/${take.id}/${shot}`;
+          btn.appendChild(img);
+        } else {
+          const blank = document.createElement("span");
+          blank.className = "take-blank";
+          btn.appendChild(blank);
+        }
+        const label = document.createElement("span");
+        label.textContent = String(i + 1);
+        btn.appendChild(label);
+        const when = take.made ? new Date(take.made * 1000).toLocaleString() : "";
+        btn.title = [take.note, when].filter(Boolean).join(" · ") || take.id;
+        btn.addEventListener("click", () => pickTake(flowStage, take.id));
+        takesEl.appendChild(btn);
+      });
+      if (entry.unsaved) act("Save", "Keep what is on screen as a take you can come back to.", () => saveTake(flowStage));
+      if (entry.stale.length) {
+        const from = entry.stale.map((s) => STAGE_VIEW[s] ? STAGE_VIEW[s].name : s).join(" and ");
+        note(`Made from an older ${from}.`, true);
+      }
+      if (flowStage === "export") {
+        if (exporting) note("Exporting…");
+        else if (["flat", "mesh", "stack"].some((s) => (flowEntry(s) || {}).live)) {
+          act(entry.live ? "Export again" : "Export", "Copy the picked 2D sheet, sprite stack and 3D files into one folder a game can load.", exportAsset);
+        } else {
+          note("Make a 2D sheet, a sprite stack or a 3D mesh first.");
+        }
+        if (entry.live && !exporting) act("Show in Finder", "Open the export folder.", openExport);
+        renderExport();
+      } else if (flowStage === "mesh" || flowStage === "stack") {
+        const mesh = flowEntry("mesh");
+        const still = conceptStill();
+        if (flowStage === "stack" && still) {
+          if (stackingPicture) note("Stacking the picture…");
+          else act("Stack from picture", "Build the sprite stack straight from the concept picture. No 3D needed.", stackFromPicture);
+        }
+        if (still && (!mesh || !mesh.live || mesh.stale.length)) {
+          act(mesh && mesh.live ? "Rebuild 3D" : "Build 3D", "Make the mesh and sprite stack from the picked concept.", () => buildFromConcept(still));
+        } else if (!mesh || !mesh.live) {
+          note("No concept picture yet.");
+        }
+      } else if (!entry.live && !entry.takes.length) {
+        note(flowStage === "concept" ? "No picture yet." : "Use a step below to start the 2D sheet.");
+      }
+    }
+
+    let stackingPicture = false;
+
+    async function stackFromPicture() {
+      if (!asset || stackingPicture) return;
+      const stem = asset;
+      stackingPicture = true;
+      renderFlow();
+      try {
+        await factoryJson("/stack/" + encodeURIComponent(stem), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (stem === asset) await stackLab.load(stem);
+      } catch (err) {
+        if (stem === asset) status.textContent = err.message || String(err);
+        alert(err.message || String(err));
+      } finally {
+        stackingPicture = false;
+        if (stem === asset) await refreshFlow();
+      }
+    }
+
+    async function enterStage(stage) {
+      const view = STAGE_VIEW[stage];
+      if (!view || !asset) return;
+      const was = workflow;
+      flowStage = stage;
+      if (stage === "export") {
+        showViewer();
+        renderFlow();
+        await loadExport();
+        return;
+      }
+      if (view.workflow === "2d") {
+        setWorkflow("2d");
+        setFlatMode(view.mode);
+      } else {
+        setWorkflow("3d", { skipAudio: true });
+      }
+      showViewer();
+      renderFlow();
+      if (stage === "ideas") await loadIdeas();
+      // The mesh pane only loads while 3D is showing.
+      if (view.workflow === "3d" && was === "2d") await load({ preferLod: "lookdev" });
+    }
+
+    // Export: one folder per asset a game can load (out/<stem>/export/, described by asset.json).
+    const WAILS_OPEN_EXPORT = "github.com/StephenSHorton/pipeline/desktop/internal/factory.Service.OpenExport";
+
+    async function loadExport() {
+      if (!asset) return;
+      const stem = asset;
+      const data = await factoryJson("/export/" + encodeURIComponent(stem)).catch(() => null);
+      if (stem !== asset) return;
+      exportDoc = data && data.ok ? data.asset : null;
+      exportStem = stem;
+      renderExport();
+    }
+
+    async function exportAsset() {
+      if (!asset || exporting) return;
+      const stem = asset;
+      exporting = true;
+      renderFlow();
+      try {
+        const data = await factoryJson("/export/" + encodeURIComponent(stem), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (stem === asset) {
+          exportDoc = data.asset;
+          exportStem = stem;
+        }
+      } catch (err) {
+        alert(err.message || String(err));
+      } finally {
+        exporting = false;
+        if (stem === asset) await refreshFlow();
+      }
+    }
+
+    async function openExport() {
+      if (!asset) return;
+      try {
+        const via = wailsByName(WAILS_OPEN_EXPORT, asset);
+        if (via) {
+          await via;
+          return;
+        }
+        const r = await fetch("/open-export?stem=" + encodeURIComponent(asset), { method: "POST" });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      } catch (err) {
+        alert(`The export is in out/${asset}/export/. ${err.message || err}`);
+      }
+    }
+
+    function renderExport() {
+      const body = document.getElementById("export-body");
+      const lead = document.getElementById("export-lead");
+      if (!body || !lead) return;
+      body.innerHTML = "";
+      const doc = exportStem === asset ? exportDoc : null;
+      const entry = flowEntry("export");
+      const card = (title, lines, img, missing) => {
+        const el = document.createElement("div");
+        el.className = "export-card" + (missing ? " is-missing" : "");
+        const h = document.createElement("h3");
+        h.textContent = title;
+        el.appendChild(h);
+        if (img) {
+          const im = document.createElement("img");
+          im.alt = "";
+          im.src = img;
+          el.appendChild(im);
+        }
+        const ul = document.createElement("ul");
+        for (const line of lines) {
+          const li = document.createElement("li");
+          li.textContent = line;
+          ul.appendChild(li);
+        }
+        el.appendChild(ul);
+        body.appendChild(el);
+      };
+      if (!doc || !entry || !entry.live) {
+        lead.textContent = "Export copies the picked 2D sheet, sprite stack and 3D files into one folder a game can load, with asset.json saying what each file is.";
+        const has = (s) => !!(flowEntry(s) || {}).live;
+        card("2D sheet", [has("flat") ? "Ready" : "Nothing yet"], "", !has("flat"));
+        card("Sprite stack", [has("stack") ? "Ready" : "Nothing yet"], "", !has("stack"));
+        card("3D", [has("mesh") ? "Ready" : "Nothing yet"], "", !has("mesh"));
+        return;
+      }
+      const base = `/out/${encodeURIComponent(asset)}/export/`;
+      const v = `?v=${doc.made || 0}`;
+      const when = doc.made ? new Date(doc.made * 1000).toLocaleString() : "";
+      lead.textContent = `out/${asset}/export/ · ${when}` + (entry.stale.length ? " · made from older picks, export again to update" : "");
+      if (doc.concept) card("Concept", [doc.concept], base + doc.concept + v);
+      const flat = doc["2d"];
+      if (flat) {
+        const lines = (flat.parts || []).map((p) => `${p.image.split("/").pop()}${p.sound ? " + sound" : ""}${p.voice ? " + voice" : ""}`);
+        for (const [name, m] of Object.entries(flat.motions || {})) lines.push(`${name}: ${m.frames} frames at ${m.fps} fps`);
+        const shot = (flat.parts || [])[0];
+        card("2D sheet", lines.length ? lines : ["empty"], shot ? base + shot.image + v : "");
+      } else card("2D sheet", ["Not in this export"], "", true);
+      const stack = doc.stack;
+      if (stack) {
+        card("Sprite stack", [`${stack.layers} layers of ${stack.resolution}×${stack.resolution}`, stack.maker === "picture" ? "built from the picture" : "sliced from the mesh"], stack.preview ? base + stack.preview + v : "");
+      } else card("Sprite stack", ["Not in this export"], "", true);
+      const mesh = doc["3d"];
+      if (mesh) {
+        const lines = Object.entries(mesh).map(([role, m]) => `${role}.glb${m.faces ? ` · ${Number(m.faces).toLocaleString()} faces` : ""}`);
+        card("3D", lines);
+      } else card("3D", ["Not in this export"], "", true);
+    }
+
+    async function pickTake(stage, takeId) {
+      if (!asset) return;
+      try {
+        flowState = await factoryJson("/flow/" + encodeURIComponent(asset) + "/pick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stage, take: takeId }),
+        });
+        renderFlow();
+        if (stage === "export") return loadExport();
+        await load({ preferLod: "lookdev" });
+        if (workflow === "2d") setWorkflow("2d");
+      } catch (err) {
+        status.textContent = err.message || String(err);
+        flatSay(err.message || String(err));
+      }
+    }
+
+    async function saveTake(stage) {
+      if (!asset) return;
+      try {
+        await factoryJson("/flow/" + encodeURIComponent(asset) + "/snapshot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stage }),
+        });
+      } catch (err) {
+        flatSay(err.message || String(err));
+      }
+      await refreshFlow();
+    }
+
+    async function buildFromConcept(still) {
+      genWatching = true;
+      genProgressMax = 0;
+      clearStage("Generating");
+      showOverlay({ title: `Building 3D · ${asset}`, step: "Queued on the factory…", kicker: "Working" });
+      try {
+        const job = await startGenerateJob({
+          image: still,
+          images: [still],
+          stem: asset,
+          ...lookSpec(),
+          poly: selectedPoly(),
+        });
+        await pollJob(job.job_id, job.stem || asset);
+      } catch (err) {
+        showOverlay({ title: "Could not start", step: err.message || String(err), kicker: "Error" });
+      }
+    }
+
+    document.querySelectorAll("#stage-rail [data-stage]").forEach((btn) => {
+      btn.addEventListener("click", () => enterStage(btn.dataset.stage).catch(console.error));
+    });
+
+    // Ideas: a grid of stills from one prompt. Keep the good ones, use one as the concept.
+    let ideasData = null;
+    let ideasDrawing = 0;
+    const ideasGrid = document.getElementById("ideas-grid");
+    const ideasPrompt = document.getElementById("ideas-prompt");
+
+    function ideasSay(text) {
+      const el = document.getElementById("ideas-status");
+      if (el) el.textContent = text || "";
+    }
+
+    async function loadIdeas() {
+      if (!asset) return;
+      const stem = asset;
+      const data = await factoryJson(`/2d/${encodeURIComponent(stem)}/ideas`).catch(() => null);
+      if (stem !== asset) return;
+      ideasData = data;
+      if (data && data.prompt && ideasPrompt && !ideasPrompt.value) ideasPrompt.value = data.prompt;
+      if (data && !data.still && !ideasDrawing) ideasSay("No local image model. Install mflux to draw ideas.");
+      renderIdeas();
+    }
+
+    function renderIdeas() {
+      if (!ideasGrid) return;
+      ideasGrid.innerHTML = "";
+      const items = (ideasData && ideasData.items) || [];
+      for (const item of items) {
+        const card = document.createElement("div");
+        card.className = "idea" + (item.keep ? " is-kept" : "") + (item.used ? " is-used" : "");
+        const img = document.createElement("img");
+        img.alt = item.prompt || item.file;
+        img.title = `Seed ${item.seed}`;
+        img.src = `/out/${encodeURIComponent(asset)}/ideas/${item.file}?s=${item.seed}`;
+        img.addEventListener("click", () => window.open(img.src, "_blank"));
+        const acts = document.createElement("div");
+        acts.className = "idea-acts";
+        const keep = document.createElement("button");
+        keep.type = "button";
+        keep.textContent = item.keep ? "Kept" : "Keep";
+        keep.setAttribute("aria-pressed", String(!!item.keep));
+        keep.addEventListener("click", () => keepIdea(item.file, !item.keep));
+        const use = document.createElement("button");
+        use.type = "button";
+        use.textContent = item.used ? "In use" : "Use";
+        use.title = "Make this the concept. 2D, 3D and the stack start from it.";
+        use.addEventListener("click", () => useIdea(item.file));
+        acts.append(keep, use);
+        card.append(img, acts);
+        ideasGrid.appendChild(card);
+      }
+      for (let i = 0; i < ideasDrawing; i++) {
+        const slot = document.createElement("div");
+        slot.className = "idea-slot";
+        slot.textContent = i === 0 ? "Drawing…" : "Waiting…";
+        ideasGrid.appendChild(slot);
+      }
+      if (!items.length && !ideasDrawing) ideasSay("No ideas yet. Describe the thing below.");
+    }
+
+    async function drawIdeas(prompt, count) {
+      const stem = asset;
+      const text = (prompt || "").trim();
+      if (!stem || !text || ideasDrawing) return;
+      ideasDrawing = count;
+      ideasSay("Each picture can take a minute.");
+      renderIdeas();
+      try {
+        while (ideasDrawing > 0) {
+          await flatPost("/2d/idea", { stem, prompt: text });
+          ideasDrawing -= 1;
+          if (stem === asset) await loadIdeas();
+        }
+        if (stem === asset) ideasSay("");
+      } catch (err) {
+        if (stem === asset) ideasSay(err.message || String(err));
+      } finally {
+        ideasDrawing = 0;
+        if (stem === asset) renderIdeas();
+      }
+    }
+
+    async function keepIdea(file, keep) {
+      try {
+        ideasData = await flatPost("/2d/keep", { stem: asset, file, keep });
+        renderIdeas();
+      } catch (err) {
+        ideasSay(err.message || String(err));
+      }
+    }
+
+    async function useIdea(file) {
+      try {
+        await flatPost("/2d/use", { stem: asset, file });
+        await refreshFlow();
+        await enterStage("concept");
+        await refreshAssets(asset);
+      } catch (err) {
+        ideasSay(err.message || String(err));
+      }
+    }
+
+    document.getElementById("ideas-more").addEventListener("submit", (e) => {
+      e.preventDefault();
+      drawIdeas(ideasPrompt.value, 4).catch(console.error);
+    });
+    document.getElementById("ideas-clear").addEventListener("click", async () => {
+      try {
+        ideasData = await flatPost("/2d/clear", { stem: asset });
+        renderIdeas();
+      } catch (err) {
+        ideasSay(err.message || String(err));
+      }
+    });
+
+    async function freshStem(base) {
+      const list = await factoryJson("/assets").catch(() => ({ assets: [] }));
+      const taken = new Set((list.assets || []).map((a) => a.id));
+      let stem = base;
+      for (let n = 2; taken.has(stem); n++) stem = `${base}-${n}`;
+      return stem;
+    }
+
+    // Home with a prompt and no picture: start a new asset on the Ideas grid.
+    async function startIdeas(prompt) {
+      const stem = await freshStem(flatName(prompt, null));
+      const label = genGo.textContent;
+      genGo.disabled = true;
+      genGo.textContent = "Drawing…";
+      setGenStatus("Drawing the first idea. This can take a minute.", "running");
+      try {
+        await flatPost("/2d/idea", { stem, prompt });
+      } catch (err) {
+        setGenStatus(err.message || String(err), "error");
+        return;
+      } finally {
+        genGo.disabled = false;
+        genGo.textContent = label;
+      }
+      setGenStatus("", "ok");
+      if (ideasPrompt) ideasPrompt.value = prompt;
+      await openAsset(stem);
+      await enterStage("ideas");
+      await drawIdeas(prompt, 3);
+    }
+
+    function flatSay(text) {
+      const el = document.getElementById("flat-status");
+      if (el) el.textContent = text || "";
+    }
+
+    function audioStatus(text) {
+      const el = document.getElementById("audio-status");
+      if (el) el.textContent = text || "";
+    }
+
+    const STEP_RUNNING = {
+      pieces: "Cutting separate shapes.",
+      motion: "Packing the motion.",
+      say: "Speaking.",
+      sound: "Writing the sound.",
+    };
+
+    function bindPlayer(id, rel) {
+      const player = document.getElementById(id);
+      if (!player) return;
+      if (rel && asset) {
+        player.hidden = false;
+        player.src = `/2d/${encodeURIComponent(asset)}/${rel}?t=${Date.now()}`;
+      } else {
+        player.hidden = true;
+        player.removeAttribute("src");
+      }
+    }
+
+    function audioSubject() {
+      if (workflow === "2d") return flatIndex >= 0 ? flatParts[flatIndex] : null;
+      return audioAsset;
+    }
+
+    function readAudio() {
+      const p = audioSubject();
+      if (!p) return null;
+      p.line = document.getElementById("audio-line").value;
+      p.projectile = document.getElementById("audio-effect").value;
+      p.speaker = document.getElementById("audio-speaker").value;
+      return p;
+    }
+
+    function fillAudio() {
+      const p = audioSubject();
+      const who = document.getElementById("audio-who");
+      if (who) who.textContent = workflow === "2d" ? (p ? (p.name || p.id) : "Select a part") : "This asset";
+      const line = document.getElementById("audio-line");
+      const effect = document.getElementById("audio-effect");
+      const speaker = document.getElementById("audio-speaker");
+      if (!line || !effect || !speaker) return;
+      line.value = p ? (p.line || "") : "";
+      effect.value = p ? (p.projectile || p.motion || "") : "";
+      const want = (p && p.speaker) || "af_heart";
+      speaker.value = want;
+      if (speaker.value !== want) speaker.value = "af_heart";
+      let soundRel = (p && p.sound) || "";
+      let voiceRel = (p && p.voice) || "";
+      if (!soundRel && assetHear.sound && audioAsset.sound === assetHear.sound) soundRel = audioAsset.sound;
+      if (!voiceRel && assetHear.voice && audioAsset.voice === assetHear.voice) voiceRel = audioAsset.voice;
+      bindPlayer("audio-sfx", soundRel);
+      bindPlayer("audio-voice", voiceRel);
+    }
+
+    function drawFlat() {
+      const box = document.getElementById("flat-parts");
+      if (!box) return;
+      box.innerHTML = "";
+      flatParts.forEach((p, i) => {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "flat-part" + (i === flatIndex ? " on" : "");
+        const img = document.createElement("img");
+        img.src = `/2d/${encodeURIComponent(asset)}/${p.file}?t=${Date.now()}`;
+        img.alt = p.name || ("Piece " + (i + 1));
+        const cap = document.createElement("span");
+        cap.textContent = p.name || ("Piece " + (i + 1));
+        card.append(img, cap);
+        card.addEventListener("click", () => {
+          readAudio();
+          flatIndex = i;
+          fillAudio();
+          drawFlat();
+        });
+        box.appendChild(card);
+      });
+    }
+
+    async function loadAudio() {
+      if (!asset) return;
+      const sheet = await factoryJson("/2d/" + encodeURIComponent(asset)).catch(() => null);
+      const mech = new Map();
+      for (const row of (sheet && sheet.mechanics) || []) {
+        if (row.file) mech.set(row.file, row);
+        if (row.id) mech.set(row.id, row);
+      }
+      flatParts = ((sheet && sheet.parts) || []).map((p) => {
+        const extra = mech.get(p.file) || mech.get(p.id) || {};
+        return Object.assign({}, p, {
+          name: extra.name || p.name || "",
+          role: extra.role || p.role || "other",
+          motion: extra.motion || "",
+          projectile: extra.projectile || "",
+          line: extra.line || "",
+          speaker: extra.speaker || "af_heart",
+          sound: extra.sound || "",
+          voice: extra.voice || "",
+        });
+      });
+      const assetRow = mech.get("asset") || {};
+      audioAsset = {
+        id: "asset",
+        line: assetRow.line || "",
+        speaker: assetRow.speaker || "af_heart",
+        projectile: assetRow.projectile || assetRow.motion || "",
+        sound: assetRow.sound || "",
+        voice: assetRow.voice || "",
+      };
+      if (!flatParts.length) flatIndex = -1;
+      else if (flatIndex < 0 || flatIndex >= flatParts.length) flatIndex = 0;
+      const note = document.getElementById("flat-note");
+      if (note) note.value = (sheet && sheet.note) || "";
+      const center = sheet && typeof sheet.center === "string" ? sheet.center : "";
+      showStage(center === "source", center);
+      const revise = document.getElementById("flat-revise-prompt");
+      const homePrompt = document.getElementById("gen-prompt");
+      if (revise && homePrompt && !revise.value) revise.value = homePrompt.value;
+      drawFlat();
+      fillAudio();
+    }
+
+    function showStage(hasSource, stripRel) {
+      const img = document.getElementById("flat-source");
+      const strip = document.getElementById("flat-strip");
+      const empty = document.getElementById("flat-empty");
+      if (typeof stripRel !== "string" || !/^sheets\/[a-z0-9][a-z0-9-]{0,40}\.png$/.test(stripRel)) {
+        stripRel = "";
+      }
+      if (stripRel) {
+        strip.hidden = false;
+        strip.src = `/2d/${encodeURIComponent(asset)}/${stripRel}?t=${Date.now()}`;
+        if (img) img.hidden = true;
+        if (empty) empty.hidden = true;
+        return;
+      }
+      if (strip) {
+        strip.hidden = true;
+        strip.removeAttribute("src");
+      }
+      if (hasSource && img) {
+        img.hidden = false;
+        img.src = `/2d/${encodeURIComponent(asset)}/source?t=${Date.now()}`;
+        if (empty) empty.hidden = true;
+      } else if (img) {
+        img.hidden = true;
+        if (empty) empty.hidden = false;
+      }
+    }
+
+    async function refreshAudioFlags() {
+      try {
+        flatFlags = await factoryJson("/2d/status");
+      } catch {
+        flatFlags = {};
+      }
+      const speak = document.getElementById("audio-speak");
+      const sound = document.getElementById("audio-sound");
+      if (speak) {
+        speak.disabled = !flatFlags.voice;
+        speak.title = flatFlags.voice ? "Speak the line with Kokoro." : "Install mlx-audio to speak.";
+      }
+      if (sound) {
+        const mode = flatFlags.sfx_mode || "stub";
+        sound.disabled = mode === "no-runner";
+        sound.title = mode === "ready"
+          ? "Render a one-shot effect."
+          : mode === "no-runner"
+            ? "SFX weights are installed. Set FLAT2D_SFX_CMD."
+            : "Writes a stand-in wav.";
+      }
+    }
+
+    function flatName(prompt, file) {
+      const raw = (prompt || (file && file.name.replace(/\.[^.]+$/, "")) || "sheet").toLowerCase();
+      const slug = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+      return slug || "sheet";
+    }
+
+    function pickedGenSteps() {
+      return [...document.querySelectorAll("[data-gen-step][aria-pressed='true']")].map((btn) => btn.dataset.genStep);
+    }
+
+    function genStepText(id) {
+      const field = document.getElementById(id);
+      return (field && field.value || "").trim();
+    }
+
+    async function flatPost(path, body) {
+      return factoryJson(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+
+    async function clipFields(files) {
+      const video = files.find((file) => /^video\//.test(file.type) || /\.(mp4|webm)$/i.test(file.name));
+      if (video) return { video: arrayBufferToBase64(await video.arrayBuffer()) };
+      const frames = [];
+      for (const file of files) frames.push(arrayBufferToBase64(await file.arrayBuffer()));
+      return { frames };
+    }
+
+    async function runPickedSteps(stem, prompt) {
+      const bag = { notes: [], pieces: false, hear: "", center: "", ranPieces: false };
+      for (const step of pickedGenSteps()) {
+        setGenStatus(STEP_RUNNING[step] || "", "running");
+        const body = {
+          stem,
+          when: "home",
+          prompt,
+          steps: [step],
+          speaker: "af_heart",
+          part: "asset",
+        };
+        try {
+          if (step === "pieces") body.pieces = genStepText("gen-pieces");
+          else if (step === "motion") {
+            body.motion = genStepText("gen-motion");
+            const files = Array.from(document.getElementById("gen-clip").files || []);
+            if (files.length) Object.assign(body, await clipFields(files));
+          } else if (step === "say") body.say = genStepText("gen-say");
+          else if (step === "sound") body.sound = genStepText("gen-sound");
+          const data = await flatPost("/2d/steps", body);
+          for (const note of data.notes || []) bag.notes.push(note);
+          if (data.pieces) bag.pieces = true;
+          if (data.hear) bag.hear = data.hear;
+          if (typeof data.center === "string" && data.center) bag.center = data.center;
+          if (step === "pieces" && Array.isArray(data.ran) && data.ran.includes("pieces")) bag.ranPieces = true;
+        } catch (err) {
+          bag.notes.push(err.message || String(err));
+        }
+      }
+      return bag;
+    }
+
+    async function startFlatJob() {
+      const files = refs.filter((item) => item.kind === "file").map((item) => item.file);
+      if (!files.length) files.push(...Array.from(genFile.files || []));
+      const prompt = (genPrompt.value || "").trim();
+      const file = files[0];
+      if (!file && !prompt) {
+        setGenStatus("describe the thing or attach a picture", "error");
+        return;
+      }
+      const stem = flatName(prompt, file);
+      const label = genGo.textContent;
+      genGo.disabled = true;
+      genGo.dataset.busy = "1";
+      genGo.textContent = file ? "Opening…" : "Generating…";
+      genPrompt.disabled = true;
+      setGenStatus(
+        file
+          ? (files.length > 1 ? "Using the first picture." : "Opening the picture.")
+          : "Drawing the still. This can take a minute.",
+        "running",
+      );
+      try {
+        if (file) {
+          const buf = await file.arrayBuffer();
+          await factoryJson("/2d/drop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ stem, data: arrayBufferToBase64(buf) }),
+          });
+        } else {
+          await factoryJson("/2d/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ stem, prompt }),
+          });
+        }
+        const extra = await runPickedSteps(stem, prompt);
+        asset = stem;
+        await openAsset(stem);
+        if (typeof extra.center === "string" && extra.center) showStage(true, extra.center);
+        if (extra.pieces) setFlatMode("pieces");
+        if (extra.hear) flatHear(extra.hear);
+        const summaryNotes = extra.notes.slice();
+        if (!extra.ranPieces && flatParts.length) summaryNotes.push("Pieces still show the previous still.");
+        const summary = summaryNotes.join(" ");
+        flatSay(summary);
+        setGenStatus(summary || (file ? "sheet ready" : "generated"), "ok");
+      } catch (err) {
+        setGenStatus(err.message || String(err), "error");
+      } finally {
+        genGo.disabled = false;
+        genGo.dataset.busy = "";
+        genGo.textContent = label;
+        genPrompt.disabled = false;
+      }
+    }
+
+    const FLAT_MODES = {
+      picture: "Describe a change…",
+      motion: "Name the motion…",
+      pieces: "Name the pieces…",
+      say: "What it says…",
+      sound: "The sound it makes…",
+    };
+
+    function setFlatMode(mode) {
+      const next = FLAT_MODES[mode] ? mode : "picture";
+      document.body.dataset.flatMode = next;
+      const field = document.getElementById("flat-revise-prompt");
+      if (field) field.placeholder = FLAT_MODES[next];
+      document.querySelectorAll("#step-bar [data-mode]").forEach((btn) => {
+        btn.setAttribute("aria-pressed", String(btn.dataset.mode === next));
+      });
+      document.querySelectorAll(".cubby").forEach((box) => setCubbyCollapsed(box, true));
+      const stage = document.getElementById("flat-stage");
+      if (stage) stage.classList.remove("is-motion", "is-pieces");
+    }
+
+    function flatHear(rel) {
+      const player = document.getElementById("flat-hear");
+      if (!player || !rel || !asset) return;
+      player.hidden = false;
+      player.src = `/2d/${encodeURIComponent(asset)}/${rel}?t=${Date.now()}`;
+      player.play().catch(() => {});
+    }
+
+    function flatAudioPart() {
+      if (flatIndex >= 0 && flatParts[flatIndex]) return flatParts[flatIndex];
+      return audioAsset && audioAsset.id ? audioAsset : { id: "asset", speaker: "af_heart" };
+    }
+
+    document.getElementById("flat-clip").addEventListener("change", () => {
+      const files = Array.from(document.getElementById("flat-clip").files || []);
+      const name = document.getElementById("flat-clip-name");
+      if (name) name.textContent = files.length ? files[0].name : "Clip";
+    });
+
+    document.getElementById("flat-revise").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!asset) return;
+      const mode = document.body.dataset.flatMode || "picture";
+      const field = document.getElementById("flat-revise-prompt");
+      const prompt = (field.value || "").trim();
+      const btn = e.target.querySelector("button");
+      if (mode === "picture") {
+        if (!prompt) { flatSay("Describe the change first."); return; }
+        const hadParts = flatParts.length > 0;
+        btn.disabled = true;
+        btn.textContent = "Generating…";
+        flatSay("Drawing the still. This can take a minute.");
+        try {
+          await factoryJson("/2d/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ stem: asset, prompt }),
+          });
+          showStage(true, "");
+          flatSay(hadParts ? "Pieces still show the previous still." : "");
+        } catch (err) {
+          flatSay(err.message || String(err));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Generate";
+        }
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Generating…";
+      flatSay(STEP_RUNNING[mode] || "");
+      try {
+        const part = flatAudioPart();
+        const body = {
+          stem: asset,
+          when: "revise",
+          steps: [mode],
+          part: (part && part.id) || "",
+          speaker: (part && part.speaker) || "af_heart",
+        };
+        if (mode === "pieces") body.pieces = prompt;
+        else if (mode === "motion") {
+          body.motion = prompt;
+          const files = Array.from(document.getElementById("flat-clip").files || []);
+          if (files.length) Object.assign(body, await clipFields(files));
+        } else if (mode === "say") body.say = prompt;
+        else if (mode === "sound") body.sound = prompt;
+        const data = await flatPost("/2d/steps", body);
+        if (typeof data.center === "string" && data.center) showStage(true, data.center);
+        if (mode === "pieces" && Array.isArray(data.parts)) {
+          flatParts = data.parts;
+          flatIndex = flatParts.length ? 0 : -1;
+          drawFlat();
+          fillAudio();
+        }
+        if (data.hear) {
+          if (mode === "say" && part && String(data.hear).startsWith("voices/")) {
+            part.line = prompt;
+            part.voice = data.hear;
+          }
+          if (mode === "sound" && part && String(data.hear).startsWith("sounds/")) {
+            part.projectile = prompt;
+            part.sound = data.hear;
+          }
+          fillAudio();
+          flatHear(data.hear);
+        }
+        flatSay((data.notes || []).join(" "));
+      } catch (err) {
+        flatSay(err.message || String(err));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Generate";
+      }
+    });
+
+    document.getElementById("audio-sound").addEventListener("click", async () => {
+      if (!asset) { audioStatus("Open an asset."); return; }
+      const effect = document.getElementById("audio-effect").value;
+      const speaker = document.getElementById("audio-speaker").value || "af_heart";
+      audioAsset.line = document.getElementById("audio-line").value;
+      audioAsset.projectile = effect;
+      audioAsset.speaker = speaker;
+      audioStatus("Writing the sound.");
+      try {
+        const data = await flatPost("/2d/steps", {
+          stem: asset,
+          when: "revise",
+          steps: ["sound"],
+          sound: effect || "",
+          part: "asset",
+          speaker,
+        });
+        if (data.hear && String(data.hear).startsWith("sounds/")) {
+          audioAsset.sound = data.hear;
+          assetHear.sound = data.hear;
+          bindPlayer("audio-sfx", data.hear);
+        }
+        audioStatus((data.notes || []).join(" "));
+      } catch (err) { audioStatus(err.message || String(err)); }
+    });
+
+    document.getElementById("audio-speak").addEventListener("click", async () => {
+      if (!asset) { audioStatus("Open an asset."); return; }
+      const line = document.getElementById("audio-line").value;
+      const speaker = document.getElementById("audio-speaker").value || "af_heart";
+      audioAsset.line = line;
+      audioAsset.projectile = document.getElementById("audio-effect").value;
+      audioAsset.speaker = speaker;
+      audioStatus("Speaking.");
+      try {
+        const data = await flatPost("/2d/steps", {
+          stem: asset,
+          when: "revise",
+          steps: ["say"],
+          say: line || "",
+          part: "asset",
+          speaker,
+        });
+        if (data.hear && String(data.hear).startsWith("voices/")) {
+          audioAsset.voice = data.hear;
+          assetHear.voice = data.hear;
+          bindPlayer("audio-voice", data.hear);
+        }
+        audioStatus((data.notes || []).join(" "));
+      } catch (err) { audioStatus(err.message || String(err)); }
+    });
+
+    async function startGenerateJob(spec) {
+      try {
+        return await factoryJson("/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(spec),
+        });
+      } catch (err) {
+        if ((spec.images || []).length > 1 || spec.prompt) throw err;
+        const viaWails = wailsByName(WAILS_GENERATE, spec.image, spec.stem, spec.quality, spec.poly);
+        if (viaWails) return viaWails;
+        throw err;
+      }
+    }
+
+    async function factoryJson(path, opts) {
+      let res;
+      let last;
+      for (let i = 0; i < 24; i++) {
+        try {
+          res = await fetch(FACTORY + path, opts);
+          last = null;
+          break;
+        } catch (e) {
+          last = e;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      if (!res) {
+        const err = new Error("Factory failed to start");
+        err.cause = last;
+        throw err;
+      }
+      const text = await res.text();
+      let data = {};
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { error: text.trim() };
+        }
+      }
+      if (!res.ok) {
+        const err = new Error((data && data.error) || text.trim() || res.statusText || `HTTP ${res.status}`);
+        err.status = res.status;
+        err.payload = data;
+        throw err;
+      }
+      if (opts && opts.method === "POST" && /^\/(2d|paint)\//.test(path)) queueFlowRefresh();
+      return data;
+    }
+    const startLod = params.get("lod");
+
+    function meshUrls(stem, preferLod) {
+      const bust = Date.now();
+      const lod = preferLod || startLod || "lookdev";
+      return [
+        `/glb/${encodeURIComponent(stem)}?lod=${encodeURIComponent(lod)}&t=${bust}`,
+        `/glb/${encodeURIComponent(stem)}?lod=lookdev&t=${bust}`,
+        `/glb/${encodeURIComponent(stem)}?t=${bust}`,
+        `/out/${stem}/mesh_lookdev.glb?t=${bust}`,
+        `/out/${stem}/mesh_hero.glb?t=${bust}`,
+        `/out/${stem}/mesh.glb?t=${bust}`,
+        `/out/${stem}/textured.glb?t=${bust}`,
+      ];
+    }
+    const refEl = document.getElementById("ref");
+
+    async function fillTurnaround() {
+      if (!asset) {
+        refEl.innerHTML = "";
+        return;
+      }
+      const manifest = await fetch(`/out/${asset}/views.json`).then((r) => r.ok ? r.json() : null).catch(() => null);
+      refEl.innerHTML = "";
+      const views = manifest?.views?.length
+        ? manifest.views
+        : [{ id: "input", file: "input.jpg", role: "shape", label: "Input image" }];
+      for (const v of views) {
+        const fig = document.createElement("figure");
+        if (v.role === "shape") fig.dataset.role = "shape";
+        const img = document.createElement("img");
+        img.alt = v.label || v.id;
+        img.src = `/out/${asset}/${v.file}`;
+        const cap = document.createElement("span");
+        cap.textContent = v.label || v.id;
+        fig.append(img, cap);
+        refEl.appendChild(fig);
+      }
+    }
+
+    const meshPane = document.getElementById("mesh-pane");
+    const stackPane = document.getElementById("stack-pane");
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    meshPane.prepend(renderer.domElement);
+
+    function sizeMesh() {
+      const w = Math.max(1, meshPane.clientWidth);
+      const h = Math.max(1, meshPane.clientHeight);
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x10110f);
+    scene.fog = null;
+
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 200);
+    camera.position.set(1.7, 1.05, 2.2);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.7;
+    controls.minDistance = 0.4;
+    controls.maxDistance = 80;
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI;
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+    scene.add(new THREE.HemisphereLight(0xe8e2d4, 0x1a1c16, 0.55));
+    const key = new THREE.DirectionalLight(0xfff3d4, 1.35);
+    key.position.set(2.4, 3.2, 1.6);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(0x9bb08a, 0.55);
+    rim.position.set(-2.2, 1.4, -1.8);
+    scene.add(rim);
+
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(6, 64),
+      new THREE.MeshStandardMaterial({ color: 0x161714, roughness: 1, metalness: 0 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = 0;
+    scene.add(ground);
+
+    const blob = new THREE.Mesh(
+      new THREE.CircleGeometry(0.7, 48),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 })
+    );
+    blob.rotation.x = -Math.PI / 2;
+    blob.position.y = 0.003;
+    scene.add(blob);
+
+    const clay = new THREE.MeshStandardMaterial({
+      color: 0xb7c09a,
+      roughness: 0.62,
+      metalness: 0.08,
+      envMapIntensity: 0.7,
+    });
+
+    const status = document.getElementById("status");
+    const stats = document.getElementById("stats");
+    const spinBtn = document.getElementById("spin");
+    const wireBtn = document.getElementById("wire");
+    const texBtn = document.getElementById("tex");
+    const moveBtn = document.getElementById("move");
+    const cleanBtn = document.getElementById("clean-floaters");
+    const carveBtn = document.getElementById("carve");
+    const carveRadiusEl = document.getElementById("carve-radius");
+    const carveRadiusVal = document.getElementById("carve-radius-val");
+    const paintBtn = document.getElementById("paint");
+    const paintDropBtn = document.getElementById("paint-drop");
+    const paintEraseBtn = document.getElementById("paint-erase");
+    const paintUndoBtn = document.getElementById("paint-undo");
+    const paintSaveBtn = document.getElementById("paint-save");
+    const paintColorEl = document.getElementById("paint-color");
+    const paintRadiusEl = document.getElementById("paint-radius");
+    const paintRadiusVal = document.getElementById("paint-radius-val");
+    const stackPaintBtn = document.getElementById("stack-paint");
+    const lodsEl = document.getElementById("lods");
+    const clipsEl = document.getElementById("clips");
+    const assetsEl = document.getElementById("assets");
+    const homeAssetsEl = document.getElementById("home-assets");
+    const genMountHome = document.getElementById("gen-mount-home");
+    const genMountViewer = document.getElementById("gen-mount-viewer");
+    const genFormEl = document.getElementById("gen");
+
+    function placeGenForm(where) {
+      const mount = where === "viewer" ? genMountViewer : genMountHome;
+      if (mount && genFormEl && genFormEl.parentElement !== mount) mount.appendChild(genFormEl);
+    }
+
+    const titleEl = document.getElementById("title");
+    let titleBusy = false;
+
+    function displayStem(stem) {
+      return String(stem || "").replace(/-/g, " ");
+    }
+
+    function slugStem(name) {
+      const words = String(name || "")
+        .replace(/\.[^.]+$/, "")
+        .toLowerCase()
+        .match(/[a-z0-9]+/g) || [];
+      while (words.length && (words[0] === "a" || words[0] === "an" || words[0] === "the")) {
+        words.shift();
+      }
+      let slug = words.join("-").replace(/^-+|-+$/g, "");
+      if (slug.length > 40) {
+        slug = slug.slice(0, 40);
+        const dash = slug.lastIndexOf("-");
+        if (dash > 0) slug = slug.slice(0, dash);
+      }
+      return slug;
+    }
+
+    function setTitleState(stem, opts) {
+      const editable = !!(opts && opts.editable) && !!stem;
+      titleEl.value = stem ? displayStem(stem) : "New asset";
+      titleEl.dataset.stem = stem || "";
+      titleEl.readOnly = !editable;
+      titleEl.title = editable ? `Rename this asset. Saved as out/${stem}/` : "Name is set after generate";
+      const assetDelete = document.getElementById("asset-delete");
+      if (assetDelete) assetDelete.hidden = !stem;
+    }
+
+    async function commitRename() {
+      const old = titleEl.dataset.stem || "";
+      if (!old || titleEl.readOnly || titleBusy) {
+        if (old) titleEl.value = displayStem(old);
+        return;
+      }
+      const next = slugStem(titleEl.value);
+      if (!next || next === old) {
+        titleEl.value = displayStem(old);
+        return;
+      }
+      titleBusy = true;
+      try {
+        const res = await factoryJson(`/assets/${encodeURIComponent(old)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: titleEl.value }),
+        });
+        const dest = res.stem || next;
+        await openAsset(dest, { preferLod: currentLod || "lookdev" });
+      } catch (err) {
+        titleEl.value = displayStem(old);
+        alert(err.message || String(err));
+      } finally {
+        titleBusy = false;
+      }
+    }
+
+    titleEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        titleEl.blur();
+      }
+      if (e.key === "Escape") {
+        titleEl.value = displayStem(titleEl.dataset.stem || "");
+        titleEl.blur();
+      }
+    });
+    titleEl.addEventListener("blur", () => { commitRename(); });
+
+    function showHome() {
+      asset = "";
+      const next = new URL(location.href);
+      next.searchParams.delete("asset");
+      history.replaceState({}, "", next);
+      document.body.classList.remove("is-settings");
+      document.body.classList.add("is-home");
+      const settingsEl = document.getElementById("settings");
+      if (settingsEl) settingsEl.hidden = true;
+      setTitleState("", { editable: false });
+      placeGenForm("home");
+      if (typeof abandonGenerateWatch === "function") abandonGenerateWatch();
+    }
+
+    function showViewer() {
+      document.body.classList.remove("is-home", "is-settings");
+      document.body.classList.toggle("is-2d", workflow === "2d");
+      const settingsEl = document.getElementById("settings");
+      if (settingsEl) settingsEl.hidden = true;
+      placeGenForm("home");
+      closeSteps();
+    }
+
+    function showSettings() {
+      document.body.classList.remove("is-home");
+      document.body.classList.add("is-settings");
+      const settingsEl = document.getElementById("settings");
+      if (settingsEl) settingsEl.hidden = false;
+      refreshSettingsPanel();
+    }
+
+    function clearView(msg) {
+      while (root.children.length) root.remove(root.children[0]);
+      if (typeof stackLab !== "undefined" && stackLab) stackLab.unload();
+      status.dataset.ready = "false";
+      status.textContent = msg || "";
+      stats.textContent = "";
+      lodsEl.innerHTML = "";
+      clipsEl.innerHTML = "";
+      refEl.innerHTML = "";
+      framedOnce = false;
+    }
+
+    function removeAssetNodes(id) {
+      document.querySelectorAll(`[data-asset-id="${id}"]`).forEach((el) => el.remove());
+    }
+
+    function askConfirm(message) {
+      const pop = document.getElementById("ask");
+      const text = document.getElementById("ask-text");
+      const yes = document.getElementById("ask-yes");
+      const no = document.getElementById("ask-no");
+      text.textContent = message;
+      pop.hidden = false;
+      return new Promise((resolve) => {
+        const finish = (value) => {
+          pop.hidden = true;
+          yes.removeEventListener("click", onYes);
+          no.removeEventListener("click", onNo);
+          resolve(value);
+        };
+        const onYes = () => finish(true);
+        const onNo = () => finish(false);
+        yes.addEventListener("click", onYes);
+        no.addEventListener("click", onNo);
+      });
+    }
+
+    async function deleteAsset(id) {
+      const ok = await askConfirm(`Delete this generation from disk?\n\nout/${id}/\n\nLocal files only. This cannot be undone.`);
+      if (!ok) return;
+      const wasCurrent = id === asset;
+      removeAssetNodes(id);
+      if (wasCurrent) {
+        clearView();
+        showHome();
+      }
+      try {
+        await factoryJson(`/assets/${encodeURIComponent(id)}`, { method: "DELETE" });
+        const before = refs.length;
+        refs = refs.filter((item) => !(item.kind === "asset" && item.id === id));
+        if (refs.length !== before) renderRefThumbs();
+      } catch (err) {
+        const note = err.message || String(err);
+        const home = document.getElementById("gen-status");
+        if (home) home.textContent = note;
+        flatSay(note);
+      }
+      await refreshAssets(asset);
+    }
+
+    function bindDelete(btn, id) {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        deleteAsset(id);
+      });
+    }
+
+    const assetDeleteBtn = document.getElementById("asset-delete");
+    if (assetDeleteBtn) {
+      assetDeleteBtn.addEventListener("click", () => {
+        const id = titleEl.dataset.stem || asset;
+        if (id) deleteAsset(id);
+      });
+    }
+
+    async function refreshAssets(activeId) {
+      const current = activeId || asset;
+      if (assetsEl) assetsEl.innerHTML = "";
+      if (homeAssetsEl) homeAssetsEl.innerHTML = "";
+      let assets = [];
+      try {
+        const data = await factoryJson("/assets");
+        assets = data.assets || [];
+      } catch {
+        assets = current ? [{ id: current, title: current.replace(/-/g, " ") }] : [];
+      }
+      for (const a of assets) {
+        if (!homeAssetsEl) continue;
+        const card = document.createElement("div");
+        card.className = "home-card";
+        card.dataset.assetId = a.id;
+        const cardOpen = document.createElement("button");
+        cardOpen.type = "button";
+        cardOpen.className = "home-card-open";
+        const shot = a.preview || a.input;
+        if (shot) {
+          const img = document.createElement("img");
+          img.alt = a.title || a.id;
+          img.src = `/out/${a.id}/${shot}`;
+          cardOpen.appendChild(img);
+        }
+        const meta = document.createElement("div");
+        meta.className = "home-card-meta";
+        const name = document.createElement("button");
+        name.type = "button";
+        name.className = "home-card-name";
+        name.textContent = a.title || a.id;
+        const cardDel = document.createElement("button");
+        cardDel.type = "button";
+        cardDel.className = "asset-del";
+        cardDel.textContent = "Delete";
+        cardDel.title = `Delete out/${a.id}/ from this machine`;
+        bindDelete(cardDel, a.id);
+        // An asset with only ideas has no picked picture yet; its card opens the grid.
+        const usable = shot && !(a.has_ideas && !a.has_flat && !a.has_mesh);
+        if (usable) {
+          const use = document.createElement("button");
+          use.type = "button";
+          use.className = "asset-use";
+          use.textContent = "Use";
+          use.title = "Use this picture for a 3D generation";
+          use.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            if (workflow !== "3d") setWorkflow("3d");
+            toggleAssetRef(a, shot);
+          });
+          meta.append(name, use, cardDel);
+        } else {
+          meta.append(name, cardDel);
+        }
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "asset-open";
+        openBtn.textContent = "Open";
+        openBtn.title = "Open this asset";
+        meta.insertBefore(openBtn, name.nextSibling);
+        const open = () => {
+          openAsset(a.id, { preferLod: "lookdev" }).catch((err) => {
+            status.textContent = err.message || String(err);
+          });
+        };
+        cardOpen.addEventListener("click", open);
+        cardOpen.title = "Open";
+        openBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          open();
+        });
+        name.addEventListener("click", open);
+        name.title = "Open";
+        card.append(cardOpen, meta);
+        homeAssetsEl.appendChild(card);
+      }
+      if (homeAssetsEl && !assets.length) {
+        const empty = document.createElement("p");
+        empty.className = "home-empty";
+        empty.textContent = "No assets yet. Prompt one into existence.";
+        homeAssetsEl.appendChild(empty);
+      }
+      syncGalleryPick();
+    }
+
+    function syncGalleryPick() {
+      document.querySelectorAll(".home-card").forEach((card) => {
+        const id = card.dataset.assetId || "";
+        const on = refs.some((item) => item.kind === "asset" && item.id === id);
+        card.classList.toggle("is-picked", on);
+        const use = card.querySelector(".asset-use");
+        if (use) {
+          use.textContent = on ? "Using" : "Use";
+          use.setAttribute("aria-pressed", String(on));
+        }
+        const open = card.querySelector(".home-card-open");
+        if (open) {
+          open.title = workflow === "3d" && open.querySelector("img")
+            ? "Use this picture for a 3D generation"
+            : "Open";
+        }
+      });
+    }
+    let texturedMats = [];
+    let clayMats = [];
+    let framedOnce = false;
+    let currentLod = startLod || "";
+    let mixer = null;
+    let actions = {};
+    let pieceHandles = [];
+    let moveOn = true;
+    const clock = new THREE.Clock();
+
+    const root = new THREE.Group();
+    scene.add(root);
+    const pixelLook = createPixelLook({ THREE, renderer, scene, camera, controls, subject: root, key, ground, blob });
+
+    const stackLab = createStackLab({
+      THREE,
+      OrbitControls,
+      pane: stackPane,
+      statsEl: document.getElementById("stack-stats"),
+      emptyEl: document.getElementById("stack-empty"),
+      sliders: {
+        root: document.getElementById("stack-dock"),
+        spacing: document.getElementById("spacing"),
+        spacingVal: document.getElementById("spacing-val"),
+        height: document.getElementById("height"),
+        heightVal: document.getElementById("height-val"),
+        layers: document.getElementById("layers"),
+        layersVal: document.getElementById("layers-val"),
+        texels: document.getElementById("texels"),
+        texelsVal: document.getElementById("texels-val"),
+        bright: document.getElementById("bright"),
+        brightVal: document.getElementById("bright-val"),
+        contrast: document.getElementById("contrast"),
+        contrastVal: document.getElementById("contrast-val"),
+        saturate: document.getElementById("saturate"),
+        saturateVal: document.getElementById("saturate-val"),
+        shade: document.getElementById("stack-shade"),
+        spin: document.getElementById("stack-spin"),
+        reset: document.getElementById("stack-reset"),
+        lookVoxel: document.getElementById("look-voxel"),
+        lookPlane: document.getElementById("look-plane"),
+        lookContour: document.getElementById("look-contour"),
+        pixel: document.getElementById("stack-pixel"),
+        main: document.getElementById("stack-main"),
+        outline: document.getElementById("stack-outline"),
+        pixelSize: document.getElementById("pixel-size"),
+        pixelSizeVal: document.getElementById("pixel-size-val"),
+        round: document.getElementById("round"),
+        roundVal: document.getElementById("round-val"),
+      },
+    });
+    bindPixelLookUi([pixelLook, stackLab.pixelLook]);
+    let viewLeader = "mesh";
+    const _syncSph = new THREE.Spherical();
+    const _syncOff = new THREE.Vector3();
+    controls.addEventListener("start", () => { viewLeader = "mesh"; });
+    stackLab.onDragStart(() => {
+      viewLeader = "stack";
+      controls.autoRotate = false;
+    });
+    stackLab.onDragEnd(() => {
+      viewLeader = "mesh";
+      controls.autoRotate = spinBtn.getAttribute("aria-pressed") === "true";
+    });
+    const carveBall = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0xc45c3a, transparent: true, opacity: 0.3, depthWrite: false })
+    );
+    carveBall.visible = false;
+    scene.add(carveBall);
+    const carveRay = new THREE.Raycaster();
+    const carveNdc = new THREE.Vector2();
+    let carveOn = false;
+    let paintOn = false;
+    let paintDrop = false;
+    let paintErase = false;
+    let paintCanvas = null;
+    let paintCtx = null;
+    let paintTexture = null;
+    let paintOrigCanvas = null;
+    let paintUndoCanvas = null;
+    const paintBall = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 20, 12),
+      new THREE.MeshBasicMaterial({ color: 0x2ecc71, transparent: true, opacity: 0.28, depthWrite: false })
+    );
+    paintBall.visible = false;
+    scene.add(paintBall);
+
+    function worldCarveRadius() {
+      const box = new THREE.Box3().setFromObject(root);
+      return box.getSize(new THREE.Vector3()).length() * Number(carveRadiusEl.value);
+    }
+
+    function carvePick(clientX, clientY) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      carveNdc.set(
+        ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+        -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
+      );
+      carveRay.setFromCamera(carveNdc, pixelLook.viewCamera());
+      const hits = carveRay.intersectObject(root, true);
+      return hits.find((h) => h.object.isMesh) || null;
+    }
+
+    sizeMesh();
+    stackLab.resize();
+    new ResizeObserver(() => {
+      sizeMesh();
+      stackLab.resize();
+    }).observe(meshPane);
+    new ResizeObserver(() => stackLab.resize()).observe(stackPane);
+
+    function fitDistance(size, cam, pad = 1.3) {
+      const vFov = cam.fov * Math.PI / 180;
+      const aspect = Math.max(cam.aspect, 0.08);
+      const halfV = Math.tan(vFov / 2);
+      const halfH = halfV * aspect;
+      const fitH = (size.y * pad) / (2 * halfV);
+      const fitW = (Math.max(size.x, size.z) * pad) / (2 * halfH);
+      return Math.max(fitH, fitW, 0.8);
+    }
+
+    function placeFittedCamera(target, dist) {
+      const dir = new THREE.Vector3(0.72, 0.38, 1).normalize();
+      camera.position.copy(target).addScaledVector(dir, dist);
+      controls.target.copy(target);
+      controls.minDistance = Math.max(0.3, dist * 0.2);
+      controls.maxDistance = Math.max(80, dist * 8);
+      camera.far = Math.max(200, dist * 20);
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+
+    function frameObject(object) {
+      sizeMesh();
+      const box = new THREE.Box3().setFromObject(object);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const longest = Math.max(size.x, size.y, size.z) || 1;
+      const scale = 1.35 / longest;
+      // Offset in scaled units, so a mesh whose origin is not its centre (psx.glb: feet on 0) still lands on the ground.
+      object.scale.setScalar(scale);
+      object.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+      const framed = new THREE.Box3().setFromObject(object);
+      const framedSize = framed.getSize(new THREE.Vector3());
+      const height = framedSize.y;
+      const target = new THREE.Vector3(0, height * 0.42, 0);
+      placeFittedCamera(target, fitDistance(framedSize, camera));
+    }
+
+    async function loadFirstGlb(urls) {
+      const loader = new GLTFLoader();
+      for (const url of urls) {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+          const ct = (res.headers.get("content-type") || "").toLowerCase();
+          if (ct.includes("application/json") && !ct.includes("gltf")) continue;
+          const buf = await res.arrayBuffer();
+          if (buf.byteLength < 12) continue;
+          const magic = new TextDecoder("ascii").decode(new Uint8Array(buf, 0, 4));
+          if (magic !== "glTF") continue;
+          const gltf = await new Promise((resolve, reject) => {
+            loader.parse(buf, "", resolve, reject);
+          });
+          return { url, gltf };
+        } catch (err) {
+          console.warn("skip", url, err);
+        }
+      }
+      throw new Error("no glb loaded");
+    }
+
+    function lodLabel(item) {
+      const faces = item.faces ? ` ${Number(item.faces).toLocaleString()}` : "";
+      return `${item.label}${faces}`;
+    }
+
+    function wrapPieces(gltfScene, spec) {
+      pieceHandles = [];
+      if (!spec || !spec.parts) return;
+      for (const part of spec.parts) {
+        if (!part.amp) continue;
+        const obj = gltfScene.getObjectByName(part.node || part.name);
+        if (!obj) continue;
+        const wrap = new THREE.Group();
+        wrap.name = `${part.name}_pivot`;
+        const parent = obj.parent || gltfScene;
+        parent.add(wrap);
+        wrap.position.fromArray(part.pivot);
+        wrap.attach(obj);
+        pieceHandles.push({
+          wrap,
+          axis: new THREE.Vector3().fromArray(part.axis).normalize(),
+          amp: part.amp,
+          hz: part.hz,
+        });
+      }
+    }
+
+    function setupClips(gltf) {
+      if (mixer) {
+        mixer.stopAllAction();
+        mixer = null;
+      }
+      actions = {};
+      clipsEl.innerHTML = "";
+      const clips = gltf.animations || [];
+      if (!clips.length) return;
+      mixer = new THREE.AnimationMixer(gltf.scene);
+      let first = null;
+      const prefer = ["Idle_A", "idle", "Walk", "walk"];
+      for (const clip of clips) {
+        const action = mixer.clipAction(clip);
+        action.enabled = true;
+        actions[clip.name] = action;
+        if (!first) first = clip.name;
+      }
+      for (const name of prefer) {
+        if (actions[name]) { first = name; break; }
+      }
+      for (const clip of clips) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = clip.name;
+        btn.dataset.clip = clip.name;
+        btn.title = `Play the “${clip.name}” animation on the mesh.`;
+        btn.addEventListener("click", () => {
+          for (const [n, a] of Object.entries(actions)) {
+            if (n === clip.name) a.reset().fadeIn(0.2).play();
+            else a.fadeOut(0.2);
+          }
+          for (const b of clipsEl.querySelectorAll("button")) {
+            b.setAttribute("aria-pressed", String(b.dataset.clip === clip.name));
+          }
+        });
+        clipsEl.appendChild(btn);
+      }
+      if (first) {
+        actions[first].play();
+        for (const b of clipsEl.querySelectorAll("button")) {
+          b.setAttribute("aria-pressed", String(b.dataset.clip === first));
+        }
+      }
+    }
+
+    async function loadFrom(urls, keepCamera) {
+      const t0 = performance.now();
+      const { url: glbUrl, gltf } = await loadFirstGlb(urls);
+      texturedMats = [];
+      clayMats = [];
+      pieceHandles = [];
+      let hasMap = false;
+      gltf.scene.traverse((obj) => {
+        if (!obj.isMesh) return;
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        if (String(currentLod).startsWith("pixel") && obj.geometry.index) {
+          obj.geometry = obj.geometry.toNonIndexed();
+          obj.geometry.deleteAttribute("normal");
+        }
+        if (!obj.geometry.attributes.normal) obj.geometry.computeVertexNormals();
+        const src = obj.material;
+        const mapped = !!(src && src.map);
+        hasMap = hasMap || mapped;
+        const painted = mapped ? src.clone() : clay.clone();
+        if (mapped) {
+          painted.color.set(0xffffff);
+          const hasMR = !!(src.metalnessMap || src.roughnessMap);
+          if (String(currentLod).startsWith("pixel")) {
+            painted.map.magFilter = THREE.NearestFilter;
+            painted.map.minFilter = THREE.NearestFilter;
+            painted.map.generateMipmaps = false;
+            painted.map.needsUpdate = true;
+            painted.metalness = 0;
+            painted.roughness = 1;
+            painted.envMapIntensity = 0;
+            painted.flatShading = true;
+          } else if (hasMR) {
+            // glTF metallic-roughness texture already drives G=rough / B=metal.
+            // Leave factors at the file values (usually 1) so the map is visible.
+            painted.metalness = src.metalness ?? 1;
+            painted.roughness = src.roughness ?? 1;
+            painted.envMapIntensity = 1.15;
+          } else {
+            painted.metalness = Math.min(painted.metalness ?? 0.12, 0.25);
+            painted.roughness = painted.roughness ?? 0.55;
+          }
+        }
+        const clayCopy = clay.clone();
+        obj.material = painted;
+        texturedMats.push(painted);
+        clayMats.push(clayCopy);
+        obj.userData.painted = painted;
+        obj.userData.clay = clayCopy;
+      });
+      texBtn.setAttribute("aria-pressed", String(hasMap));
+      texBtn.disabled = !hasMap;
+      const file = glbUrl.split("/").pop();
+      const isPixel = String(currentLod).startsWith("pixel") || /pixel/i.test(file) || /^psx/.test(file) || currentLod === "psx";
+      renderer.toneMapping = isPixel ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = isPixel ? 1.0 : 1.05;
+      if (isPixel) {
+        for (const m of texturedMats) {
+          if (!m.map) continue;
+          m.map.magFilter = THREE.NearestFilter;
+          m.map.minFilter = THREE.NearestFilter;
+          m.map.generateMipmaps = false;
+          m.map.needsUpdate = true;
+          m.metalness = 0;
+          m.roughness = 1;
+          m.envMapIntensity = 0;
+          m.flatShading = true;
+          m.needsUpdate = true;
+        }
+      }
+      if (file === "articulated.glb") {
+        const spec = await fetch(`/out/${asset}/articulated.json`).then((r) => r.ok ? r.json() : null).catch(() => null);
+        wrapPieces(gltf.scene, spec);
+      }
+      setupClips(gltf);
+      root.clear();
+      root.add(gltf.scene);
+      const skinned = [];
+      gltf.scene.traverse((o) => { if (o.isSkinnedMesh) skinned.push(o); });
+      // Scaling a SkinnedMesh's parent without rebinding crumples the bind pose.
+      sizeMesh();
+      if (skinned.length) {
+        gltf.scene.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const target = new THREE.Vector3(center.x, center.y + size.y * 0.08, center.z);
+        placeFittedCamera(target, fitDistance(size, camera));
+      } else {
+        frameObject(gltf.scene);
+      }
+      framedOnce = true;
+      const ms = Math.round(performance.now() - t0);
+      let vertCount = 0;
+      let faceCount = 0;
+      gltf.scene.traverse((obj) => {
+        if (!obj.isMesh || !obj.geometry) return;
+        const g = obj.geometry;
+        vertCount += g.attributes.position ? g.attributes.position.count : 0;
+        faceCount += g.index ? g.index.count / 3 : (g.attributes.position.count / 3);
+      });
+      const verts = Math.round(vertCount).toLocaleString();
+      const faces = Math.round(faceCount).toLocaleString();
+      stats.innerHTML = `<b>${verts}</b> verts · <b>${faces}</b> faces<br>loaded in ${ms} ms · ${file}`;
+      status.dataset.ready = "true";
+      status.textContent = "Ready — drag to orbit";
+      for (const btn of lodsEl.querySelectorAll("button")) {
+        btn.setAttribute("aria-pressed", String(btn.dataset.file === file));
+      }
+    }
+
+    async function pickAsset() {
+      const wanted = params.get("asset") || "";
+      if (!wanted) return "";
+      const list = await factoryJson("/assets").catch(() => ({ assets: [] }));
+      const ids = (list.assets || []).map((a) => a.id);
+      if (ids.includes(wanted)) return wanted;
+      return "";
+    }
+
+    async function openAsset(stem, opts) {
+      if (stem !== asset) {
+        flowStage = "";
+        ideasData = null;
+        const field = document.getElementById("ideas-prompt");
+        if (field) field.value = "";
+      }
+      asset = stem;
+      const next = new URL(location.href);
+      next.searchParams.set("asset", stem);
+      history.replaceState({}, "", next);
+      if (!opts?.keepOverlay && typeof abandonGenerateWatch === "function") abandonGenerateWatch();
+      showViewer();
+      if (!opts?.keepWorkflow) {
+        const decision = await factoryJson("/control/workflow?stem=" + encodeURIComponent(stem)).catch(() => null);
+        if (decision && decision.workflow === "2d") setWorkflow("2d", { skipAudio: true });
+        else if (decision && decision.workflow === "3d") setWorkflow("3d", { skipAudio: true });
+      }
+      showViewer();
+      await load(opts);
+    }
+
+    async function load(opts) {
+      if (!asset) {
+        clearView();
+        showHome();
+        await refreshAssets("");
+        return;
+      }
+      await fillTurnaround();
+      await refreshAssets(asset);
+      setTitleState(asset, { editable: true });
+      const bust = Date.now();
+      const manifest = await fetch(`/out/${asset}/lods.json?t=${bust}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+      lodsEl.innerHTML = "";
+      const prefer = (opts && opts.preferLod) || startLod || "lookdev";
+      let urls = meshUrls(asset, prefer);
+      if (manifest && Array.isArray(manifest.lods) && manifest.lods.length) {
+        for (const item of manifest.lods) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = lodLabel(item);
+          btn.dataset.id = item.id;
+          btn.dataset.file = item.file;
+          btn.title = `Show ${item.label || item.id} in the left pane (${item.file}).`;
+          if (item.kind === "stack" || String(item.id).startsWith("pixel")) continue;
+          btn.addEventListener("click", () => {
+            currentLod = item.id;
+            loadFrom(meshUrls(asset, item.id).concat([`/out/${asset}/${item.file}?t=${Date.now()}`]), true).catch(console.error);
+          });
+          lodsEl.appendChild(btn);
+        }
+        const meshLods = manifest.lods.filter((l) => l.kind !== "stack" && !String(l.id).startsWith("pixel"));
+        const wantPsx = prefer === "lookdev" && meshLods.some((l) => l.id === "psx");
+        const pick = meshLods.find((l) => l.id === (wantPsx ? "psx" : prefer))
+          || meshLods.find((l) => l.id === "lookdev")
+          || meshLods.find((l) => l.id === "pbr")
+          || meshLods.find((l) => l.id === "hero")
+          || meshLods[0];
+        if (pick) {
+          currentLod = pick.id;
+          urls = meshUrls(asset, pick.id);
+          urls.unshift(`/out/${asset}/${pick.file}?t=${bust}`);
+        }
+      }
+      if (workflow !== "2d") {
+        try {
+          await loadFrom(urls, false);
+        } catch (err) {
+          clearView(err.message || String(err));
+        }
+      }
+      try {
+        await stackLab.load(asset);
+      } catch (err) {
+        console.warn(err);
+      }
+      await loadAudio();
+      await refreshFlow();
+    }
+
+    spinBtn.addEventListener("click", () => {
+      controls.autoRotate = !controls.autoRotate;
+      spinBtn.setAttribute("aria-pressed", String(controls.autoRotate));
+    });
+    carveRadiusEl.addEventListener("input", () => {
+      carveRadiusVal.textContent = Number(carveRadiusEl.value).toFixed(2);
+    });
+    carveBtn.addEventListener("click", () => {
+      carveOn = !carveOn;
+      carveBtn.setAttribute("aria-pressed", String(carveOn));
+      controls.enableRotate = !carveOn;
+      carveBall.visible = false;
+    });
+    cleanBtn.addEventListener("click", async () => {
+      cleanBtn.disabled = true;
+      try {
+        const r = await factoryJson("/clean", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stem: asset, op: "floaters", keep: 1 }),
+        });
+        await loadFrom([`/out/${asset}/${r.file || "mesh_clean.glb"}?t=${Date.now()}`], true);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        cleanBtn.disabled = false;
+      }
+    });
+    renderer.domElement.addEventListener("pointermove", (e) => {
+      if (!carveOn) return;
+      const hit = carvePick(e.clientX, e.clientY);
+      if (!hit) {
+        carveBall.visible = false;
+        return;
+      }
+      carveBall.visible = true;
+      carveBall.position.copy(hit.point);
+      carveBall.scale.setScalar(worldCarveRadius());
+    });
+    renderer.domElement.addEventListener("pointerdown", async (e) => {
+      if (!carveOn || e.button !== 0) return;
+      const hit = carvePick(e.clientX, e.clientY);
+      if (!hit) return;
+      e.preventDefault();
+      const local = hit.object.worldToLocal(hit.point.clone());
+      const scale = hit.object.getWorldScale(new THREE.Vector3()).x || 1;
+      try {
+        await factoryJson("/clean", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stem: asset,
+            op: "sphere",
+            center: [local.x, local.y, local.z],
+            radius: worldCarveRadius() / scale,
+          }),
+        });
+        await loadFrom([`/out/${asset}/mesh_clean.glb?t=${Date.now()}`], true);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+
+    function hexToRgb(hex) {
+      const n = parseInt(String(hex).replace("#", ""), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    }
+    function rgbToHex(r, g, b) {
+      return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+    }
+    function worldPaintRadius() {
+      const box = new THREE.Box3().setFromObject(root);
+      const len = box.getSize(new THREE.Vector3()).length();
+      return (len || 1) * Number(paintRadiusEl.value);
+    }
+    function setPaintMode(on) {
+      paintOn = on;
+      if (on) {
+        carveOn = false;
+        carveBtn.setAttribute("aria-pressed", "false");
+        carveBall.visible = false;
+        controls.enableRotate = false;
+      } else if (!carveOn) {
+        controls.enableRotate = true;
+      }
+      paintBtn.setAttribute("aria-pressed", String(on));
+      stackPaintBtn.setAttribute("aria-pressed", String(on));
+      paintBall.visible = false;
+      stackLab.setRotateEnabled(!on);
+      stackLab.setBrush(null);
+    }
+    function ensurePaintCanvas() {
+      if (paintCanvas) return true;
+      let map = null;
+      root.traverse((o) => {
+        if (o.isMesh && o.material && o.material.map) map = o.material.map;
+      });
+      if (!map || !map.image) return false;
+      const img = map.image;
+      paintCanvas = document.createElement("canvas");
+      paintCanvas.width = img.width || 1024;
+      paintCanvas.height = img.height || 1024;
+      paintCtx = paintCanvas.getContext("2d");
+      paintCtx.drawImage(img, 0, 0);
+      paintOrigCanvas = document.createElement("canvas");
+      paintOrigCanvas.width = paintCanvas.width;
+      paintOrigCanvas.height = paintCanvas.height;
+      paintOrigCanvas.getContext("2d").drawImage(paintCanvas, 0, 0);
+      paintTexture = new THREE.CanvasTexture(paintCanvas);
+      paintTexture.colorSpace = map.colorSpace || THREE.SRGBColorSpace;
+      paintTexture.flipY = map.flipY;
+      paintTexture.needsUpdate = true;
+      root.traverse((o) => {
+        if (o.isMesh && o.material && o.material.map === map) {
+          o.material.map = paintTexture;
+          o.material.needsUpdate = true;
+        }
+      });
+      return true;
+    }
+    function stampUV(uv, radiusWorld, erase) {
+      if (!ensurePaintCanvas() || !uv) return;
+      const w = paintCanvas.width;
+      const h = paintCanvas.height;
+      const cx = uv.x * w;
+      const cy = (paintTexture.flipY ? 1 - uv.y : uv.y) * h;
+      const diag = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).length() || 1;
+      const pr = Math.max(1.5, (radiusWorld / diag) * w * 1.6);
+      paintCtx.save();
+      paintCtx.beginPath();
+      paintCtx.arc(cx, cy, pr, 0, Math.PI * 2);
+      paintCtx.clip();
+      if (erase && paintOrigCanvas) {
+        paintCtx.drawImage(paintOrigCanvas, 0, 0);
+      } else {
+        const [r, g, b] = hexToRgb(paintColorEl.value);
+        paintCtx.fillStyle = `rgb(${r},${g},${b})`;
+        paintCtx.beginPath();
+        paintCtx.arc(cx, cy, pr, 0, Math.PI * 2);
+        paintCtx.fill();
+      }
+      paintCtx.restore();
+      paintTexture.needsUpdate = true;
+    }
+    function beginPaintStroke() {
+      if (ensurePaintCanvas()) {
+        paintUndoCanvas = document.createElement("canvas");
+        paintUndoCanvas.width = paintCanvas.width;
+        paintUndoCanvas.height = paintCanvas.height;
+        paintUndoCanvas.getContext("2d").drawImage(paintCanvas, 0, 0);
+      }
+      stackLab.beginStroke();
+    }
+    function applyPaintAt(point, uv) {
+      const radius = worldPaintRadius();
+      const rgb = hexToRgb(paintColorEl.value);
+      if (uv) stampUV(uv, radius, paintErase);
+      stackLab.paintSphere(point, radius, rgb, paintErase);
+    }
+    paintRadiusEl.addEventListener("input", () => {
+      paintRadiusVal.textContent = Number(paintRadiusEl.value).toFixed(3);
+    });
+    paintBtn.addEventListener("click", () => setPaintMode(!paintOn));
+    stackPaintBtn.addEventListener("click", () => setPaintMode(!paintOn));
+    paintDropBtn.addEventListener("click", () => {
+      paintDrop = !paintDrop;
+      paintDropBtn.setAttribute("aria-pressed", String(paintDrop));
+    });
+    paintEraseBtn.addEventListener("click", () => {
+      paintErase = !paintErase;
+      paintEraseBtn.setAttribute("aria-pressed", String(paintErase));
+    });
+    paintUndoBtn.addEventListener("click", () => {
+      if (paintUndoCanvas && paintCtx) {
+        paintCtx.drawImage(paintUndoCanvas, 0, 0);
+        if (paintTexture) paintTexture.needsUpdate = true;
+      }
+      stackLab.undoStroke();
+    });
+    paintSaveBtn.addEventListener("click", async () => {
+      paintSaveBtn.disabled = true;
+      try {
+        const sheet = await stackLab.getSheetBlob();
+        if (sheet) {
+          await factoryJson(`/paint/stack?stem=${encodeURIComponent(asset)}`, {
+            method: "POST",
+            headers: { "Content-Type": "image/png" },
+            body: sheet,
+          });
+        }
+        if (paintCanvas) {
+          const blob = await new Promise((resolve) => paintCanvas.toBlob(resolve, "image/png"));
+          if (blob) {
+            await factoryJson(`/paint/mesh?stem=${encodeURIComponent(asset)}`, {
+              method: "POST",
+              headers: { "Content-Type": "image/png" },
+              body: blob,
+            });
+          }
+        }
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        paintSaveBtn.disabled = false;
+      }
+    });
+
+    function paintHover(point, from) {
+      const r = worldPaintRadius();
+      if (!paintOn || !point) {
+        paintBall.visible = false;
+        stackLab.setBrush(null);
+        return;
+      }
+      if (from === "stack") {
+        paintBall.visible = false;
+        stackLab.setBrush(point, r);
+      } else {
+        stackLab.setBrush(null);
+        paintBall.visible = true;
+        paintBall.position.copy(point);
+        paintBall.scale.setScalar(r);
+      }
+    }
+
+    renderer.domElement.addEventListener("pointermove", (e) => {
+      if (!paintOn) return;
+      const hit = carvePick(e.clientX, e.clientY);
+      paintHover(hit ? hit.point : null, "mesh");
+      if (hit && (e.buttons & 1) && !paintDrop) {
+        applyPaintAt(hit.point, hit.uv);
+      }
+    });
+    renderer.domElement.addEventListener("pointerdown", (e) => {
+      if (!paintOn || e.button !== 0) return;
+      const hit = carvePick(e.clientX, e.clientY);
+      if (!hit) return;
+      e.preventDefault();
+      if (paintDrop) {
+        if (hit.uv && ensurePaintCanvas()) {
+          const w = paintCanvas.width;
+          const h = paintCanvas.height;
+          const x = Math.floor(hit.uv.x * w);
+          const y = Math.floor((paintTexture.flipY ? 1 - hit.uv.y : hit.uv.y) * h);
+          const px = paintCtx.getImageData(x, y, 1, 1).data;
+          paintColorEl.value = rgbToHex(px[0], px[1], px[2]);
+        }
+        paintDrop = false;
+        paintDropBtn.setAttribute("aria-pressed", "false");
+        return;
+      }
+      beginPaintStroke();
+      applyPaintAt(hit.point, hit.uv);
+    });
+
+    function bindStackPaint() {
+      const el = stackLab.canvas;
+      el.addEventListener("pointermove", (e) => {
+        if (!paintOn) return;
+        const hit = stackLab.pick(e.clientX, e.clientY);
+        paintHover(hit ? hit.point : null, "stack");
+        if (hit && (e.buttons & 1) && !paintDrop) {
+          applyPaintAt(hit.point, null);
+        }
+      });
+      el.addEventListener("pointerdown", (e) => {
+        if (!paintOn || e.button !== 0) return;
+        const hit = stackLab.pick(e.clientX, e.clientY);
+        if (!hit) return;
+        e.preventDefault();
+        if (paintDrop) {
+          const rgb = stackLab.sampleVoxel(hit.point);
+          if (rgb) paintColorEl.value = rgbToHex(rgb[0], rgb[1], rgb[2]);
+          paintDrop = false;
+          paintDropBtn.setAttribute("aria-pressed", "false");
+          return;
+        }
+        beginPaintStroke();
+        applyPaintAt(hit.point, null);
+      });
+    }
+    bindStackPaint();
+
+    const palCountEl = document.getElementById("pal-count");
+    const palCountVal = document.getElementById("pal-count-val");
+    palCountEl.addEventListener("input", () => {
+      palCountVal.textContent = palCountEl.value;
+    });
+    function renderSwatches() {
+      const box = document.getElementById("pal-swatches");
+      box.innerHTML = "";
+      const pal = stackLab.getPalette();
+      if (!pal || !pal.length) return;
+      const sel = stackLab.selectedPalette();
+      pal.forEach((e, i) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.style.background = `rgb(${e.r},${e.g},${e.b})`;
+        b.setAttribute("aria-pressed", String(i === sel));
+        b.title = `Swatch ${i + 1}. Paint uses this color.`;
+        b.addEventListener("click", () => {
+          stackLab.selectPalette(i);
+          paintColorEl.value = rgbToHex(e.r, e.g, e.b);
+          document.getElementById("pal-metal").value = e.metal;
+          document.getElementById("pal-metal-val").textContent = Number(e.metal).toFixed(2);
+          document.getElementById("pal-rough").value = e.rough;
+          document.getElementById("pal-rough-val").textContent = Number(e.rough).toFixed(2);
+          document.getElementById("pal-emit").value = e.emit;
+          document.getElementById("pal-emit-val").textContent = Number(e.emit).toFixed(2);
+          renderSwatches();
+        });
+        box.appendChild(b);
+      });
+    }
+    document.getElementById("pal-reduce").addEventListener("click", () => {
+      stackLab.quantize(Number(palCountEl.value));
+      const pal = stackLab.getPalette();
+      if (pal && pal[0]) paintColorEl.value = rgbToHex(pal[0].r, pal[0].g, pal[0].b);
+      renderSwatches();
+    });
+    function bindPalSlider(id, key) {
+      const el = document.getElementById(id);
+      const lab = document.getElementById(id + "-val");
+      el.addEventListener("input", () => {
+        const v = Number(el.value);
+        lab.textContent = v.toFixed(2);
+        const i = stackLab.selectedPalette();
+        const patch = { [key]: v };
+        stackLab.setPaletteEntry(i, patch);
+      });
+    }
+    bindPalSlider("pal-metal", "metal");
+    bindPalSlider("pal-rough", "rough");
+    bindPalSlider("pal-emit", "emit");
+    wireBtn.addEventListener("click", () => {
+      const on = wireBtn.getAttribute("aria-pressed") !== "true";
+      wireBtn.setAttribute("aria-pressed", String(on));
+      root.traverse((obj) => {
+        if (obj.isMesh) obj.material.wireframe = on;
+      });
+    });
+    moveBtn.addEventListener("click", () => {
+      moveOn = !moveOn;
+      moveBtn.setAttribute("aria-pressed", String(moveOn));
+      if (!moveOn) {
+        for (const p of pieceHandles) p.wrap.rotation.set(0, 0, 0);
+        if (mixer) {
+          mixer.stopAllAction();
+          for (const a of Object.values(actions)) a.reset();
+          mixer.update(0);
+        }
+      } else if (mixer) {
+        const first = Object.values(actions)[0];
+        first?.reset().play();
+      }
+    });
+    texBtn.addEventListener("click", () => {
+      if (texBtn.disabled) return;
+      const on = texBtn.getAttribute("aria-pressed") !== "true";
+      texBtn.setAttribute("aria-pressed", String(on));
+      root.traverse((obj) => {
+        if (!obj.isMesh) return;
+        obj.material = on ? obj.userData.painted : obj.userData.clay;
+        obj.material.wireframe = wireBtn.getAttribute("aria-pressed") === "true";
+      });
+    });
+
+    addEventListener("resize", () => {
+      sizeMesh();
+      stackLab.resize();
+    });
+
+    renderer.setAnimationLoop(() => {
+      const dt = clock.getDelta();
+      if (moveOn && mixer) mixer.update(dt);
+      if (moveOn && pieceHandles.length) {
+        const t = clock.elapsedTime;
+        for (const p of pieceHandles) {
+          const a = p.amp * Math.sin(t * p.hz * Math.PI * 2);
+          p.wrap.rotation.set(p.axis.x * a, p.axis.y * a, p.axis.z * a);
+        }
+      }
+      controls.update();
+      if (stackLab.isSync()) {
+        if (viewLeader === "stack") {
+          const v = stackLab.getView();
+          const radius = camera.position.distanceTo(controls.target);
+          _syncSph.set(radius, v.phi, v.theta);
+          _syncSph.makeSafe();
+          camera.position.copy(controls.target).add(_syncOff.setFromSpherical(_syncSph));
+          camera.lookAt(controls.target);
+          stackLab.tick(null);
+        } else {
+          _syncSph.setFromVector3(_syncOff.copy(camera.position).sub(controls.target));
+          stackLab.tick({ theta: _syncSph.theta, phi: _syncSph.phi });
+        }
+      } else {
+        stackLab.tick(null);
+      }
+      pixelLook.render();
+    });
+
+    window.__viewer = {
+      setAzimuth(theta) {
+        const t = controls.target.clone();
+        const offset = camera.position.clone().sub(t);
+        const spherical = new THREE.Spherical().setFromVector3(offset);
+        spherical.theta = theta;
+        camera.position.copy(t).add(new THREE.Vector3().setFromSpherical(spherical));
+        controls.update();
+      },
+      setView(theta, phi, distMul) {
+        const box = new THREE.Box3().setFromObject(root);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const longest = Math.max(size.x, size.y, size.z) || 1;
+        const sph = new THREE.Spherical(longest * (distMul || 2.4), phi ?? 1.15, theta ?? 0.7);
+        camera.position.copy(center).add(new THREE.Vector3().setFromSpherical(sph));
+        controls.target.copy(center);
+        controls.update();
+        return { size: size.toArray(), center: center.toArray() };
+      },
+      pause() { controls.autoRotate = false; spinBtn.setAttribute("aria-pressed", "false"); },
+      play() { controls.autoRotate = true; spinBtn.setAttribute("aria-pressed", "true"); },
+      materials() {
+        const out = [];
+        root.traverse((obj) => {
+          if (!obj.isMesh || !obj.material) return;
+          const m = obj.material;
+          out.push({
+            name: obj.name,
+            type: m.type,
+            metalness: m.metalness,
+            roughness: m.roughness,
+            hasMap: !!m.map,
+            hasMetalnessMap: !!m.metalnessMap,
+            hasRoughnessMap: !!m.roughnessMap,
+          });
+        });
+        return out;
+      },
+    };
+
+    const CUBBY_LABELS = {
+      generate: "Generate",
+      mesh: "Mesh",
+      cleanup: "Cleanup",
+      paint: "Paint",
+      lods: "LODs",
+      "stack-look": "Look",
+      "stack-sliders": "Stack",
+      "stack-palette": "Palette",
+      audio: "Audio",
+    };
+
+    function setCubbyCollapsed(box, collapsed) {
+      box.classList.toggle("is-collapsed", collapsed);
+      const toggle = box.querySelector(".cubby-toggle");
+      if (toggle) toggle.setAttribute("aria-expanded", String(!collapsed));
+    }
+
+    function syncCubbyTray() {
+      const tray = document.getElementById("cubby-tray");
+      if (!tray) return;
+      const hidden = [...document.querySelectorAll(".cubby.is-hidden")];
+      tray.innerHTML = "";
+      if (!hidden.length) {
+        tray.hidden = true;
+        return;
+      }
+      tray.hidden = false;
+      hidden.forEach((box) => {
+        const key = box.dataset.cubby;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "cubby-show";
+        btn.textContent = CUBBY_LABELS[key] || key;
+        btn.title = "Show " + btn.textContent;
+        btn.addEventListener("click", () => {
+          box.classList.remove("is-hidden");
+          setCubbyCollapsed(box, false);
+          syncCubbyTray();
+        });
+        tray.appendChild(btn);
+      });
+    }
+
+    function hideCubby(box) {
+      if (!box) return;
+      setCubbyCollapsed(box, true);
+      box.classList.add("is-hidden");
+      syncCubbyTray();
+    }
+
+    function hideAllCubbies() {
+      document.querySelectorAll(".cubby").forEach((box) => hideCubby(box));
+    }
+
+    function closeSteps() {
+      document.querySelectorAll(".cubby").forEach((box) => setCubbyCollapsed(box, true));
+      const stage = document.getElementById("flat-stage");
+      if (stage) stage.classList.remove("is-motion", "is-pieces");
+      document.querySelectorAll("#step-bar [data-step]").forEach((btn) => btn.setAttribute("aria-pressed", "false"));
+      setFlatMode("picture");
+    }
+
+    function openStep(name) {
+      const stage = document.getElementById("flat-stage");
+      if (stage) stage.classList.remove("is-motion", "is-pieces");
+      const box = document.querySelector(`.cubby[data-cubby="${name}"]`);
+      const already = box && !box.classList.contains("is-collapsed");
+      document.querySelectorAll(".cubby").forEach((c) => setCubbyCollapsed(c, true));
+      if (box && !already) setCubbyCollapsed(box, false);
+      document.querySelectorAll("#step-bar [data-step]").forEach((btn) => {
+        btn.setAttribute("aria-pressed", String(!already && btn.dataset.step === name));
+      });
+    }
+
+    document.getElementById("gen-steps")?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-gen-step]");
+      if (!btn) return;
+      const on = btn.getAttribute("aria-pressed") !== "true";
+      btn.setAttribute("aria-pressed", String(on));
+      const line = document.querySelector(`.gen-step-line[data-for="${btn.dataset.genStep}"]`);
+      if (line) line.hidden = !on;
+      if (on) {
+        const field = line && line.querySelector("input[type='text']");
+        if (field) field.focus();
+      }
+    });
+    document.getElementById("gen-clip")?.addEventListener("change", () => {
+      const files = Array.from(document.getElementById("gen-clip").files || []);
+      const name = document.getElementById("gen-clip-name");
+      if (name) name.textContent = files.length ? files[0].name : "Clip";
+    });
+
+    document.addEventListener("click", (e) => {
+      const modeBtn = e.target.closest("[data-mode]");
+      if (modeBtn) {
+        setFlatMode(modeBtn.dataset.mode);
+        return;
+      }
+      const btn = e.target.closest("[data-step]");
+      if (!btn) return;
+      openStep(btn.dataset.step);
+    });
+
+    document.querySelectorAll(".cubby-toggle").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const box = btn.closest(".cubby");
+        if (box) openStep(box.dataset.cubby);
+      });
+    });
+    document.querySelectorAll(".cubby-hide").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        hideCubby(btn.closest(".cubby"));
+      });
+    });
+    document.getElementById("cubby-hide-all")?.addEventListener("click", hideAllCubbies);
+    document.getElementById("home-suggest")?.addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-suggest]");
+      if (!chip) return;
+      const prompt = document.getElementById("gen-prompt");
+      if (!prompt) return;
+      prompt.value = chip.getAttribute("data-suggest") || "";
+      prompt.dispatchEvent(new Event("input"));
+      prompt.focus();
+    });
+    document.getElementById("home-btn")?.addEventListener("click", () => {
+      clearView();
+      showHome();
+      refreshAssets("");
+    });
+    document.getElementById("home-settings-btn")?.addEventListener("click", () => showSettings());
+    document.getElementById("nav-settings-btn")?.addEventListener("click", () => showSettings());
+    document.getElementById("app-version")?.addEventListener("click", () => showSettings());
+    document.getElementById("settings-check")?.addEventListener("click", () => checkForUpdates(true));
+    document.getElementById("settings-open-dir")?.addEventListener("click", () => {
+      openFactoryFolder().catch((err) => {
+        const dirEl = document.getElementById("settings-data-dir");
+        if (dirEl) {
+          dirEl.dataset.state = "error";
+          dirEl.textContent = err.message || String(err);
+        }
+      });
+    });
+    if (!onWailsEvent("update:installing", (ev) => {
+      const raw = ev && (Array.isArray(ev.data) ? ev.data[0] : ev.data);
+      updateState.updatingTo = typeof raw === "string" ? raw : "";
+      updateState.status = "downloading";
+      renderUpdateStatus();
+      showUpdateOverlay(updateState.updatingTo);
+    })) {
+      document.addEventListener("wails:ready", () => {
+        onWailsEvent("update:installing", (ev) => {
+          const raw = ev && (Array.isArray(ev.data) ? ev.data[0] : ev.data);
+          updateState.updatingTo = typeof raw === "string" ? raw : "";
+          updateState.status = "downloading";
+          renderUpdateStatus();
+          showUpdateOverlay(updateState.updatingTo);
+        });
+      }, { once: true });
+    }
+
+    (async () => {
+      try {
+        asset = await pickAsset();
+        if (asset) {
+          const next = new URL(location.href);
+          next.searchParams.set("asset", asset);
+          history.replaceState({}, "", next);
+          showViewer();
+          await load({ preferLod: startLod || "lookdev" });
+        } else {
+          showHome();
+          await refreshAssets("");
+        }
+      } catch (err) {
+        status.dataset.ready = "false";
+        status.textContent = "Failed to load mesh";
+        stats.textContent = String(err);
+        console.error(err);
+      }
+    })();
+
+    const genForm = document.getElementById("gen");
+    const genFile = document.getElementById("gen-file");
+    const genLabel = document.getElementById("gen-file-label");
+    const genThumbs = document.getElementById("gen-thumbs");
+    const genPrompt = document.getElementById("gen-prompt");
+    const genGo = document.getElementById("gen-go");
+    const genStatus = document.getElementById("gen-status");
+    function fitPrompt() {
+      genPrompt.style.height = "auto";
+      const next = Math.min(genPrompt.scrollHeight, 140);
+      genPrompt.style.height = Math.max(next, 42) + "px";
+      genPrompt.style.overflowY = genPrompt.scrollHeight > 140 ? "auto" : "hidden";
+    }
+    genPrompt.addEventListener("input", fitPrompt);
+    genPrompt.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        genForm.requestSubmit();
+      }
+    });
+    fitPrompt();
+    let refs = [];
+
+    function toggleAssetRef(entry, shot) {
+      const path = `out/${entry.id}/${shot}`;
+      const at = refs.findIndex((item) => item.kind === "asset" && item.path === path);
+      if (at >= 0) refs.splice(at, 1);
+      else refs.push({
+        kind: "asset",
+        id: entry.id,
+        path,
+        name: entry.title || entry.id,
+        url: `/out/${encodeURIComponent(entry.id)}/${shot}`,
+      });
+      renderRefThumbs();
+    }
+
+    function renderRefThumbs() {
+      genThumbs.innerHTML = "";
+      refs.forEach((item, i) => {
+        const fig = document.createElement("figure");
+        const img = document.createElement("img");
+        img.alt = item.kind === "file" ? item.file.name : item.name;
+        img.src = item.kind === "file" ? URL.createObjectURL(item.file) : item.url;
+        const drop = document.createElement("button");
+        drop.type = "button";
+        drop.textContent = "×";
+        drop.title = "Remove this reference";
+        drop.addEventListener("click", () => {
+          refs.splice(i, 1);
+          renderRefThumbs();
+        });
+        fig.append(img, drop);
+        genThumbs.appendChild(fig);
+      });
+      const counted = workflow === "2d" ? refs.filter((item) => item.kind === "file") : refs;
+      genLabel.textContent = counted.length
+        ? `${counted.length} ${workflow === "2d" ? "picture" : "reference image"}${counted.length === 1 ? "" : "s"}`
+        : (workflow === "2d" ? "Attach a flat picture" : "Attach reference images");
+      syncGalleryPick();
+    }
+    const genOverlay = document.getElementById("gen-overlay");
+    const genOverlayLog = document.getElementById("gen-overlay-log");
+    const genOverlayFill = document.getElementById("gen-overlay-fill");
+    const genOverlayPct = document.getElementById("gen-overlay-pct");
+    let genProgressMax = 0;
+
+    function setGenStatus(text, state) {
+      genStatus.textContent = text;
+      genStatus.dataset.state = state || "";
+    }
+
+    function healthLabel(h) {
+      if (!h) return "idle";
+      if (h.busy) return "busy";
+      if (h.backend === "mlx") return "Apple Silicon / MLX";
+      return h.gpu || "idle";
+    }
+
+    function inferProgress(log, step) {
+      const t = `${log || ""}\n${step || ""}`.toLowerCase();
+      const stages = [
+        [/upload/, 8, "Upload"],
+        [/lifting subject/, 18, "Isolate"],
+        [/shape|octree|mini-turbo/, 40, "Shape"],
+        [/reduce/, 55, "Reduce"],
+        [/paint|retexture/, 78, "Paint"],
+        [/psx low-poly/, 84, "PSX low-poly"],
+        [/inspect/, 88, "Inspect"],
+        [/sprite stack/, 95, "Sprite stack"],
+        [/generate_result|stack_result|opening inspector|ready ·/, 100, "Done"],
+      ];
+      let p = 4;
+      let label = "Starting";
+      for (const [re, pct, name] of stages) {
+        if (re.test(t)) {
+          p = pct;
+          label = name;
+        }
+      }
+      return { p, label };
+    }
+
+    let genWatching = false;
+
+    function abandonGenerateWatch() {
+      genWatching = false;
+      hideOverlay();
+    }
+
+    function showOverlay({ title, step, log, kicker, progress }) {
+      if (!genWatching) return;
+      genOverlay.hidden = false;
+      document.getElementById("gen-overlay-kicker").textContent = kicker || "Factory";
+      document.getElementById("gen-overlay-title").textContent = title || "Generating";
+      const inferred = inferProgress(log, step);
+      const pct = Math.max(genProgressMax, progress ?? inferred.p);
+      genProgressMax = pct;
+      document.getElementById("gen-overlay-step").textContent = step || inferred.label;
+      genOverlayFill.style.width = pct + "%";
+      genOverlayPct.textContent = `${inferred.label} · ${pct}%`;
+      genOverlayLog.textContent = log || "";
+      genOverlayLog.scrollTop = genOverlayLog.scrollHeight;
+    }
+
+    function hideOverlay() {
+      genOverlay.hidden = true;
+    }
+
+    function clearStage(msg) {
+      while (root.children.length) root.remove(root.children[0]);
+      stackLab.clear();
+      status.dataset.ready = "false";
+      status.textContent = msg || "Generating";
+      stats.textContent = "";
+      lodsEl.innerHTML = "";
+    }
+
+    function addRefFiles(fileList) {
+      const incoming = Array.from(fileList || []);
+      for (const file of incoming) {
+        if (file.type && !file.type.startsWith("image/")) continue;
+        if (!refs.some((item) => item.kind === "file" && item.file.name === file.name && item.file.size === file.size)) {
+          refs.push({ kind: "file", file });
+        }
+      }
+      renderRefThumbs();
+    }
+    genFile.addEventListener("change", () => {
+      addRefFiles(genFile.files);
+      genFile.value = "";
+    });
+    const genDropHost = document.querySelector(".home-float") || genForm;
+    ["dragenter", "dragover"].forEach((ev) => {
+      genDropHost?.addEventListener(ev, (e) => {
+        e.preventDefault();
+        genDropHost.classList.add("is-drop");
+      });
+    });
+    genDropHost?.addEventListener("dragleave", () => genDropHost.classList.remove("is-drop"));
+    genDropHost?.addEventListener("drop", (e) => {
+      e.preventDefault();
+      genDropHost.classList.remove("is-drop");
+      addRefFiles(e.dataTransfer?.files);
+    });
+
+    async function pollJob(jobId, stem) {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        let st;
+        try {
+          st = await factoryJson(`/status/${jobId}`);
+        } catch (err) {
+          setGenStatus(err.message, "error");
+          showOverlay({ title: "Factory lost", step: err.message, kicker: "Error" });
+          genGo.disabled = false;
+          return;
+        }
+        const tail = (st.log_tail || "").trim();
+        const last = tail.split("\n").filter(Boolean).pop() || st.state || "running";
+        if (st.state === "running") {
+          setGenStatus(last, "running");
+          showOverlay({
+            title: `Generating ${stem}`,
+            step: last,
+            log: tail,
+            kicker: "Working",
+          });
+          continue;
+        }
+        if (st.state === "ok") {
+          setGenStatus("done — opening " + stem, "ok");
+          if (!genWatching) {
+            genGo.disabled = false;
+            await refreshAssets(asset);
+            return;
+          }
+          showOverlay({ title: `Ready · ${stem}`, step: "Loading mesh…", kicker: "Done" });
+          try {
+            await openAsset(stem, { preferLod: "lookdev", keepOverlay: true });
+            hideOverlay();
+            genWatching = false;
+            genGo.disabled = false;
+            setGenStatus("ready", "ok");
+          } catch (err) {
+            showOverlay({
+              title: "Mesh did not load",
+              step: err.message || String(err),
+              kicker: "Error",
+            });
+            genGo.disabled = false;
+            setGenStatus(err.message || String(err), "error");
+          }
+          return;
+        }
+        const errText = st.error || st.state || "failed";
+        setGenStatus(errText, "error");
+        showOverlay({ title: "Generate failed", step: errText, log: tail, kicker: "Error" });
+        genGo.disabled = false;
+        return;
+      }
+    }
+
+    function applyVersion(label) {
+      if (!label) return;
+      let v = String(label).trim();
+      if (v.startsWith("Pipeline ")) v = v.slice(9).trim();
+      if (v && v !== "dev" && v[0] !== "v" && v[0] !== "V") v = "v" + v;
+      const text = "Pipeline " + v;
+      const chip = document.getElementById("app-version");
+      if (chip) chip.textContent = text;
+      document.title = text;
+      if (!updateState.version) updateState.version = v === "dev" ? "dev" : v.replace(/^v/i, "");
+      if (updateState.status === "idle" || updateState.status === "uptodate") {
+        renderUpdateStatus();
+      }
+    }
+
+    const updateState = { status: "idle", version: "", updatingTo: "", error: "" };
+
+    function showUpdateOverlay(version) {
+      const el = document.getElementById("update-overlay");
+      if (!el) return;
+      const title = document.getElementById("update-overlay-title");
+      const step = document.getElementById("update-overlay-step");
+      if (title) title.textContent = version ? `Updating to v${String(version).replace(/^v/i, "")}…` : "Updating…";
+      if (step) step.textContent = "Pipeline will restart.";
+      el.hidden = false;
+    }
+
+    function renderUpdateStatus() {
+      const hint = document.getElementById("settings-update-status");
+      const btn = document.getElementById("settings-check");
+      if (!hint) return;
+      const v = updateState.version || "dev";
+      const label = v === "dev" || String(v).startsWith("v") ? v : "v" + v;
+      if (updateState.status === "downloading") {
+        hint.dataset.state = "running";
+        hint.textContent = updateState.updatingTo
+          ? `Updating to v${String(updateState.updatingTo).replace(/^v/i, "")}… Pipeline will restart.`
+          : "Updating… Pipeline will restart.";
+        if (btn) btn.disabled = true;
+        return;
+      }
+      if (updateState.status === "checking") {
+        hint.dataset.state = "running";
+        hint.textContent = `Pipeline ${label} · Checking…`;
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "Checking…";
+        }
+        return;
+      }
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Check for Updates";
+      }
+      if (updateState.status === "error") {
+        hint.dataset.state = "error";
+        hint.textContent = updateState.error || "Check failed";
+        return;
+      }
+      if (updateState.status === "uptodate") {
+        hint.dataset.state = "ok";
+        hint.textContent = `Pipeline ${label} · Up to date`;
+        return;
+      }
+      hint.dataset.state = "";
+      hint.textContent = `Pipeline ${label}`;
+    }
+
+    function onWailsEvent(name, fn) {
+      const ev = (window.wails && window.wails.Events) || (window.runtime && window.runtime.Events);
+      if (ev && typeof ev.On === "function") {
+        ev.On(name, fn);
+        return true;
+      }
+      return false;
+    }
+
+    async function refreshSettingsPanel() {
+      renderUpdateStatus();
+      const dirEl = document.getElementById("settings-data-dir");
+      if (!dirEl) return;
+      try {
+        const via = wailsByName(WAILS_DATADIR);
+        if (via) {
+          const dir = await via;
+          if (dir) dirEl.textContent = String(dir);
+          return;
+        }
+        const j = await fetch("/paths").then((r) => r.json());
+        if (j && j.dataDir) dirEl.textContent = j.dataDir;
+      } catch (_) {
+        if (dirEl.textContent === "…") dirEl.textContent = "Factory folder unavailable";
+      }
+    }
+
+    async function checkForUpdates(manual) {
+      updateState.status = "checking";
+      updateState.error = "";
+      renderUpdateStatus();
+      try {
+        const via = wailsByName(WAILS_CHECK);
+        if (!via) {
+          if (manual) {
+            updateState.status = "error";
+            updateState.error = "Check for Updates runs in the desktop app.";
+          } else {
+            updateState.status = "idle";
+          }
+          renderUpdateStatus();
+          return;
+        }
+        const info = await via;
+        if (!info) {
+          updateState.status = "uptodate";
+          renderUpdateStatus();
+          return;
+        }
+        updateState.updatingTo = info.version || "";
+        updateState.status = "downloading";
+        renderUpdateStatus();
+        showUpdateOverlay(info.version);
+        const inst = wailsByName(WAILS_INSTALL, info);
+        if (inst) await inst;
+      } catch (e) {
+        if (manual) {
+          updateState.status = "error";
+          updateState.error = String(e && e.message ? e.message : e);
+        } else {
+          updateState.status = "idle";
+        }
+        renderUpdateStatus();
+      }
+    }
+
+    async function openFactoryFolder() {
+      const via = wailsByName(WAILS_OPEN_DIR);
+      if (via) {
+        await via;
+        return;
+      }
+      await fetch("/open-data-dir", { method: "POST" });
+    }
+
+    (async () => {
+      try {
+        const r = await fetch("/version");
+        const j = await r.json();
+        applyVersion(j.version || j.label);
+      } catch (_) {
+        const via = wailsByName(WAILS_VERSION);
+        if (via) {
+          try {
+            applyVersion(await via);
+          } catch (_) {}
+        }
+      }
+    })();
+
+    void checkForUpdates(false);
+
+    refreshAudioFlags();
+
+    (async () => {
+      try {
+        const h = await factoryJson("/health");
+        setGenStatus(healthLabel(h));
+        if (h.features && h.features.shape_mv === false) {
+          genStatus.title = "Extra refs isolate and photo-bake; geometry stays single-image mini.";
+        }
+      } catch (err) {
+        setGenStatus(err.message, "error");
+      }
+    })();
+
+    genForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const hasPicture = refs.length > 0 || (genFile.files || []).length > 0;
+      const typed = (genPrompt.value || "").trim();
+      if (!hasPicture && typed) {
+        await startIdeas(typed);
+        return;
+      }
+      if (workflow === "2d") {
+        await startFlatJob();
+        return;
+      }
+      const queue = refs.slice();
+      if (!queue.length) {
+        for (const file of Array.from(genFile.files || [])) queue.push({ kind: "file", file });
+      }
+      const prompt = (genPrompt.value || "").trim();
+      if (!queue.length) {
+        setGenStatus("attach at least one reference image", "error");
+        return;
+      }
+      genGo.disabled = true;
+      genProgressMax = 0;
+      genWatching = false;
+      setTitleState("", { editable: false });
+      setGenStatus("uploading…", "running");
+      try {
+        const paths = [];
+        for (const item of queue) {
+          if (item.kind === "asset") paths.push(item.path);
+          else paths.push((await uploadImage(item.file)).path);
+        }
+        setGenStatus("Queued on the factory…", "running");
+        const job = await startGenerateJob({
+          image: paths[0],
+          images: paths,
+          prompt,
+          ...lookSpec(),
+          poly: selectedPoly(),
+        });
+        const stem = job.stem || "asset";
+        if (!document.body.classList.contains("is-home")) {
+          genGo.disabled = false;
+          return;
+        }
+        setTitleState(stem, { editable: false });
+        genWatching = true;
+        showViewer();
+        hideAllCubbies();
+        clearStage("Generating");
+        showOverlay({ title: `Generating ${stem}`, step: "Job " + job.job_id, kicker: "Working" });
+        await pollJob(job.job_id, stem);
+      } catch (err) {
+        setGenStatus(err.message || String(err), "error");
+        showOverlay({
+          title: "Could not start",
+          step: err.message || String(err),
+          kicker: "Error",
+        });
+        genGo.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

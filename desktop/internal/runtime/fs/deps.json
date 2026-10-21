@@ -1,0 +1,5 @@
+{
+  "version": "0.0.3",
+  "notes": "Bulky runtime files are NOT in git. The Mac factory (MLX / generate.sh) uses the checkout or ~/Library/Application Support/Pipeline; scripts/bootstrap.sh fetches weights.",
+  "items": []
+}

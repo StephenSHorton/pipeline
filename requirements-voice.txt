@@ -1,0 +1,4 @@
+# Spoken lines for the 2D lane. Apple Silicon only.
+# uv pip install --python .venv/bin/python -r requirements-voice.txt
+mlx-audio
+misaki[en]

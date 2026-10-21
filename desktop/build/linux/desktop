@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=Pipeline
+Comment=AI asset factory: generate, paint, sprite-stack
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/pipeline.exe %u
+Terminal=false
+Type=Application
+Icon=pipeline.exe
+Categories=Utility;
+StartupWMClass=pipeline.exe
+
+ 

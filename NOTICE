@@ -1,0 +1,31 @@
+This repository's own code, scripts, viewer, desktop app and docs are under the
+MIT License (see LICENSE).
+
+Third-party libraries and model weights are not redistributed here (the build
+templates listed below are the exception). Bootstrap clones
+them into vendor/ and weights/, which are gitignored, and each keeps its own
+license. Downloading and running them means accepting those licenses:
+
+- Hunyuan3D shape/paint weights: Tencent Hunyuan Community License. This is not
+  an open-source license. It does not cover use in the EU, the UK or South
+  Korea, and it has its own use restrictions. Do not commit or publish the
+  checkpoints.
+- Hunyuan3D-Swift (Zimeng Xiong): MIT. Official Hunyuan3D-2 is Tencent's.
+- Qwen-Image-2512, Qwen-Image-Edit-2511 and the lightx2v Lightning LoRAs:
+  Apache-2.0. Qwen-Image 2.1 Turbo is under the Qwen Research License
+  (research and evaluation only).
+- Mesh2Motion (Scott Petrovic): MIT app, CC0 rigs and clips.
+- AutoRemesher: MIT.
+- AniGen / UniRig / SkinTokens (VAST-AI-Research): see their repos (UniRig is MIT).
+- Three.js: MIT. Mokei (the desktop app's design system): MIT.
+- Inter (bundled font): SIL Open Font License 1.1 (desktop/frontend/public/Inter-OFL.txt).
+- desktop/build/ is generated from the Wails v3 project templates: MIT (Lea Anthony
+  and Wails contributors). The Gradle wrapper in desktop/build/android/gradle/:
+  Apache-2.0 (the Gradle authors).
+
+Weights are downloaded from Hugging Face at bootstrap time
+(zimengxiong/hunyuan3d-mlx-*).
+
+Sample pictures in in/: the two farmer photos in in/mlg/ are FSA/OWI
+Kodachromes from the Library of Congress (public domain).
+in/operator.jpg and in/radio-concept.jpg were made with Grok Imagine.

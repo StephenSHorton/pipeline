@@ -1,0 +1,18 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build:dev": "node scripts/copy-viewer.mjs",
+    "build": "node scripts/copy-viewer.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@wailsio/runtime": "latest"
+  },
+  "devDependencies": {
+    "vite": "^8.0.5"
+  }
+}
