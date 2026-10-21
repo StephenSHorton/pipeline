@@ -7,7 +7,7 @@ const desktop = join(frontendScripts, "..", "..");
 const repo = join(desktop, "..");
 const src = join(repo, "scripts");
 const dest = join(desktop, "internal", "runtime", "fs", "scripts");
-const keepExt = new Set([".py", ".sh"]);
+const keepExt = new Set([".py", ".sh", ".json"]);
 
 function copyDir(from, to) {
   mkdirSync(to, { recursive: true });

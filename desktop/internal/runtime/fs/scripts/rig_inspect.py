@@ -77,9 +77,10 @@ def summarize(info: dict, checks: list[dict], motion: dict | None, tears: int) -
     elif hc and hc["level"] != "pass":
         parts.append(f"head {hc['off_deg']:.0f}° off")
     worst = max(mc, key=lambda c: mc[c]["stretch_max"], default=None)
-    if worst and all("stretch_p99" in v for v in mc.values()):
+    p99 = bool(worst) and all("stretch_p99" in v for v in mc.values())
+    w99 = max(mc, key=lambda c: mc[c]["stretch_p99"]) if p99 else None
+    if worst and p99:
         # the single worst edge saturates on dense meshes (a fine-looking Idle read 56×); 1% of edges is the number
-        w99 = max(mc, key=lambda c: mc[c]["stretch_p99"])
         parts.append(f"1% of edges stretch {mc[w99]['stretch_p99']:.1f}× ({w99.replace('_', ' ')})")
     elif worst:
         parts.append(f"worst stretch {mc[worst]['stretch_max']:.1f}× ({worst.replace('_', ' ')})")
@@ -87,12 +88,18 @@ def summarize(info: dict, checks: list[dict], motion: dict | None, tears: int) -
     problems = sorted((c for c in checks if c["level"] != "pass"), key=lambda c: (LEVELS[c["level"]], STEPS.index(c["step"])))
     return {"version": 1, "made": int(info.get("made") or time.time()), "class": info["class"], "level": level,
             "line": line[:1].upper() + line[1:], "tears": int(tears),
-            "motion": {c: {"tears": v["tears"], "stretch_max": v["stretch_max"]} for c, v in mc.items()} if motion else None,
+            "motion": {c: {"tears": v["tears"], "stretch_max": v["stretch_max"],
+                           **({"stretch_p99": v["stretch_p99"]} if "stretch_p99" in v else {})} for c, v in mc.items()}
+            if motion else None,
             "head": None if not measured and not hc else {
                 "before": measured["head_yaw_deg"] if measured else None,
                 "after": straight["head_yaw_deg"] if straight else None, "straightened": bool(straight),
                 "off_deg": hc["off_deg"] if hc else None, "made_before": bool(rest.get("before_straightening"))},
-            "worst_stretch": {"clip": worst, "x": round(mc[worst]["stretch_max"], 1)} if worst else None,
+            # the same figure as the line: 1% of edges (p99) when every clip has it; the single worst edge (which
+            # saturates on a buried vertex: chicken-canon Run 22x while every view looks clean) is edge_max
+            "worst_stretch": ({"clip": w99, "x": round(mc[w99]["stretch_p99"], 1), "metric": "p99",
+                               "edge_max": {"clip": worst, "x": round(mc[worst]["stretch_max"], 1)}} if p99 else
+                              {"clip": worst, "x": round(mc[worst]["stretch_max"], 1), "metric": "max"}) if worst else None,
             "problems": [{"level": c["level"], "key": c["key"], "label": c["label"]} for c in problems]}
 
 
@@ -138,10 +145,381 @@ def head_turn(names: list[str], parent: list[int], jp: np.ndarray, P: np.ndarray
             "lateral_offset_rel_h": round(float(hc[0] - jp[h][0]) / H, 3)}
 
 
+# ---------------------------------------------------------------- the template a rig used, and the new rows
+
+LYING = re.compile(r"death|dead|die|sleep|lie|lay|sit|fall", re.I)  # clips that end off their feet
+LOOPING = re.compile(r"idle|walk|run|trot|jog|gallop|flap|glide|fly|swim|sleep|peck|eat", re.I)  # vendor clips that loop
+PART_MIN = {"neck": 0.95, "legs": 0.8, "wings": 0.5}  # acceptance 5: the part's own bones hold this share of its weight
+
+
+def is_built(info: dict) -> bool:
+    t = info.get("template")
+    return bool(isinstance(t, dict) and t.get("built"))
+
+
+def drawn_plan(asset: Path) -> str | None:
+    """The plan hint a canonical pipeline draw left in intent.json, if any."""
+    try:
+        rig = json.loads((asset / "intent.json").read_text()).get("rig") or {}
+    except (OSError, ValueError):
+        return None
+    return rig.get("plan_hint") if rig.get("canonical") else None
+
+
+def template_of(info: dict, asset: Path) -> tuple[dict, str | None]:
+    """(template, error): the built template from rig/template/template.json when rig.json says so (blocking:
+    a missing file is an error, not the class's template), else rig.TEMPLATES[class]."""
+    if not is_built(info):
+        return rig.TEMPLATES[info["class"]], None
+    import rig_template
+    try:
+        return rig_template.template_for(info, asset), None
+    except FileNotFoundError as e:
+        return rig.TEMPLATES[info["class"]], str(e)
+
+
+def _plan_of(info: dict, template: dict) -> dict | None:
+    pid = (info.get("template") or {}).get("plan") if isinstance(info.get("template"), dict) else None
+    pid = pid or template.get("plan") or info.get("plan")
+    if not pid or not isinstance(pid, str):
+        return None
+    try:
+        import rig_plan
+        return rig_plan.load(pid)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _json(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _roles(fin: dict, joints: list[int], names: list[str]) -> list[str]:
+    try:
+        import rig_render
+    except Exception:  # noqa: BLE001
+        rig_render = None
+    out = []
+    for j, nm in zip(joints, names):
+        r = ((fin["nodes"][j].get("extras") or {}).get("role"))
+        if not r and rig_render is not None:
+            r = rig_render.role(nm)
+        out.append(r or "other")
+    return out
+
+
+def _clip_frames(doc: dict, binary: bytes, joints: list[int], IBM: np.ndarray, fps: float = 30.0, max_frames: int = 90,
+                 frames: dict | None = None):
+    """Per animation: (name, times, joint world positions (F,B,3), skin mats (F,B,4,4), local rotation per joint
+    (F,B,4)), sampled at the clip's own rate (capped at max_frames), or at exactly frames[name] keys."""
+    nodes = doc["nodes"]
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    out = []
+    for anim in doc.get("animations", []):
+        dur, ch = rig_motion.channels(doc, binary, anim)
+        n = int((frames or {}).get(anim.get("name")) or np.clip(round(dur * fps) + 1, 2, max_frames))
+        times = np.linspace(0, dur, n)
+        jp, M, Q = [], [], []
+        for t in times:
+            local = rig_motion.sample(nodes, ch, float(t))
+            wm = rig_motion.world_mats(nodes, parent, local)
+            jp.append([wm[j][:3, 3] for j in joints])
+            M.append([wm[j] @ IBM[k] for k, j in enumerate(joints)])
+            Q.append([np.asarray(local.get(j, rig_motion._rest(nodes[j]))[1], float) for j in joints])
+        out.append((anim.get("name") or f"clip {len(out) + 1}", times, np.array(jp), np.array(M), np.array(Q)))
+    return out
+
+
+def seam_excess_deg(Q: np.ndarray) -> float:
+    """A loop's seam for a clip authored with the wrap implied (vendor clips: the last key is one step before the
+    first, not a copy of it): per joint, the last->first turn minus the larger of its neighbouring frame steps
+    (first->second, second-last->last), so one ordinary frame step is not read as a pop. Q (F, J, 4) xyzw."""
+    import rig_metrics
+    Q = np.asarray(Q, float)
+    if Q.ndim != 3 or len(Q) < 3:
+        return 0.0
+    worst = 0.0
+    for j in range(Q.shape[1]):
+        q = Q[:, j]
+        seam = float(rig_metrics._qangle_deg(q[-1], q[0]))
+        step = max(float(rig_metrics._qangle_deg(q[0], q[1])), float(rig_metrics._qangle_deg(q[-2], q[-1])))
+        worst = max(worst, seam - step)
+    return round(max(worst, 0.0), 4)
+
+
+def motion_metrics(fin: dict, fbin: bytes, P: np.ndarray, Jf: np.ndarray, Wf: np.ndarray, names: list[str],
+                   cls: str, plan: dict | None, H: float, contacts: dict | None = None, built: bool = True) -> dict:
+    """Per clip on the final rig: C-shape (bounding-box growth vs rest), stance foot slide, loop seam. contacts
+    ({clip: {Foot_L: [0/1 per frame], ...}}, a built rig's own, rig.json clips_report) replace the guessed stance
+    frames (each foot within 0.015H of its lowest)."""
+    import rig_metrics
+    import rig_pred
+    joints = fin["skins"][0]["joints"]
+    IBM = rig.accessor(fin, fbin, fin["skins"][0]["inverseBindMatrices"]).reshape(-1, 4, 4).transpose(0, 2, 1)
+    paths = rig_pred.paths_for(cls, plan) if cls in rig_pred.PATHS or plan else None
+    if paths and paths.get("legs"):
+        feet = [c[-1] for c in paths["legs"]]
+    else:
+        import rig_fit
+        feet = [c[2] for c in (rig_fit.CHAINS.get(cls) or {}).get("legs") or [] if len(c) > 2]
+    fk = [names.index(f) for f in feet if f in names]
+    loops = {c["name"]: bool(c.get("loop", True)) for c in (plan or {}).get("clips") or []}
+    sub = np.arange(len(P)) if len(P) <= 12000 else np.unique(np.r_[np.arange(0, len(P), len(P) // 8000), np.argsort(P[:, 1])[:500]])
+    Ph = np.c_[P[sub], np.ones(len(sub))]
+    V0 = P[sub]
+    out = {}
+    contacts = contacts or {}
+    nf = {n: len(next(iter(c.values()))) for n, c in contacts.items() if c}
+    for name, times, jp, M, Q in _clip_frames(fin, fbin, joints, IBM, frames=nf):
+        if name == "Rest":
+            continue
+        step = max(1, len(times) // 24)
+        Vs = np.array([rig_motion.skin(Ph, Jf[sub], Wf[sub], M[f]) for f in range(0, len(times), step)])
+        cs = rig_metrics.c_shape(Vs, V0)
+        lying = bool(LYING.search(name))
+        loop = loops.get(name, bool(LOOPING.search(name)) and not lying)
+        rec = {"cshape": cs["ext_ratio"], "cshape_max": cs["ext_ratio_max"], "lying": lying, "loop": loop}
+        if loop:
+            raw = round(float(rig_metrics.loop_seam({"rot": {k: Q[:, k] for k in range(Q.shape[1])}})), 3)
+            # built clips repeat frame 0 as the last frame (the contract): any turn there is a seam. Vendor clips
+            # imply the wrap, so only a turn bigger than a frame step is one.
+            rec["seam_deg"] = raw if built else round(seam_excess_deg(Q), 3)
+            if not built:
+                rec["seam_raw_deg"] = raw
+        if fk and not lying and len(times) > 2:
+            fps = (len(times) - 1) / max(float(times[-1]), 1e-9)
+            fp = jp[:, fk]  # (F, legs, 3)
+            lo = fp[:, :, 1].min(0)
+            contact = fp[:, :, 1] <= lo[None] + 0.015 * H
+            own = contacts.get(name) or {}
+            if own and all(f in own and len(own[f]) == len(times) for f in feet if f in names):
+                contact = np.stack([np.asarray(own[f], bool) for f in feet if f in names], 1)
+                rec["contacts"] = "clip"
+            vel = np.gradient(fp, axis=0) * fps
+            st = vel[contact]
+            v_exp = np.median(st, 0) * np.array([1.0, 0.0, 1.0]) if len(st) else np.zeros(3)
+            slides = [rig_metrics.foot_slide(fp[:, i], contact[:, i], v_exp, fps=fps, H=H)["slide"] for i in range(len(fk))]
+            rec["slide"] = round(float(max(slides)), 4)
+            rec["v_expected"] = np.round(v_exp, 4).tolist()
+        out[name] = rec
+    return out
+
+
+def _part_chains(cls: str, plan: dict | None, names: list[str]) -> dict:
+    import rig_fit
+    chains = dict(rig_fit.CHAINS.get(cls) or {})
+    return {k: v for k, v in chains.items() if v}
+
+
+def new_rows(check, asset: Path, info: dict, template: dict, terr: str | None, built: bool, plan: dict | None,
+             fin: dict, fbin: bytes, P: np.ndarray, F: np.ndarray, Jf: np.ndarray, Wf: np.ndarray, jp: np.ndarray,
+             parent: list[int], names: list[str], H: float) -> dict:
+    """The template, built, a2, foot, parts, cshape, slide and loop_seam rows (design section 9). Returns the
+    measurements for inspect.json."""
+    import rig_metrics
+    cls = info["class"]
+    extra: dict = {}
+    G = (plan or {}).get("gates") or {}
+    strict = "fail" if built else "warn"  # vendor clips are reported, never failed, on these new rows
+    # C-shape and slide on vendor clips are measured only: a vendor gait's stride widens a thin body's box (operator
+    # Walk 2.6x in z) and its stance frames are guessed, so they pass with their numbers instead of warning
+    measured = "fail" if built else "pass"
+    # template
+    if terr:
+        check("fail", "template", "skeleton", "Built template missing", terr + ".")
+    elif built:
+        v = _json(asset / "rig" / "template" / "validate.json") or {}
+        errs = [p for p in v.get("problems") or [] if p.get("level") == "error"]
+        warns = [p for p in v.get("problems") or [] if p.get("level") == "warn"]
+        if not v:
+            check("warn", "template", "skeleton", "Template not verified", "rig/template/validate.json is missing.")
+        elif errs:
+            check("fail", "template", "skeleton", f"Template breaks the contract ({len(errs)})",
+                  "; ".join(p.get("msg", "") for p in errs) + ".", problems=errs)
+        else:
+            check("pass", "template", "skeleton", f"Skeleton built for this model ({template.get('plan')})",
+                  f"A {template.get('plan')} skeleton and its clips were made for this model and pass the template "
+                  "checks" + (" (" + "; ".join(p.get("msg", "") for p in warns) + ")" if warns else "") + ".",
+                  plan=template.get("plan"), warnings=warns)
+    elif info.get("build_error"):
+        be = info["build_error"]
+        check("warn", "template", "skeleton", "Couldn't build a skeleton",
+              f"Building a skeleton for this model failed ({be.get('code')}: {be.get('msg')}), so the class's template "
+              "was used.", **be)
+    # built: the skeleton's own self-check (build.json)
+    if built:
+        b = _json(asset / "rig" / "template" / "build.json") or (info.get("fit") or {}).get("build") or {}
+        ck = b.get("checks") or {}
+        cd = ((b.get("cd_j2b") or {}).get("pred_to_built_H") or {}).get("mean")
+        # the gates read the labelled chains (cd) and the floor points (feet); the all-joints and centroid figures
+        # of design 12.5 as first written are shown beside them (their redefinition awaits the design owner)
+        cd_all = ((b.get("cd_j2b") or {}).get("pred_all_to_built_H") or {}).get("mean")
+        feet = {s: (f or {}).get("to_points_H") for s, f in (ck.get("feet") or {}).items()}
+        feet_c = {s: (f or {}).get("to_centroid_H") for s, f in (ck.get("feet") or {}).items()}
+        bad = []
+        if cd is not None and cd > 0.03:
+            bad.append(f"predicted joints {cd:.3f}× height from its bones")
+        if ck.get("outside"):
+            bad.append(f"{len(ck['outside'])} joints outside the body ({', '.join(map(str, ck['outside'][:4]))})")
+        if (ck.get("mirror_err_H") or 0) > 0.01:
+            bad.append(f"left/right differ by {ck['mirror_err_H']:.3f}× height")
+        if (ck.get("gate") or {}).get("level") == "fail":
+            bad.append("the pose check failed")
+        far_feet = [s for s, d in feet.items() if d is not None and d > 0.02]
+        if far_feet:
+            bad.append("feet off the floor clusters (" + ", ".join(f"{s} {feet[s]:.3f}" for s in far_feet) + ")")
+        if ck.get("problems"):
+            bad += [str(p) for p in ck["problems"]]
+        check("fail" if bad else "pass", "built", "skeleton", "Built skeleton off the model" if bad else "Built skeleton fits",
+              ("; ".join(bad) + ".") if bad else
+              f"Every joint is inside the body (tips and soles excepted), the predicted joints sit "
+              f"{(cd or 0):.3f}× height from its bones"
+              + (f" (the labelled chains; all {cd_all:.3f}×)" if cd_all is not None else "")
+              + f", left and right match to {ck.get('mirror_err_H', 0):.3f}× height"
+              + ("; feet to their floor points " + ", ".join(f"{k} {v:.3f}" for k, v in feet.items() if v is not None)
+                 + " (to the cluster centres " + ", ".join(f"{k} {v:.3f}" for k, v in feet_c.items() if v is not None) + ")"
+                 if any(v is not None for v in feet.values()) else "") + ".",
+              cd_j2b=cd, cd_j2b_all=cd_all, mirror_err_H=ck.get("mirror_err_H"), feet_to_points_H=feet,
+              feet_to_centroid_H=feet_c, outside=ck.get("outside") or [],
+              contact_outside=ck.get("contact_outside") or [])
+    segs = rig_metrics.segs_from_parent(parent)
+    D = rig_metrics.seg_dist(P, jp, segs) if segs else None
+    if D is not None:
+        a2 = rig_metrics.a2_far_weight(P, Jf, Wf, jp, segs, H, names, D=D)
+        extra["a2"] = a2
+        lvl = "pass" if a2["share"] < 0.02 else "warn"
+        check(lvl, "a2", "skin", f"{a2['share']:.1%} of the weight on far bones",
+              f"{a2['share']:.1%} of all skin weight sits on bones more than 0.15× height farther from their point than "
+              "its nearest bone" + (" (most: " + ", ".join(f"{plain_bone(str(n))} {s:.1%}" for n, s in a2["worst"][:3]) + ")"
+                                    if a2["worst"] and lvl != "pass" else "") + " (warn above 2%).",
+              share=a2["share"], worst=a2["worst"])
+        chains = _part_chains(cls, plan, names)
+        if chains.get("legs"):
+            ft = rig_metrics.foot_off_chain(P, Jf, Wf, names, chains["legs"])
+            extra["foot"] = ft
+            lvl = "pass" if ft["share"] <= 0.05 else "warn"
+            check(lvl, "foot", "skin", "Feet on leg bones" if lvl == "pass" else f"{ft['share']:.0%} of the soles off the legs",
+                  f"{ft['share']:.0%} of the points near the floor follow a bone that isn't on a leg"
+                  + (" (" + ", ".join(f"{plain_bone(str(n))} {c}" for n, c in ft["owners"][:3]) + ")" if ft["owners"] else "")
+                  + " (warn above 5%).", share=ft["share"], owners=ft["owners"])
+        if chains:
+            try:
+                masks = None
+                if built and chains.get("wings") and ((plan or {}).get("caps") or {}).get("wings") == "folded":
+                    # the built skin takes the wing weight off the rump/vent points under the feathers
+                    # (rig_build.wing_region_repair's box), so the wings' part is the points on the body sides
+                    import rig_build
+                    cx = float(info["cx"]) if info.get("cx") is not None else float(np.median(P[:, 0]))
+                    masks = {"wings": rig_build._wing_side_margin(P, names, np.asarray(jp, float), cx, H) > 0}
+                ps = rig_metrics.part_shares(P, Jf, Wf, chains, jp, segs, names, D=D, masks=masks)
+            except Exception as e:  # noqa: BLE001
+                ps = {}
+                print(f"rig_inspect: couldn't measure the part shares ({e})", file=sys.stderr)
+            extra["parts"] = ps
+            low = {k: v["share"] for k, v in ps.items() if k in PART_MIN and v.get("n") and v["share"] < PART_MIN[k]}
+            if ps:
+                check("warn" if low else "pass", "parts", "skin",
+                      ("Parts leak weight: " + ", ".join(f"{k} {v:.0%}" for k, v in low.items())) if low else "Parts follow their own bones",
+                      "Per part, the share of its points' weight on its own bones: " + ", ".join(
+                          f"{k} {v['share']:.0%}" for k, v in ps.items() if v.get("n")) + " (wanted: neck 95%, legs 80%, wings 50%).",
+                      shares={k: v["share"] for k, v in ps.items()})
+    try:
+        mm = motion_metrics(fin, fbin, P, Jf, Wf, names, cls, plan, H,
+                            contacts=(info.get("clips_report") or {}).get("contacts") if built else None, built=built)
+    except Exception as e:  # noqa: BLE001
+        print(f"rig_inspect: couldn't measure the clip shapes ({e})", file=sys.stderr)
+        mm = {}
+    extra["clips"] = mm
+    if mm:
+        lim, flap_lat = float(G.get("cshape", 1.6)), float(G.get("cshape_flap_lateral", 2.2))
+
+        def over(n: str, r: dict) -> float:
+            e = r["cshape"]
+            lims = [flap_lat if re.search(r"flap|glide|fly", n, re.I) else lim, lim, lim]
+            return max(e[k] / lims[k] for k in range(3))
+        upright = [n for n, r in mm.items() if not r["lying"]]
+        bad = [n for n in upright if over(n, mm[n]) > 1.0]
+        if upright:
+            w = max(upright, key=lambda n: over(n, mm[n]))
+            check(measured if bad else "pass", "cshape", "motion",
+                  (f"{w.replace('_', ' ')} spreads the body {mm[w]['cshape_max']:.1f}×" if built else
+                   f"Library clips: {w.replace('_', ' ')} spreads the box {mm[w]['cshape_max']:.1f}× (measured only)")
+                  if bad else "Body keeps its shape",
+                  "Largest growth of the body's box against rest, per clip (x, y, z): " + "; ".join(
+                      f"{n.replace('_', ' ')} " + " / ".join(f"{x:.2f}" for x in mm[n]["cshape"]) for n in upright)
+                  + f" (limit {lim}×, {flap_lat}× sideways for wing clips; lying clips are left out).",
+                  clips={n: mm[n]["cshape"] for n in upright}, over=bad)
+        sl = {n: r["slide"] for n, r in mm.items() if r.get("slide") is not None}
+        if sl:
+            lim_s = float(G.get("foot_slide", 0.03))
+            w = max(sl, key=sl.get)
+            badl = [n for n, v in sl.items() if v > lim_s]
+            check(measured if badl else "pass", "slide", "motion",
+                  (f"{w.replace('_', ' ')}: feet slide {sl[w]:.3f}× height" if built else
+                   f"Library clips: {w.replace('_', ' ')} feet move {sl[w]:.3f}× height on guessed contacts (measured only)")
+                  if badl else "Planted feet stay put",
+                  "Largest slide of a planted foot, per clip: " + ", ".join(f"{n.replace('_', ' ')} {v:.3f}" for n, v in sl.items())
+                  + f" (× height; limit {lim_s}).", clips=sl, over=badl)
+        sm = {n: r["seam_deg"] for n, r in mm.items() if r.get("seam_deg") is not None}
+        if sm:
+            lim_d = float(G.get("loop_seam_deg", 0.5))
+            w = max(sm, key=sm.get)
+            bads = [n for n, v in sm.items() if v > lim_d]
+            check("warn" if bads else "pass", "loop_seam", "motion",
+                  f"{w.replace('_', ' ')} jumps {sm[w]:.1f}° where it loops" if bads else "Loops join up",
+                  ("Largest joint turn between a looping clip's last and first frame: " if built else
+                   "Largest joint turn where a library clip wraps, beyond one frame step: ") + ", ".join(
+                      f"{n.replace('_', ' ')} {v:.2f}°" for n, v in sm.items()) + f" (warn above {lim_d}°).", clips=sm, over=bads)
+    return extra
+
+
+def fbx_row(check, info: dict, asset: Path) -> None:
+    fc = info.get("fbx_check")
+    if fc is None and info.get("fbx"):
+        fc = _json(asset / "rig" / "fbx_check.json")
+    if not fc:
+        return
+    try:
+        import rig_fbx
+        line = rig_fbx.note_for(fc) if "actions" in fc and isinstance(fc["actions"], list) else None
+    except Exception:  # noqa: BLE001
+        line = None
+    acts = fc["actions"] if isinstance(fc.get("actions"), int) else len(fc.get("actions") or [])
+    bones = fc["bones"] if isinstance(fc.get("bones"), int) else len(fc.get("bone_names") or [])
+    if not fc.get("ok"):
+        check("fail", "fbx", "motion", "FBX check failed", "; ".join(fc.get("problems") or ["no report"]) + ".",
+              problems=fc.get("problems") or [], warnings=fc.get("warnings") or [])
+        return
+    lvl = "warn" if fc.get("warnings") else "pass"
+    check(lvl, "fbx", "motion", f"FBX checked: {acts} clips, {fc.get('scene_fps', 0):g} fps",
+          (line or f"FBX checked: {acts} clips, {bones} bones, {fc.get('max_influences', 0)} weights max, "
+           f"{fc.get('scene_fps', 0):g} fps") + "." + (" " + "; ".join(fc["warnings"]) + "." if fc.get("warnings") else ""),
+          actions=acts, bones=bones, max_influences=fc.get("max_influences"), scene_fps=fc.get("scene_fps"),
+          warnings=fc.get("warnings") or [])
+
+
+def add_late_rows(bundle: dict, asset: Path, info: dict) -> None:
+    """Rows from steps that run after the check (the FBX export): add them and re-make the summary."""
+    checks = [c for c in bundle["checks"] if c["key"] != "fbx"]
+
+    def check(level: str, key: str, step: str, label: str, text: str, **extra) -> None:
+        checks.append({"level": level, "key": key, "step": step, "label": label, "text": text, **extra})
+    fbx_row(check, info, asset)
+    bundle["checks"] = checks
+    bundle["rig"] = info
+    tears = (bundle.get("weights") or {}).get("seam_final", {}).get("positions_with_conflicting_top_bone", 0)
+    bundle["summary"] = summarize(info, checks, bundle.get("motion"), tears)
+
+
 def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.ndarray, raw_W: np.ndarray,
           kept: np.ndarray | None = None) -> dict:
     """raw_J/raw_W: the skinner's weights per source vertex; kept: the far-influence mask on them (None: unknown)."""
-    template = rig.TEMPLATES[info["class"]]
+    template, terr = template_of(info, asset)
+    built = is_built(info) and terr is None
+    bplan = _plan_of(info, template) if built else None
     fin, fbin = rig.read_glb(asset / info["rigged"])
     pos, _ = rig.read_glb(asset / "rig" / "template_posed.glb")
     sk = rig.Skeleton(fin)
@@ -158,6 +536,7 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
 
     pf = fin["meshes"][0]["primitives"][0]
     P = rig.accessor(fin, fbin, pf["attributes"]["POSITION"]).astype(float)
+    F = rig.accessor(fin, fbin, pf["indices"]).reshape(-1, 3).astype(int) if "indices" in pf else np.arange(len(P)).reshape(-1, 3)
     Jf = rig.accessor(fin, fbin, pf["attributes"]["JOINTS_0"]).astype(int)
     Wf = rig.accessor(fin, fbin, pf["attributes"]["WEIGHTS_0"]).astype(float)
     n = len(names)
@@ -189,6 +568,8 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
     anims = {a["name"]: (d, b, a) for d, b in sources for a in d.get("animations", [])}
     clips = {}
     for cn in info["clips"]:
+        if cn not in anims:
+            continue
         d, b, a = anims[cn]
         ch = rig.prepare_clip(d, b, a, tsk)
         dur = rig.clip_duration(d, b, a)
@@ -230,6 +611,10 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
     if conf is None and planner.get("unrecorded"):
         check("pass", "planner", "plan", plan, f"Rigged as {plan.lower()}. This version didn't record how that was picked.",
               by_hand=None)
+    elif conf is None and drawn_plan(asset):
+        check("pass", "planner", "plan", f"{plan}, from the drawing",
+              f"The pipeline drew this {plan.lower()} in the standard pose, so it knew the body plan: "
+              f"{drawn_plan(asset).replace('_', ' ')}.", by_hand=False)
     elif conf is None:
         check("pass", "planner", "plan", f"{plan}, set by hand", f"You set the body plan by hand: {plan.lower()}.", by_hand=True)
     elif conf < 0.6:
@@ -280,23 +665,39 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
               all=[{"bone": f["bone"], "off_rel_h": f["centroid_off_bone_rel_h"], "verts": f["verts"]} for f in outliers])
     fi = info.get("fit") or {}
     fc = fi.get("facing")
-    if fc:
+    if fc and built:
+        check("pass", "facing", "skeleton", "Built facing the model's head",
+              "The skeleton was built in the model's own frame, head forward (+Z), so nothing was turned "
+              f"(facing {fc.get('decided_by')}).", yaw=fc.get("yaw", 0), decided_by=fc.get("decided_by"))
+    elif fc:
         lvl = "warn" if fc.get("cue_conflict") else "pass"
         check(lvl, "facing", "skeleton", f"Template turned {fc['yaw']}°",
               f"The template was turned {fc['yaw']}° to face the way the model does (decided by {fc['decided_by']}, "
-              f"registration margin {fc['margin']:.2f})." + (" The cues disagreed." if fc.get("cue_conflict") else ""),
+              f"registration margin {fc.get('margin', 0):.2f})." + (" The cues disagreed." if fc.get("cue_conflict") else "")
+              + (f" {fc['prior_conflict']}; re-make the low-poly model if the head is at the back." if fc.get("prior_conflict") else ""),
               yaw=fc["yaw"], decided_by=fc["decided_by"])
-    if fi.get("poor_match"):
+    if fi.get("poor_match") and not built:
         check("warn", "match", "skeleton", f"Poor body-plan match ({fi['scale_ratio']:.1f}×)",
               f"The template had to be stretched {fi['scale_ratio']:.1f}× more along one axis than another to fit this model.",
               ratio=fi["scale_ratio"])
     gate = fi.get("gate")
+    flags = None
+    try:
+        import rig_metrics
+        import trimesh
+        surf = np.asarray(trimesh.Trimesh(P, F, process=False).sample(20000, seed=0), float)
+        flags = rig_metrics.pose_flags(jp, rig_metrics.segs_from_parent(parent), P, F, surf, H, names)
+    except Exception as e:  # noqa: BLE001 - a missing measurement never fails the check
+        print(f"rig_inspect: couldn't flag the joints ({e})", file=sys.stderr)
     if gate:
         bad = gate["level"] == "fail"
+        flagged = [{"joint": r["joint"], "flags": r["flags"], "d_rel": r["d_rel"]} for r in (flags or {}).get("flagged", [])]
         check("fail" if bad else "pass", "pose", "skeleton",
               f"Skeleton misses the body ({gate['joints_outside_box']:.0%} of joints outside)" if bad else "Skeleton inside the body",
               f"{gate['joints_outside_box']:.0%} of the joints are outside the model's box and {gate['bone_far_outside_0p08H']:.0%} "
-              "of the bones lie well outside the model.", **{k: v for k, v in gate.items() if k != "level"})
+              "of the bones lie well outside the model." + (
+                  " Outside: " + ", ".join(f"{plain_bone(str(r['joint']))} ({'/'.join(r['flags'])})" for r in flagged[:6]) + "."
+                  if flagged else ""), **{k: v for k, v in gate.items() if k != "level"}, flagged=flagged)
     far = {c: v for c, v in (info.get("far_motion") or {}).items() if c in info.get("clips", [])}
     if far:
         badc = [c for c, v in far.items() if v["level"] == "fail"]
@@ -320,10 +721,20 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
         check("warn", "folded", "skin", f"Weight on tip bones ({info['folded_weight']:.0%})",
               f"{info['folded_weight']:.0%} of the weight was on root or tip bones and was moved to their parents.",
               share=info["folded_weight"])
-    if info.get("missing_clips"):
+    failed = info.get("clips_failed") or []
+    if failed:
+        nm_ = [f["name"] for f in failed]
+        check("fail", "clips", "motion", f"Couldn't make {', '.join(nm_)}",
+              "These clips of the body plan didn't keep the body together on this model and are not shipped: " + "; ".join(
+                  f"{f['name']}: {', '.join(f.get('reasons') or [])}" for f in failed) + ".", failed=failed,
+              missing=info.get("missing_clips") or [])
+    elif info.get("missing_clips"):
         miss = info["missing_clips"]
         check("warn", "clips", "motion", f"{len(miss)} clip{'s' if len(miss) != 1 else ''} missing",
               "No clip for this body plan: " + ", ".join(miss) + ".", missing=miss)
+    elif built:
+        check("pass", "clips", "motion", f"{len(info.get('clips') or [])} clips made for this model",
+              "Every clip of the body plan was made for this model and passed its checks: " + ", ".join(info.get("clips") or []) + ".")
     try:
         motion = rig_motion.measure(asset / info["rigged"], top_f, names)
     except Exception as e:  # a failed measurement never fails the rig
@@ -344,10 +755,12 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
         mc = motion["clips"]
         sc_ = max(mc, key=lambda c: mc[c]["stretch_p99"])
         if mc[sc_]["stretch_p99"] > 3:  # a destroyed rig (the chicken's Flap on the backwards template) read 15×
+            own = mc[sc_].get("stretch_owners") or []
             check("fail" if mc[sc_]["stretch_p99"] > 6 else "warn", "stretch", "motion",
                   f"{sc_.replace('_', ' ')} stretches {mc[sc_]['stretch_p99']:.1f}×",
                   f"In {sc_.replace('_', ' ')}, 1% of the edges stretch (or squash) more than {mc[sc_]['stretch_p99']:.1f}× "
-                  "(warn above 3×, fail above 6×).", clip=sc_)
+                  "(warn above 3×, fail above 6×)." + (" Most of them are on " + ", ".join(
+                      plain_bone(str(n)) for n, _ in own[:3]) + "." if own else ""), clip=sc_, owners=own)
     floor = {c: v for c, v in (info.get("floor") or {}).items() if c in info.get("clips", [])}
     if floor:
         pen = {c: max(0.0, -v["low_min_after"]) for c, v in floor.items()}
@@ -379,19 +792,24 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
         check("warn", "unsupported", "motion", f"{', '.join(u)} left out",
               f"This model has no {', '.join((info.get('fit') or {}).get('unsupported') or [])} for "
               f"{', '.join(u)} to move, so those clips are not shipped.", clips=u)
+    measures = new_rows(check, asset, info, template, terr, built, bplan, fin, fbin, P, F, Jf, Wf, jp, parent, names, H)
+    fbx_row(check, info, asset)
     summary = summarize(info, checks, motion, pts)
+    roles = _roles(fin, joints, names)
 
     image = next((nm for nm in ("lifted.png", "input.png", "input.jpg") if (asset / nm).is_file()), None)
     bundle = {
         "version": 2, "rig": info,
         "planner": {**planner, "image": image},
         "notes": notes,
-        "template": {"rig": template["rig"], "ref_clip": template["ref"],
+        "template": {"rig": template["rig"], "ref_clip": template["ref"], "built": built,
+                     "plan": template.get("plan") if built else None, "dir": template.get("dir") if built else None,
                      "fit_scale": ((info.get("fit") or {}).get("scale") or fitnode.get("scale") or [1])[0],
                      "fit_scale_xyz": (info.get("fit") or {}).get("scale"), "fit_yaw": (info.get("fit") or {}).get("yaw"),
                      "fit_offset": (info.get("fit") or {}).get("offset") or fitnode.get("translation", [0, 0, 0]),
                      "max_joint_move_by_skinner_m": round(moved, 4)},
-        "bones": [{"name": nm, "label": plain_bone(nm), "parent": parent[k], "pos": jp[k].round(4).tolist(), "template": mapping[k]["template"],
+        "roles": roles, "measures": measures, "pose_flags": flags,
+        "bones": [{"name": nm, "label": plain_bone(nm), "role": roles[k], "parent": parent[k], "pos": jp[k].round(4).tolist(), "template": mapping[k]["template"],
                    "rule": mapping[k]["rule"], "ref_vs_rest_deg": ref_pose[k]} for k, nm in enumerate(names)],
         "clips": clips,
         "weights": {"top_final": top_f.tolist(), "top_raw": top_r.tolist(),
@@ -407,8 +825,17 @@ def build(asset: Path, info: dict, planner: dict, notes: list[str], raw_J: np.nd
 
 def write(asset: Path, bundle: dict) -> None:
     """rig/inspect.json, and the small rig/summary.json the versions strip reads."""
-    (asset / "rig" / "inspect.json").write_text(json.dumps(bundle, separators=(",", ":")), encoding="utf-8")
-    (asset / "rig" / "summary.json").write_text(json.dumps(bundle["summary"], indent=1) + "\n", encoding="utf-8")
+    (asset / "rig" / "inspect.json").write_text(json.dumps(bundle, separators=(",", ":"), default=_plain), encoding="utf-8")
+    (asset / "rig" / "summary.json").write_text(json.dumps(bundle["summary"], indent=1, default=_plain) + "\n", encoding="utf-8")
+
+
+def _plain(x):
+    """numpy scalars and arrays in the report, as JSON."""
+    if isinstance(x, np.ndarray):
+        return x.tolist()
+    if isinstance(x, np.generic):
+        return x.item()
+    return str(x)
 
 
 def measure_rest(asset: Path, info: dict) -> dict | None:

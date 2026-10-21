@@ -344,6 +344,22 @@
       border: 0;
       background: rgba(16, 17, 15, 0.82);
     }
+    /* Which way the head points, over the first picture: tap to turn it. */
+    .gen-thumbs button.facing-arrow {
+      top: auto;
+      right: auto;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      padding: 0 2px;
+      font-size: 9px;
+      white-space: nowrap;
+      color: var(--ink, #f0eadc);
+      cursor: pointer;
+    }
+    .gen-thumbs button.facing-arrow[data-state="unsure"] { background: rgba(176, 112, 24, 0.92); }
+    .gen-thumbs button.facing-arrow[data-state="checking"] { opacity: 0.75; cursor: progress; }
+    .opt-drawn { font-size: 11px; color: var(--mute); }
     .home-btn {
       padding: 4px 8px;
       font-family: "IBM Plex Mono", ui-monospace, monospace;
@@ -550,6 +566,15 @@
     .takes > button.takes-act[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
     .takes-label { align-self: center; padding: 0 4px; font: 10px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); }
     .takes > button.takes-act { align-self: center; }
+    .takes > button.takes-act.is-made { border-style: dashed; }
+    .takes-label.rig-made { color: var(--accent); }
+    /* Advanced rig options: a fold in the stage bar. */
+    .rig-advanced { align-self: center; display: flex; }
+    .rig-advanced summary { cursor: pointer; list-style: none; }
+    .rig-advanced summary::-webkit-details-marker { display: none; }
+    .rig-advanced[open] { gap: 6px; flex-wrap: wrap; }
+    .rig-adv { display: inline-flex; align-items: center; gap: 4px; font: 10px "IBM Plex Mono", ui-monospace, monospace; color: var(--mute); }
+    .rig-adv .takes-select { padding: 4px 6px; font-size: 11px; }
     .takes > button.takes-act.is-primary { background: var(--accent); color: #141510; border-color: var(--accent); font-weight: 600; }
     /* Rig check (public/rig-inspect.js): a dock over the right of the mesh pane in the Rig stage. */
     .rig-inspect {
@@ -618,6 +643,11 @@
     .rig-inspect-card { border: 1px solid var(--line); padding: 6px 8px; background: #141510; }
     .rig-inspect-card-title { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; font: 12px "IBM Plex Mono", ui-monospace, monospace; color: var(--accent); }
     .rig-inspect-mute { margin: 0; color: var(--mute); font-size: 11px; }
+    .rig-inspect-badge { align-self: flex-start; padding: 3px 8px; border: 1px solid var(--accent); color: var(--accent); font: 11px "IBM Plex Mono", ui-monospace, monospace; }
+    .rig-inspect-tabs { margin-bottom: 2px; }
+    .rig-inspect-sheet { display: block; border: 1px solid var(--line); }
+    .rig-inspect-sheet img { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+    .export-card .rig-fbx-line.is-fail { color: #e07a5a; }
     .rig-inspect-plan { display: flex; gap: 8px; align-items: flex-start; }
     .rig-inspect-plan img { width: 64px; height: 64px; object-fit: contain; background: #1b1c18; border: 1px solid var(--line); }
     .rig-inspect-notes { margin: 0; padding-left: 16px; color: var(--mute); font-size: 11px; line-height: 1.4; }
@@ -775,6 +805,7 @@
     .export-card.is-hero img { max-height: 220px; image-rendering: pixelated; }
     .export-card .hero-text { display: grid; gap: 6px; align-content: start; }
     .export-card.is-hero.no-figure { grid-template-columns: minmax(0, 1fr); }
+    .export-card.is-hero figure.rig-sheet img { max-height: 620px; image-rendering: auto; }
     .export-card .facts { margin: 0; font-size: 13px; color: var(--ink); }
     .export-card ol { margin: 4px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.55; color: var(--mute); }
     .export-card ol b, .export-card code { color: var(--ink); font-weight: 500; }
@@ -1836,15 +1867,16 @@
           <div class="make-options">
             <div class="make-opt" data-for="ps1">
               <div class="opt-row">
-                <span class="opt-label" id="gen-facing-label">Facing</span>
+                <span class="opt-label" id="gen-facing-label">Which way does the head point in the picture?</span>
                 <div class="seg" role="radiogroup" aria-labelledby="gen-facing-label" id="gen-psx-facing">
-                  <label><input type="radio" name="gen-facing" value="camera" checked /><span>At the camera</span></label>
-                  <label><input type="radio" name="gen-facing" value="left" /><span>Side, facing left</span></label>
-                  <label><input type="radio" name="gen-facing" value="right" /><span>Side, facing right</span></label>
-                  <label><input type="radio" name="gen-facing" value="away" /><span>Away</span></label>
+                  <label><input type="radio" name="gen-facing" value="camera" checked /><span>Looks at the camera</span></label>
+                  <label><input type="radio" name="gen-facing" value="left" /><span>Head points to the left of the picture</span></label>
+                  <label><input type="radio" name="gen-facing" value="right" /><span>Head points to the right of the picture</span></label>
+                  <label><input type="radio" name="gen-facing" value="away" /><span>Back to the camera</span></label>
                 </div>
+                <span class="opt-drawn" id="gen-facing-drawn" hidden>Drawn in profile, head right</span>
               </div>
-              <p class="opt-hint" id="gen-facing-hint">Where the subject looks in the photo. A side-on photo is also mirrored onto the far side.</p>
+              <p class="opt-hint" id="gen-facing-hint">As you look at the picture, not the animal's own left or right.</p>
               <div class="opt-row">
                 <label class="opt-label" for="gen-psx-height">Height</label>
                 <span class="opt-num"><input id="gen-psx-height" type="number" min="1" step="1" value="48" /><span>in</span></span>
@@ -2333,8 +2365,19 @@
       stack: { name: "sprite stack", verb: "Make sprite stack", workflow: "3d" },
       sprite: { name: "2D sprite", verb: "Make 2D sprite", workflow: "2d" },
     };
-    const FACING_WORDS = { camera: "facing the camera", left: "side-on, facing left", right: "side-on, facing right", away: "facing away" };
+    const FACING_WORDS = { camera: "facing the camera", left: "side-on, head to the picture's left", right: "side-on, head to the picture's right", away: "back to the camera" };
+    const FACING_HINT = "As you look at the picture, not the animal's own left or right.";
+    // The arrow on the first picture: one tap turns it right → left → camera → away.
+    const FACING_CYCLE = ["right", "left", "camera", "away"];
+    const FACING_ARROW = { right: "Head →", left: "← Head", camera: "Head ●", away: "Back ○" };
     let facingTouched = false;
+    // Where the facing came from: drawn (a canonical concept), detected (the VLM), user (a tap or the radio).
+    let facingSource = "";
+    // The first picture's facing check: { key, state: checking|done|off, head, confidence, low, canonical }.
+    let facingCheck = null;
+    // The first picture the facing belongs to; remakeAsset keeps its saved facing once, for the same asset.
+    let facingFor = "";
+    let keepFacingOnce = false;
     let nameTouched = false;
     // Set by "Change settings": Make rebuilds this asset instead of starting a new one.
     let remakeStem = "";
@@ -2381,6 +2424,7 @@
       if (output === "ps1") {
         intent.psx = { facing: selectedFacing(), height: psxHeight() };
         if (psxName()) intent.psx.name = psxName();
+        if (facingSource) intent.facing_source = facingSource;
       } else if (output === "model" || output === "stack") {
         intent.poly = selectedPoly();
       } else {
@@ -2395,6 +2439,7 @@
       if (intent.psx) Object.assign(body, intent.psx);
       if (intent.poly) body.poly = intent.poly;
       if (intent.steps) body.steps = intent.steps;
+      for (const k of ["facing_source", "subject", "kind", "rig"]) if (intent[k]) body[k] = intent[k];
       return body;
     }
 
@@ -2417,6 +2462,7 @@
       document.getElementById("gen").dataset.output = next;
       try { localStorage.setItem("make-output", next); } catch {}
       updateRoute();
+      try { renderFacingArrow(); checkFacing(); } catch {} // before the Make form is set up, nothing to check
     }
 
     // How long the last draw took, from /2d/status. No claim at all before the first one.
@@ -2469,6 +2515,10 @@
         if (output === "ps1") {
           const name = psxName() || slugStem(photo).replace(/-/g, "_") || "model";
           html = `Make a <b>PS1 model</b> from <b>${esc(photo)}</b>${more}, ${FACING_WORDS[selectedFacing()]}, <b>${psxHeight()} in</b> tall: about 1,200 triangles and a 256 px texture, saved as <b>${esc(name)}.obj</b> + .png. A few minutes.`;
+          if (facingCheck && facingCheck.low && !facingTouched) {
+            html = "We couldn't tell which way the head points. Tap the arrow on the picture until it matches, then Make.";
+            state = "need";
+          }
         } else if (output === "model") {
           html = `Make a painted <b>3D model</b> from <b>${esc(photo)}</b>${more} at ${selectedPoly()} detail. A few minutes.`;
         } else {
@@ -2496,33 +2546,120 @@
       return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     }
 
-    // A wide photo is usually side-on; the file name is a good default for the model's name.
+    // The file name is a good default for the model's name. Which way the head points is asked of the picture
+    // itself (checkFacing), never guessed from its shape.
     function suggestFromPhoto(file) {
       if (!file) return;
       if (!nameTouched) document.getElementById("gen-psx-name").placeholder = slugStem(file.name).replace(/-/g, "_") || "from the photo";
-      if (facingTouched || typeof file.arrayBuffer !== "function") { updateRoute(); return; }
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        const wide = img.naturalWidth / Math.max(1, img.naturalHeight) > 1.3;
-        const hint = document.getElementById("gen-facing-hint");
-        if (wide && selectedFacing() === "camera") {
-          document.querySelector('input[name="gen-facing"][value="right"]').checked = true;
-          if (hint) hint.textContent = "The photo is wide, so it's probably side-on: set to facing right. Change it if the subject faces left.";
+      updateRoute();
+    }
+
+    function setFacing(value, source) {
+      const r = document.querySelector(`input[name="gen-facing"][value="${value}"]`);
+      if (r) r.checked = true;
+      facingSource = source || "";
+    }
+
+    // Show the facing as the pipeline knows it: a canonical concept hides the question; else the radio.
+    function showFacingState() {
+      const drawn = !!(facingCheck && facingCheck.canonical && !facingTouched);
+      const seg = document.getElementById("gen-psx-facing");
+      const note = document.getElementById("gen-facing-drawn");
+      const label = document.getElementById("gen-facing-label");
+      if (seg) seg.hidden = drawn;
+      if (label) label.hidden = drawn;
+      if (note) note.hidden = !drawn;
+      const hint = document.getElementById("gen-facing-hint");
+      if (!hint) return;
+      if (drawn) hint.textContent = "Pipeline-drawn creatures are drawn side-on with the head to the right. Tap the arrow to change it.";
+      else if (facingCheck && facingCheck.state === "checking") hint.textContent = "Looking at which way the head points… " + FACING_HINT;
+      else if (facingCheck && facingCheck.low && !facingTouched) hint.textContent = "Not sure which way the head points: tap the arrow on the picture. " + FACING_HINT;
+      else hint.textContent = FACING_HINT;
+    }
+
+    // The first picture's facing: a canonical concept's key.json, else POST /facing/detect (the VLM, ~10 s).
+    // A file is uploaded first (and Make reuses that upload).
+    let facingSeq = 0;
+    async function checkFacing() {
+      const first = refs[0];
+      const key = first ? (first.kind === "file" ? `file:${first.file.name}:${first.file.size}` : `asset:${first.path}`) : "";
+      if (facingCheck && facingCheck.key === key && !facingCheck.skipped) return;
+      const seq = ++facingSeq;
+      facingCheck = key ? { key, state: "checking" } : null;
+      renderFacingArrow();
+      if (!first || selectedOutput() !== "ps1") {
+        if (facingCheck) Object.assign(facingCheck, { state: "off", skipped: true });
+        renderFacingArrow();
+        return;
+      }
+      try {
+        if (first.kind === "asset" && first.id) {
+          const k = await fetch(`/out/${encodeURIComponent(first.id)}/flat/key.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          if (seq !== facingSeq) return;
+          if (k && k.facing && (k.canonical || k.facing_source === "drawn") && first.path.endsWith("flat/source.png")) {
+            facingCheck = { key, state: "done", head: k.facing, confidence: 1, low: false, canonical: !!k.canonical };
+            if (!facingTouched) setFacing(k.facing, k.canonical ? "drawn" : (k.facing_source || "detected"));
+            renderFacingArrow();
+            return;
+          }
         }
-        URL.revokeObjectURL(url);
-        updateRoute();
-      };
-      img.onerror = () => URL.revokeObjectURL(url);
-      img.src = url;
+        let path = first.kind === "asset" ? first.path : first.uploaded;
+        if (!path && first.kind === "file") {
+          path = first.uploaded = (await uploadImage(first.file)).path;
+          if (seq !== facingSeq) return;
+        }
+        const det = await factoryJson("/facing/detect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: path }),
+        });
+        if (seq !== facingSeq) return;
+        if (det.how !== "vlm" || !det.head) {
+          facingCheck = { key, state: "off", low: det.how === "vlm", why: det.why || "" };
+        } else {
+          facingCheck = { key, state: "done", head: det.head, confidence: det.confidence, low: !!det.low, canonical: false };
+          if (!facingTouched && !det.low) setFacing(det.head, "detected");
+        }
+      } catch (err) {
+        if (seq !== facingSeq) return;
+        // A failed detect is "not sure", never a quiet "faces the camera": ask for a tap.
+        facingCheck = { key, state: "off", low: true, why: err.message || String(err) };
+      }
+      renderFacingArrow();
+    }
+
+    // The "Head →" arrow over the first thumbnail; "?" when unsure. One tap turns it and counts as yours.
+    function renderFacingArrow() {
+      const fig = genThumbs.querySelector("figure");
+      genThumbs.querySelectorAll(".facing-arrow").forEach((el) => el.remove());
+      showFacingState();
+      updateRoute();
+      if (!fig || selectedOutput() !== "ps1") return;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "facing-arrow";
+      const cur = selectedFacing();
+      const sure = facingTouched || (facingCheck && facingCheck.state === "done" && !facingCheck.low);
+      const checking = facingCheck && facingCheck.state === "checking";
+      b.dataset.state = checking ? "checking" : sure ? "sure" : "unsure";
+      b.textContent = checking ? "…" : sure ? FACING_ARROW[cur] : `? ${FACING_ARROW[cur]}`;
+      b.title = checking ? "Looking at which way the head points…"
+        : `${FACING_WORDS[cur]}${facingCheck && facingCheck.confidence != null && !facingTouched ? ` (${Math.round(facingCheck.confidence * 100)}% sure)` : ""}. Tap to turn it: right, left, camera, away.`;
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        const next = FACING_CYCLE[(FACING_CYCLE.indexOf(cur) + 1) % FACING_CYCLE.length];
+        setFacing(next, "user");
+        facingTouched = true;
+        renderFacingArrow();
+      });
+      fig.appendChild(b);
     }
 
     document.querySelectorAll('input[name="gen-output"]').forEach((el) => el.addEventListener("change", () => setOutput(el.value)));
     document.querySelectorAll('input[name="gen-facing"]').forEach((el) => el.addEventListener("change", () => {
       facingTouched = true;
-      const hint = document.getElementById("gen-facing-hint");
-      if (hint) hint.textContent = "Where the subject looks in the photo. A side-on photo is also mirrored onto the far side.";
-      updateRoute();
+      facingSource = "user";
+      renderFacingArrow();
     }));
     document.querySelectorAll('input[name="gen-poly"]').forEach((el) => el.addEventListener("change", updateRoute));
     document.getElementById("gen-psx-height").addEventListener("input", () => {
@@ -2781,13 +2918,18 @@
               b.textContent = name.replace(/_/g, " ");
               const m = motion[name];
               const stretch = m ? (m.stretch_p99 != null ? `1% of edges stretch ${Number(m.stretch_p99).toFixed(1)}×` : `worst stretch ${Number(m.stretch_max).toFixed(1)}×`) : "";
+              // A built template's clips were made for this model, each passing its own gates (clips_report.json).
+              const made = rigMade && rigMade.stem === asset ? rigMade : null;
+              const gate = made && made.clips[name] ? clipGateText(made.clips[name]) : "";
+              const madeHere = made ? ` · made for this model${gate ? `\n${gate}` : ""}` : "";
+              if (made) b.classList.add("is-made");
               if (m && m.tears) {
                 const dot = document.createElement("span");
                 dot.className = "rig-dot is-fail";
                 b.prepend(dot);
-                b.title = `${b.textContent} · tears at ${m.tears} points · ${stretch}`;
+                b.title = `${b.textContent} · tears at ${m.tears} points · ${stretch}${madeHere}`;
               } else {
-                b.title = m ? `Play ${b.textContent} · no tears · ${stretch}` : `Play ${b.textContent}`;
+                b.title = (m ? `Play ${b.textContent} · no tears · ${stretch}` : `Play ${b.textContent}`) + madeHere;
               }
               b.setAttribute("aria-pressed", String(name === currentClip));
               b.addEventListener("click", () => playClip(name));
@@ -2813,14 +2955,28 @@
             else act("Check this version", doc ? "This version was checked before its clips were measured. Check it again and play every clip. Takes a few seconds."
               : "Work out the rig checks for this version and measure its clips. Takes a few seconds.", recheckRig);
           }
+          if (rigged && made0()) {
+            const badge = document.createElement("span");
+            badge.className = "takes-label rig-made";
+            badge.textContent = "Clips made for this model";
+            badge.title = `A skeleton was built for this model (${rigMade.plan || "its body plan"}) and every clip passed its checks on it.`;
+            takesEl.appendChild(badge);
+          }
           const pick = document.createElement("select");
           pick.id = "rig-class";
           pick.className = "takes-select";
-          pick.title = "The body plan decides which skeleton the model gets.";
-          pick.innerHTML = Object.entries(RIG_NAMES).map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-          pick.value = rigClassChoice;
+          pick.title = "The body plan decides which skeleton the model gets, and which clips.";
+          if (rigPlans === null) loadRigPlans();
+          const plans = rigPlans && rigPlans.length
+            ? [["", "Body plan: auto"], ...rigPlans.map((p) => [`plan:${p.id}`, `${p.label}${p.built ? " · built for the model" : ""}`])]
+            : Object.entries(RIG_NAMES);
+          pick.innerHTML = plans.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+          // Until you pick one, show the plan this rig was built with (a built template), not "auto".
+          const shown = rigClassChoice || (made0() && rigMade.plan ? `plan:${rigMade.plan}` : "");
+          pick.value = plans.some(([v]) => v === shown) ? shown : "";
           pick.addEventListener("change", () => { rigClassChoice = pick.value; });
           takesEl.appendChild(pick);
+          takesEl.appendChild(rigAdvancedFold());
           const tears = rigChecks(doc).some((c) => (c.key === "seam" || c.key === "motion") && c.level === "fail");
           const kept = rigged && rigKeptHead();
           act(rigged ? "Re-rig" : "Rig it", `Fit a skeleton to the model, learn its skin weights and bake library clips. About 1-2 minutes.${kept ? " Head kept as made." : ""}`,
@@ -2862,7 +3018,62 @@
 
     // Body plans the rigger has a skeleton for ("" lets the local planner decide from the picture).
     const RIG_NAMES = { "": "Body plan: auto", humanoid: "Person", quadruped: "Four legs", multileg: "Many legs", avian: "Bird" };
+    // "" (rig.py picks), "plan:<id>" (a body plan from GET /rig/plans), or a class (before the plans load).
     let rigClassChoice = "";
+    // GET /rig/plans: [{id, label, blurb, class, built, clips}]; null until asked, [] when the factory has none.
+    let rigPlans = null;
+    let rigPlansAsked = false;
+    async function loadRigPlans() {
+      if (rigPlansAsked) return;
+      rigPlansAsked = true;
+      try {
+        rigPlans = (await factoryJson("/rig/plans")).plans || [];
+      } catch {
+        rigPlans = [];
+      }
+      if (flowStage === "rig") renderFlow();
+    }
+    // Advanced rig options (rig.py flags); "" leaves rig.py's default.
+    const RIG_ADVANCED = [
+      ["template", "Skeleton", [["", "auto"], ["build", "build for the model"], ["fixed", "the body plan's template"]],
+        "auto builds a skeleton for the model when its body plan can (a ground bird), else uses the body plan's template."],
+      ["binder", "Skin weights", [["", "skin-tokens"], ["pred", "predicted rig's"], ["heat", "Blender heat"]],
+        "How the skin weights are learned."],
+      ["pred", "Predicted skeleton", [["", "auto"], ["always", "always"], ["never", "never"]],
+        "Use the model's own predicted skeleton as the fitting target: auto (when the match is poor), always, never."],
+    ];
+    let rigAdvanced = { template: "", binder: "", pred: "" };
+    let rigAdvancedOpen = false;
+    function rigAdvancedFold() {
+      const fold = document.createElement("details");
+      fold.className = "rig-advanced";
+      fold.open = rigAdvancedOpen;
+      const set = RIG_ADVANCED.filter(([k]) => rigAdvanced[k]).length;
+      fold.innerHTML = `<summary class="takes-label" title="Skeleton, skin weights and predicted skeleton for the next Re-rig.">Advanced${set ? ` · ${set}` : ""}</summary>`
+        + RIG_ADVANCED.map(([k, label, opts, help]) => `<label class="rig-adv" title="${esc(help)}"><span>${esc(label)}</span><select class="takes-select" data-rig-adv="${k}">`
+          + opts.map(([v, l]) => `<option value="${v}"${rigAdvanced[k] === v ? " selected" : ""}>${esc(l)}</option>`).join("") + "</select></label>").join("");
+      fold.addEventListener("toggle", () => { rigAdvancedOpen = fold.open; });
+      fold.querySelectorAll("select").forEach((el) => el.addEventListener("change", () => {
+        rigAdvanced[el.dataset.rigAdv] = el.value;
+        const n = RIG_ADVANCED.filter(([k]) => rigAdvanced[k]).length;
+        fold.querySelector("summary").textContent = `Advanced${n ? ` · ${n}` : ""}`;
+      }));
+      return fold;
+    }
+    // rig/template/clips_report.json for a built template: { stem, plan, clips: {name: report} }, else null.
+    let rigMade = null;
+    const made0 = () => !!(rigMade && rigMade.stem === asset);
+    const GATE_WORDS = { stretch_p99: "stretch", cshape: "body shape", floor_min_H: "floor", foot_slide: "foot slide",
+      loop_seam_deg: "loop seam", head_hold_drift_H: "head hold", beak_gap_H: "beak to ground", belly_gap_H: "belly to ground",
+      abduct_deg: "wing stroke", wing_rise_H: "wing skin rises", wing_clear_H: "wing above the back", holds: "holds the end" };
+    function clipGateText(r) {
+      const g = r.gates || {};
+      const fmt = (x) => (Array.isArray(x) ? x.map(fmt).join("–") : typeof x === "number" ? (Math.abs(x) >= 10 ? x.toFixed(0) : x.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")) : String(x));
+      const bits = Object.entries(g).filter(([, d]) => d && typeof d === "object" && d.value != null)
+        .map(([k, d]) => `${d.ok === false ? "✗" : "✓"} ${GATE_WORDS[k] || k.replace(/_/g, " ")} ${fmt(d.value)}${d.limit != null ? ` (limit ${fmt(d.limit)})` : ""}`);
+      const tries = Array.isArray(r.attempts) && r.attempts.length > 1 ? ` · ${r.attempts.length} tries` : "";
+      return (bits.join("\n") + (r.energy != null ? `\nenergy ${fmt(Number(r.energy))}${tries}` : "")).trim();
+    }
     // out/<stem>/rig/inspect.json for the rigged.glb on screen: { stem, doc }, doc null when that version has none.
     let rigCheck = null;
     // Orbit was on when the check opened; it stops so the hover card stays put, and comes back on close.
@@ -2874,6 +3085,15 @@
       const get = (rel) => fetch(`/out/${encodeURIComponent(stem)}/${rel}?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
       const [doc, info] = await Promise.all([get("rig/inspect.json"), get("rig/rig.json")]);
       if (stem !== asset || currentFile !== "rigged.glb") return;
+      // rig.json template is {mode, rig, plan, built, dir} since built templates (a plain path before).
+      const tpl = info && info.template && typeof info.template === "object" ? info.template : null;
+      if (tpl && tpl.built) {
+        const rep = await get("rig/template/clips_report.json");
+        if (stem !== asset) return;
+        rigMade = { stem, plan: tpl.plan || (info && info.plan) || "", clips: (rep && rep.clips) || {}, failed: (info && info.clips_failed) || [] };
+      } else {
+        rigMade = null;
+      }
       const ok = doc && Array.isArray(doc.bones);
       // rig.json is the source of truth for how the rig was made; inspect.json files from before v2 lack rest.
       if (ok) doc.rig = { ...(info || {}), ...(doc.rig || {}), rest: (doc.rig && doc.rig.rest) || (info && info.rest) || null };
@@ -2967,7 +3187,8 @@
 
     async function rigAsset(cls, opts) {
       if (!asset) return;
-      const body = cls ? { class: cls } : {};
+      const body = !cls ? {} : cls.startsWith("plan:") ? { plan: cls.slice(5) } : { class: cls };
+      for (const [k] of RIG_ADVANCED) if (rigAdvanced[k]) body[k] = rigAdvanced[k];
       const straighten = opts && opts.straighten ? opts.straighten : rigKeptHead() ? "off" : "";
       if (straighten) body.straighten = straighten;
       await runJob(body, { title: `Rigging ${displayStem(asset)}`, path: `/rig/${encodeURIComponent(asset)}`, rig: true });
@@ -3007,9 +3228,12 @@
       showHome();
       setOutput(intent.output);
       const p = intent.psx || {};
+      // The saved facing is this asset's own picture's: keep it for the remake (the same picture) only.
       if (p.facing) {
-        const r = document.querySelector(`input[name="gen-facing"][value="${p.facing}"]`);
-        if (r) { r.checked = true; facingTouched = true; }
+        setFacing(p.facing, intent.facing_source || "user");
+        // A canonical draw's facing stays "drawn" (the note, not the radio); any other kept facing counts as a tap.
+        facingTouched = intent.facing_source !== "drawn";
+        keepFacingOnce = true;
       }
       if (p.height) document.getElementById("gen-psx-height").value = p.height;
       if (p.name) { document.getElementById("gen-psx-name").value = p.name; nameTouched = true; }
@@ -3196,6 +3420,7 @@
         <div class="hero-text">
           <p class="facts"><b>${esc(fbx)}</b>${r.fbx_texture ? ` + <b>${esc(r.fbx_texture.split("/").pop())}</b>` : ""} · ${Number(r.joints || 0)} bones · ${(r.clips || []).length} clips</p>
           <p class="facts">${(r.clips || []).map((c) => esc(c.replace(/_/g, " "))).join(", ")}</p>
+          <p class="facts rig-fbx-line" hidden></p>
           <div>
             <strong>Into s&amp;box</strong>
             <ol>
@@ -3206,6 +3431,38 @@
           </div>
         </div>`;
       body.prepend(el);
+      rigCardFacts(el, asset);
+    }
+
+    // The export card's FBX-checked line (rig.json fbx_check / fbx_note: the FBX read back in Blender) and the
+    // contact sheet as its picture.
+    async function rigCardFacts(el, stem) {
+      if (!stem) return;
+      const base = `/out/${encodeURIComponent(stem)}/rig/`;
+      const info = await fetch(`${base}rig.json?t=${Date.now()}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+      const fc = (info && info.fbx_check) || await fetch(`${base}fbx_check.json?t=${Date.now()}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+      const line = el.querySelector(".rig-fbx-line");
+      if (line && (fc || (info && info.fbx_note))) {
+        const acts = fc ? (Array.isArray(fc.actions) ? fc.actions.length : Number(fc.actions || 0)) : 0;
+        const bones = fc ? (Array.isArray(fc.bones) ? fc.bones.length : Number(fc.bones || 0)) : 0;
+        const text = fc && fc.ok
+          ? `FBX checked: ${acts} clips, ${bones} bones, ${Number(fc.max_influences || 0)} weights max, ${Number(fc.scene_fps || 0)} fps`
+          : fc ? `FBX check failed: ${(fc.problems || ["no report"]).join("; ")}` : String(info.fbx_note);
+        line.textContent = text + (fc && fc.ok && (fc.warnings || []).length ? ` · ${fc.warnings.length} warning${fc.warnings.length === 1 ? "" : "s"}` : "");
+        line.title = fc && (fc.warnings || []).length ? fc.warnings.join("\n") : "";
+        line.classList.toggle("is-fail", !!(fc && !fc.ok));
+        line.hidden = false;
+      }
+      const sheet = `${base}preview/contact_sheet.png`;
+      const ok = await fetch(sheet, { method: "HEAD" }).then((x) => x.ok).catch(() => false);
+      if (!ok || !el.isConnected) return;
+      const fig = document.createElement("figure");
+      fig.className = "rig-sheet";
+      fig.innerHTML = `<a href="${sheet}?t=${Date.now()}" target="_blank" rel="noopener" title="Every clip, from the side, front and three-quarter."><img alt="The rig's contact sheet" src="${sheet}?t=${Date.now()}" /></a><figcaption>contact sheet · every clip</figcaption>`;
+      el.classList.remove("no-figure");
+      el.prepend(fig);
+      const h = el.querySelector("h3");
+      if (h) el.prepend(h);
     }
 
     // The PS1 model: the files, the facts and how to bring it into s&box.
@@ -3271,7 +3528,18 @@
       let intent = assetIntent && (!output || assetIntent.output === output) ? assetIntent : null;
       if (!intent) {
         intent = { output: output || "model" };
-        if (intent.output === "ps1") intent.psx = { facing: "camera", height: 48 };
+        if (assetIntent) for (const k of ["subject", "kind", "name", "rig", "facing_source"]) if (assetIntent[k]) intent[k] = assetIntent[k];
+        if (intent.output === "ps1") intent.psx = { ...((assetIntent && assetIntent.psx) || {}), height: Number(((assetIntent && assetIntent.psx) || {}).height) || 48 };
+      }
+      // The concept knows which way its head points (flat/key.json: a canonical draw is side-on, head right);
+      // that beats any default. No facing at all is left to generate.sh (camera).
+      if (intent.output === "ps1" && still.endsWith("flat/source.png")) {
+        const key = await fetch(`/out/${encodeURIComponent(asset)}/flat/key.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+        const userSet = intent.facing_source === "user" && intent.psx && intent.psx.facing;
+        if (key && key.facing && !userSet) {
+          intent = { ...intent, psx: { ...(intent.psx || {}), facing: key.facing },
+            facing_source: key.canonical ? "drawn" : (key.facing_source || "detected") };
+        }
       }
       if (intent.output === "sprite") return enterStage("flat");
       clearStage("Generating");
@@ -4493,7 +4761,24 @@
       goToTake: (id) => pickTake("rig", id),
       compare: () => rigCompare(),
       obstacles: () => [takesEl],
+      renderSheet: (stem) => renderRigSheet(stem),
     });
+
+    // POST /rig/<stem>/render: the contact sheet as a job in the slot; waits for it (under a minute on the CPU).
+    async function renderRigSheet(stem) {
+      const started = await factoryJson(`/rig/${encodeURIComponent(stem)}/render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job: "default" }),
+      });
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const st = await factoryJson(`/status/${encodeURIComponent(started.job_id)}`);
+        if (st.state === "running") continue;
+        if (st.state !== "ok") throw new Error(st.error || `The render ${st.state}`);
+        return st;
+      }
+    }
     rigInspect.onClose = closeRigInspect;
 
     const stackLab = createStackLab({
@@ -5700,9 +5985,23 @@
         const base = first ? slugStem(first.kind === "file" ? first.file.name : first.id).replace(/-/g, "_") : "";
         document.getElementById("gen-psx-name").placeholder = base || "from the photo";
       }
+      // A new first picture: its facing is asked again (a tap on the old one doesn't carry over).
+      const firstKey = first ? (first.kind === "file" ? `file:${first.file.name}:${first.file.size}` : `asset:${first.path}`) : "";
+      const keep = keepFacingOnce;
+      keepFacingOnce = false;
+      if (firstKey !== facingFor) {
+        facingFor = firstKey;
+        if (!keep) {
+          facingTouched = false;
+          facingSource = "";
+          setFacing("camera", "");
+        }
+      }
       if (first && first.kind === "file") suggestFromPhoto(first.file);
-      else updateRoute();
+      renderFacingArrow();
+      checkFacing();
     }
+
     const genOverlay = document.getElementById("gen-overlay");
     const genOverlayLog = document.getElementById("gen-overlay-log");
     const genOverlayFill = document.getElementById("gen-overlay-fill");
@@ -6537,7 +6836,7 @@
       try {
         for (const item of queue) {
           if (item.kind === "asset") paths.push(item.path);
-          else paths.push((await uploadImage(item.file)).path);
+          else paths.push(item.uploaded || (item.uploaded = (await uploadImage(item.file)).path));
         }
       } catch (err) {
         holdGo(false);

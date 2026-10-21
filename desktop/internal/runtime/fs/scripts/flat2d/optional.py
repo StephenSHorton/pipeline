@@ -227,10 +227,16 @@ def sound_spec(part: dict) -> tuple[str, str]:
     return sound_file(str(part.get("id") or "")), prompt
 
 
-def still_prompt(text: str) -> str:
+def still_prompt(text: str, pose: str | None = None) -> str:
     """One object on a flat magenta ground, nothing else. The subject goes first (with it last,
     Qwen-Image dressed "a knight's sword" as a knight), and shadows, floors and effects are
-    ruled out one by one: they are what the magenta pull cannot take back out."""
+    ruled out one by one: they are what the magenta pull cannot take back out.
+    pose (a flat2d.pose.CREATURE_POSE kind, or the clause itself) replaces the floating-object clause with the
+    canonical creature pose: standing on the ground in strict profile, head toward the RIGHT edge."""
+    if pose:
+        from flat2d.pose import CREATURE_POSE
+
+        return text + ". " + CREATURE_POSE.get(pose, pose)
     return (
         text + ". A single object only, centered, floating, isolated on a solid flat magenta #FF00FF background. "
         "Flat even lighting from the front. No shadow, no drop shadow, no cast shadow, no contact shadow, "
@@ -270,10 +276,12 @@ def ground_flaws(image) -> list[str]:
     return ["shadow"] if shadow.mean() > CLEAN_SHADOW else []
 
 
-def clean_still(prompt: str, seed: int):
+def clean_still(prompt: str, seed: int, check=None):
     """Draw, and redraw on a new seed while the ground is cloudy or holds a shadow.
     When every try has a flaw, the one with the flattest ground is kept.
-    Returns the image, the seed it was drawn with, and the flaws the redraws were for."""
+    Returns the image, the seed it was drawn with, and the flaws the redraws were for.
+    check(image) -> {flaws, rank} adds its own flaws (the facing check: "facing", "profile") inside the same
+    REDRAWS loop; among flawed tries a clean ground comes first, then the lowest rank, then the flattest ground."""
     global _STUB_FLAWS_LEFT
     _STUB_FLAWS_LEFT = _stub_flaws()
     replaced: list[str] = []
@@ -290,11 +298,19 @@ def clean_still(prompt: str, seed: int):
             DRAW.preview(image)
             DRAW.ground()
         flaws = ground_flaws(image)
+        rank = 0
+        if check is not None:
+            got = check(image) or {}
+            rank = int(got.get("rank") or 0)
+            ground_bad = bool(flaws)
+            flaws = flaws + [f for f in got.get("flaws") or [] if f not in flaws]
+        else:
+            ground_bad = bool(flaws)
         if not flaws:
             return image, seed, replaced
-        noise = ground_key(image)["tol"]
-        if best is None or noise < best[0]:
-            best = (noise, image, seed)
+        score = (ground_bad, rank, ground_key(image)["tol"])
+        if best is None or score < best[0]:
+            best = (score, image, seed)
         if attempt < REDRAWS:
             replaced.extend(flaws)
             seed = random.randint(1, 2**31 - 1)
@@ -465,21 +481,87 @@ def still_image(prompt: str, seed: int = 1):
     raise FlatUnavailable("No local image model. Install mflux.")
 
 
-def generate_still(root: Path, stem: str, prompt: str) -> dict:
+def facing_checker(expected: str):
+    """A clean_still check for a posed creature: facing.detect_image on each try, judged against the expected
+    facing ('right' for a profile, 'camera' for a humanoid). Results are kept per image for the caller."""
+    import tempfile
+
+    import facing
+
+    seen: dict[int, dict] = {}
+
+    def check(image) -> dict:
+        _check_cancel()
+        if DRAW is not None and hasattr(DRAW, "line"):
+            DRAW.line("Checking which way the head points.")
+        with tempfile.TemporaryDirectory(prefix="still_facing_") as tmp:
+            path = Path(tmp) / "still.png"
+            image.save(path, format="PNG")
+            det = facing.detect_image(path)
+        verdict = facing.judge(det, expected)
+        seen[id(image)] = {"detect": det, **verdict}
+        return verdict
+
+    check.seen = seen
+    return check
+
+
+def canonical_result(image, kind: str, got: dict | None):
+    """After the draws: mirror a profile whose head points left (lossless for a profile), or give up canonical
+    for a picture that is not a profile. Returns (image, key fields for key.json)."""
+    from PIL import ImageOps
+
+    from flat2d.pose import FACING, POSE_NAME
+
+    expected = FACING[kind]
+    det = (got or {}).get("detect") or {}
+    check = {k: det.get(k) for k in ("head", "profile", "confidence", "how") if k in det}
+    canonical = True
+    if not got or det.get("how") == "unavailable":
+        check["how"] = "unchecked"
+        if det.get("why"):
+            check["why"] = det["why"]
+    elif got.get("ok"):
+        check["how"] = "vlm"
+    elif got.get("mirror"):
+        image = ImageOps.mirror(image)
+        check["how"] = "mirrored"
+        check["head_before"] = det.get("head")
+    else:
+        canonical = False
+        check["how"] = "not_canonical"
+        check["why"] = ("not a strict side profile; three-quarter views break retexture --mirror"
+                        if expected == "right" and det.get("profile") is not True
+                        else f"the head points {det.get('head') or 'nowhere clear'}, not {expected}")
+    fields = {"pose": POSE_NAME[kind], "facing": expected, "canonical": canonical, "facing_check": check}
+    if not canonical:
+        fields["facing"] = det.get("head") if det.get("head") in ("left", "right", "camera", "away") else None
+    return image, fields
+
+
+def generate_still(root: Path, stem: str, prompt: str, intent: dict | None = None) -> dict:
     text = " ".join((prompt or "").split())
     if not text:
         raise FlatUnavailable("empty prompt")
     backend = still_backend()
     if not backend:
         raise FlatUnavailable("No local image model. Install mflux.")
+    from flat2d.pose import FACING, pose_for
     from flat2d.store import save_source
 
+    kind = pose_for(intent, text)
+    check = facing_checker(FACING[kind]) if kind else None
     # A new seed each press, like Ideas; seed 1 every time drew the same picture.
-    image, seed, redrawn = clean_still(still_prompt(text), random.randint(1, 2**31 - 1))
+    image, seed, redrawn = clean_still(still_prompt(text, kind), random.randint(1, 2**31 - 1), check=check)
+    posed = None
+    if kind:
+        image, posed = canonical_result(image, kind, check.seen.get(id(image)))
     buf = __import__("io").BytesIO()
     image.save(buf, format="PNG")
     saved = save_source(root, stem, buf.getvalue())
     key = ground_key(image)
+    if posed:
+        key = {**key, **posed}
     write_json(flat_dir(root, stem) / "key.json", key)
     note = flat_dir(root, stem) / "prompt.txt"
     note.write_text(text + "\n", encoding="utf-8")
@@ -488,6 +570,9 @@ def generate_still(root: Path, stem: str, prompt: str) -> dict:
     saved["still"] = backend
     saved["seed"] = seed
     saved["redrawn"] = redrawn
+    if posed:
+        saved.update(posed)
+        saved["kind"] = kind
     return saved
 
 

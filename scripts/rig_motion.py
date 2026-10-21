@@ -111,6 +111,7 @@ def measure_arrays(P: np.ndarray, F: np.ndarray, J: np.ndarray, W: np.ndarray, t
     Ph = np.c_[P, np.ones(len(P))]
     tears, tear_t, gap_max, strains = 0, None, 0.0, []
     best = (-1.0, 0.0, 0)  # strain, t, edge
+    worst_c, worst_p99 = None, -1.0  # the frame whose 1% of edges stretch most: who owns those edges
     for t, mats in poses:
         X = skin(Ph, J, W, mats)
         c = np.zeros((ng, 3))
@@ -125,12 +126,23 @@ def measure_arrays(P: np.ndarray, F: np.ndarray, J: np.ndarray, W: np.ndarray, t
         if len(E):
             st = np.abs(np.log(np.maximum(np.linalg.norm(c[E[:, 0]] - c[E[:, 1]], axis=1), 1e-12) / l0))
             strains.append(st)
+            p = float(np.percentile(st, 99))
+            if p > worst_p99:
+                worst_p99, worst_c = p, c
             k = int(st.argmax())
             if st[k] > best[0]:
                 best = (float(st[k]), t, k)
     S = np.concatenate(strains) if strains else np.zeros(1)
     bone = names[int(top_bone[first[E[best[2], 0]]])] if len(E) and best[0] >= 0 else None
-    return {"tears": tears, "tear_t": None if tear_t is None else round(float(tear_t), 2),
+    owners = []
+    if worst_c is not None and len(E):
+        import rig_metrics
+        P0 = np.zeros((ng, 3))
+        np.add.at(P0, inv, P)
+        P0 /= cnt
+        own = rig_metrics.stretch_owners(P0, worst_c, E, np.asarray(top_bone)[first], names)
+        owners = [[n, int(c_)] for n, c_ in own["owners"]]
+    return {"stretch_owners": owners, "tears": tears, "tear_t": None if tear_t is None else round(float(tear_t), 2),
             "worst_gap_pct": round(100 * gap_max, 2), "stretch_max": round(float(np.exp(S.max())), 2),
             "stretch_p99": round(float(np.exp(np.percentile(S, 99))), 2), "worst_t": round(float(best[1]), 2),
             "worst_bone": bone}

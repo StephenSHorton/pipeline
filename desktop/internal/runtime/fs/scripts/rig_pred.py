@@ -63,12 +63,36 @@ LYING = {"Sleep", "Death", "lay_to_idle"}
 
 # ---------------------------------------------------------------- predict
 
-def predict(source: Path, work: Path) -> tuple[Path, float, bool]:
-    """skin-tokens `rig` on the source mesh -> rig/pred_rig.glb (cached by the source's content)."""
-    out = work / "pred_rig.glb"
-    key_f = work / "pred_rig.json"
+def _mode(mode: str | None, beams: int | None, temperature: float | None) -> tuple[str, list[str]]:
+    """Cache tag and extra CLI flags for a prediction mode. The default (greedy) mode has tag '' and no flags."""
+    if mode == "beam" and not beams:
+        beams = 4
+    if mode == "sampled" and temperature is None:
+        temperature = 0.7
+    flags, tag = [], []
+    if beams and int(beams) > 1:
+        flags += ["--beams", str(int(beams))]
+        tag.append(f"beam{int(beams)}")
+    if temperature is not None and float(temperature) > 0:
+        flags += ["--temperature", f"{float(temperature):g}"]
+        tag.append(f"t{float(temperature):g}")
+    return "-".join(tag), flags
+
+
+def predict(source: Path, work: Path, beams: int | None = None, temperature: float | None = None,
+            mode: str | None = None) -> tuple[Path, float, bool]:
+    """skin-tokens `rig` on the source mesh -> rig/pred_rig.glb (cached by the source's content).
+
+    beams / temperature (or mode 'beam' / 'sampled') ask for a beam-searched or sampled prediction; those land in
+    rig/pred_rig.<mode>.glb with the mode in the cache key, so the default prediction and its cache are unchanged."""
+    tag, flags = _mode(mode, beams, temperature)
+    stem = f"pred_rig.{tag}" if tag else "pred_rig"
+    out = work / f"{stem}.glb"
+    key_f = work / f"{stem}.json"
     import hashlib
     key = hashlib.md5(source.read_bytes()).hexdigest()  # a straightened copy is rewritten every run: key on content
+    if tag:
+        key += ":" + tag
     if out.is_file() and key_f.is_file():
         got = json.loads(key_f.read_text())
         if got.get("key") == key:
@@ -76,12 +100,23 @@ def predict(source: Path, work: Path) -> tuple[Path, float, bool]:
     cli = rig.SKIN / "build" / "release" / "bin" / "skintokens-cli"
     model = rig.SKIN / "models" / "SkinTokens-GGUF" / "F16"
     t = time.time()
-    proc = subprocess.run([str(cli), "rig", str(model), str(source), str(out), "--device", "auto"], capture_output=True, text=True)
+    proc = subprocess.run([str(cli), "rig", str(model), str(source), str(out), "--device", "auto"] + flags,
+                          capture_output=True, text=True)
     if proc.returncode != 0 or not out.is_file():
         raise RuntimeError("skin-tokens rig failed: " + (proc.stderr or proc.stdout)[-600:])
     secs = time.time() - t
-    key_f.write_text(json.dumps({"key": key, "seconds": round(secs, 1)}))
+    key_f.write_text(json.dumps({"key": key, "seconds": round(secs, 1), **({"mode": tag} if tag else {})}))
     return out, secs, False
+
+
+def paths_for(cls: str, plan: dict | None = None) -> dict | None:
+    """The template paths for a class: the body plan's (rig_plan.spec) when given, else PATHS[cls]."""
+    if plan:
+        import rig_plan
+        got = rig_plan.spec(plan, cls, "paths", None)
+        if got:
+            return got
+    return PATHS.get(cls)
 
 
 # ---------------------------------------------------------------- the predicted skeleton
@@ -347,9 +382,10 @@ def lay(P: dict, children: dict, chain: list[str], line: np.ndarray, keep_tail_r
 
 
 def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarray, tV: np.ndarray, tF: np.ndarray,
-             H_t: float) -> dict:
-    """Template joints (name -> template-frame position, changed in place) onto the predicted lines (template frame)."""
-    spec = PATHS[cls]
+             H_t: float, plan: dict | None = None) -> dict:
+    """Template joints (name -> template-frame position, changed in place) onto the predicted lines (template frame).
+    plan: the body plan whose paths to use (rig_plan.spec); PATHS[cls] without one."""
+    spec = paths_for(cls, plan)
     rep = {"paths": [], "unsupported": []}
     root_t = (lines_t.get("body") or lines_t.get("tail") or {}).get("line")
     if root_t is not None and "hips" in P:
@@ -672,13 +708,16 @@ def _two_bone(pos: dict, rot: dict, A: int, B: int, K: int, target: np.ndarray, 
 
 
 def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: np.ndarray, template: dict, cls: str,
-               scale_y: float, lateral: np.ndarray) -> dict:
+               scale_y: float, lateral: np.ndarray, plan: dict | None = None, prefer_track: bool = False) -> dict:
     """Changes the baked clips in place (local quats of leg / neck joints, root translation), per frame:
     1. the body (all but the head) is grounded like the template's: its lowest point at the template's clearance
        above its floor, scaled (0 whenever the template touches);
     2. each foot is bent / stretched (two-bone IK at hip and knee, the foot kept level) to the template foot's
        clearance above the template body's lowest point, scaled (0 in stance), then 1. again (three rounds);
     3. a head that still goes through the floor is lifted at the neck (about the lateral axis, up to 45 degrees).
+    plan: the body plan whose leg / neck_lift paths to use (PATHS[cls] without one). prefer_track: a clip that carries
+    its own contacts (c['track']['contact'], rig_clips) plants each foot on its own stance frames (clearance 0 there)
+    and is never neck-lifted on its beak-contact frames (a Peck touches the floor on purpose).
     Returns per clip, before and after: lowest point vs the floor and floating in the template's contact frames (/H)."""
     fk = FK(ours)
     names = [ours["nodes"][j]["name"] for j in fk.joints]
@@ -687,7 +726,7 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
     if len(P) > 12000:  # a dense mesh (a 52k-vertex person): every k-th vertex, plus the lowest ones, is plenty for a floor
         keep = np.unique(np.r_[np.arange(0, len(P), len(P) // 8000), np.argsort(P[:, 1])[:500]])
         P, J, W = P[keep], J[keep], W[keep]
-    spec = PATHS.get(cls)
+    spec = paths_for(cls, plan)
     fix = spec is not None  # a class without leg paths here (people) is only grounded (step 1), no IK
     spec = spec or {"legs": [], "neck_lift": None}
     if not clips:
@@ -717,6 +756,18 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
             continue
         before, after, flo_b, flo_a, neck_deg = [], [], [], [], []
         contact = tr["low"] / track["H"] < 0.02
+        own = ((c.get("track") or {}).get("contact") or {}) if prefer_track else {}
+        F_ = len(c["times"])
+
+        def own_mask(key: str) -> np.ndarray | None:
+            m = own.get(key)
+            if m is None:
+                return None
+            m = np.asarray(m, bool).reshape(-1)
+            return m if len(m) == F_ else None
+        foot_own = {cch[-1]: own_mask(cch[-1]) for cch in legs}
+        beak = own_mask("beak")
+        tracked = bool(own) and any(m is not None for m in foot_own.values())
         for f in range(len(c["times"])):
             quats = {j: c["rot"][j][f].astype(float) for j in c["rot"]}
             trans = {rootn: c["root_t"][f].astype(float)}
@@ -737,7 +788,11 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                         continue
                     A, B, K = node_of[cch[0]], node_of[cch[1]], node_of[cch[-1]]
                     Vf = _skin(P[foot_v[li]], J[foot_v[li]], W[foot_v[li]], fk, pos, rot)
-                    need = (want + max(0.0, float(tr["foot"][cch[-1]][f])) * k_scale) - float(Vf[:, 1].min())
+                    fo = foot_own.get(cch[-1])
+                    if fo is not None and not fo[f]:
+                        continue  # a swing frame of a clip with its own contacts: its IK already lifts the foot
+                    clear = 0.0 if fo is not None else max(0.0, float(tr["foot"][cch[-1]][f]))
+                    need = (want + clear * k_scale) - float(Vf[:, 1].min())
                     if abs(need) < 0.002 * H:
                         continue
                     qB, qA = _two_bone(pos, rot, A, B, K, pos[K] + np.array([0, need, 0]), lateral)
@@ -753,7 +808,7 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
             pos, rot = fk.world(quats, trans)
             V = _skin(P, J, W, fk, pos, rot)
             lifted = 0.0
-            if fix and head_v.any() and floor - float(V[head_v, 1].min()) > 0.005 * H:
+            if fix and head_v.any() and not (beak is not None and beak[f]) and floor - float(V[head_v, 1].min()) > 0.005 * H:
                 nj = node_of[neck]
                 pn = fk.parent[nj]
                 for ang in np.radians(np.arange(2, 46, 2)):
@@ -780,7 +835,8 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                           "float_max_before": round(float(max(flo_b)), 3) if flo_b else None,
                           "float_max_after": round(float(max(flo_a)), 3) if flo_a else None,
                           "contact_frames": int(contact.sum()), "frames": len(c["times"]),
-                          "neck_lift_max_deg": round(max(neck_deg), 1), "fixed": fix}
+                          "neck_lift_max_deg": round(max(neck_deg), 1), "fixed": fix,
+                          **({"own_contacts": True} if tracked else {})}
     return out
 
 
@@ -791,7 +847,8 @@ def _arc(pts: np.ndarray) -> np.ndarray:
     return s / max(s[-1], 1e-9)
 
 
-def fallback_clips(p: Pred, lab: dict, template: dict, cls: str, names: list[str], yaw: float) -> tuple[list[dict], dict]:
+def fallback_clips(p: Pred, lab: dict, template: dict, cls: str, names: list[str], yaw: float,
+                   plan: dict | None = None) -> tuple[list[dict], dict]:
     """Template clips on the predicted skeleton, chain by chain: each predicted joint takes the world rotation change
     of the template joint at the same arc-length fraction of the matching chain (turned by the facing yaw); joints on
     no chain follow their parent. For when the template can't be fitted (the pose gate failed)."""
@@ -799,10 +856,13 @@ def fallback_clips(p: Pred, lab: dict, template: dict, cls: str, names: list[str
     tsk = rig.Skeleton(tdoc)
     ref_w = tsk.world(rig.ref_local(template, tsk))
     tpos = {n: ref_w[i][0] for n, i in tsk.index.items()}
-    spec = PATHS[cls]
+    spec = paths_for(cls, plan)
     Ry = R.from_euler("y", yaw, degrees=True)
+    import rig_plan
+    neck_from = rig_plan.spec(plan, cls, "neck_from", None) or {"avian": "spine_2", "quadruped": "spine_4"}.get(cls)
+    if neck_from not in spec["body"]:
+        neck_from = spec["body"][min(2, len(spec["body"]) - 1)]
     plan: dict[int, str] = {}
-    neck_from = {"avian": "spine_2", "quadruped": "spine_4"}[cls]
     head_t = spec["body"][spec["body"].index(neck_from):]
     legs_t = [c for c in spec["legs"] if all(n in tpos for n in c)]
     legs_p = [d for d in lab["chains"] if d["label"] == "leg"]

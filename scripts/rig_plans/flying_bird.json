@@ -1,0 +1,37 @@
+{
+  "id": "flying_bird",
+  "version": 1,
+  "label": "Flying bird",
+  "blurb": "Seagull, crow, eagle: spread wings that flap and glide, a short walk on the ground",
+  "class": "avian",
+  "aliases": ["avian", "avian-flying", "bird"],
+  "select": {"class": "avian"},
+  "fixed_template": {
+    "rig": "rigs/rig-bird.glb",
+    "clips": ["animations/bird-animations.glb"],
+    "ref": "Idle",
+    "default": ["Idle", "Walk", "Flap", "Glide"]
+  },
+  "builder": null,
+  "names": "rig-bird",
+  "side_suffix": ["_L", "_R"],
+  "frame": {"up": "+y", "forward": "+z", "left": "+x", "floor": 0.0},
+  "caps": {"legs": 2, "leg_kind": "digitigrade", "neck": true, "tail": true, "wings": "spread", "flight": true, "beak": true, "jaw": true, "toes": true},
+  "trial_when_upright": true,
+  "paths": {
+    "body": ["hips", "spine_0", "spine_1", "spine_2", "spine_3", "head", "mouth_upper", "mouth_upper_tip"],
+    "tail": ["hips", "tail_1", "tail_2", "tail_3", "tail_tip"],
+    "legs": [["UpperLeg_L", "LowerLeg_L", "AnkleLeg_L", "Foot_L"], ["UpperLeg_R", "LowerLeg_R", "AnkleLeg_R", "Foot_R"]],
+    "groups": {"wings": ["wing_1_L", "wing_1_R"]},
+    "needs": {"wings": ["Flap", "Glide"]},
+    "neck_lift": "spine_2"
+  },
+  "ref": "Idle",
+  "clips": [
+    {"name": "Idle", "gen": "vendor"},
+    {"name": "Walk", "gen": "vendor"},
+    {"name": "Flap", "gen": "vendor"},
+    {"name": "Glide", "gen": "vendor"}
+  ],
+  "default": ["Idle", "Walk", "Flap", "Glide"]
+}

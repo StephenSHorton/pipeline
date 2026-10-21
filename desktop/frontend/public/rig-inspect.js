@@ -17,15 +17,23 @@ const MODES = [
 const VIEWS = [["side", "Side", [1, 0, 0]], ["front", "Front", [0, 0, 1]], ["top", "Top", [0, 1, -0.001]], ["free", "3/4", [0.72, 0.38, 1]]];
 const ORDER = { fail: 0, warn: 1, pass: 2 };
 const MINOR = /leaf|tip|_end$/;
-const NO_FIT = /leaf|tip|_end$|^ear/; // ears move few points: never a fit problem worth leading with
-const LEG = /leg|foot|toe|thigh|shin|calf|knee|hoof|ball|humerus|femur|tibia/;
-const ARM = /arm|hand|shoulder|clavicle|elbow|wrist|finger/;
+// Case-insensitive: the bird and spider rigs name legs UpperLeg_L, Foot_R, Toes_tip_L.
+const NO_FIT = /leaf|tip|_end$|^ear/i; // ears move few points: never a fit problem worth leading with
+const LEG = /leg|foot|toe|thigh|shin|calf|knee|hoof|ball|humerus|femur|tibia/i;
+const ARM = /arm|hand|shoulder|clavicle|elbow|wrist|finger/i;
+// Stick colours by bone role (inspect.json bones[].role), the same as rig_render.py's ROLE_RGB.
+const ROLE_RGB = { leg: [26, 102, 255], wing: [255, 128, 0], spine: [255, 255, 26], head: [255, 26, 255], tail: [26, 255, 77],
+  other: [240, 234, 220], root: [110, 110, 110] };
+const ROLE_WORDS = { leg: "legs", wing: "wings", spine: "spine and neck", head: "head", tail: "tail", other: "other", root: "root" };
 // The rig's own steps, in the order rig.py runs them; every check belongs to one.
 export const STEPS = [["plan", "Body plan"], ["rest", "Rest pose"], ["skeleton", "Skeleton"], ["skin", "Skin"], ["motion", "In motion"]];
 const KEY_STEP = { planner: "plan", rest: "rest", head: "skeleton", fit: "skeleton", moved: "skeleton", facing: "skeleton", match: "skeleton",
-  pose: "skeleton", pred: "skeleton", seam: "skin", folded: "skin", clips: "motion", motion: "motion", far: "motion", stretch: "motion",
-  floor: "motion", unsupported: "motion" };
-const PLANS = { quadruped: "Four legs", humanoid: "Person", multileg: "Many legs", avian: "Bird" };
+  pose: "skeleton", pred: "skeleton", template: "skeleton", built: "skeleton", seam: "skin", folded: "skin", a2: "skin", foot: "skin",
+  parts: "skin", clips: "motion", motion: "motion", far: "motion", stretch: "motion", floor: "motion", unsupported: "motion",
+  cshape: "motion", slide: "motion", loop_seam: "motion", fbx: "motion" };
+// Classes (the planner's choice) and body plans (scripts/rig_plans/: rig.json plan, inspect template.plan).
+const PLANS = { quadruped: "Four legs", humanoid: "Person", multileg: "Many legs", avian: "Bird",
+  ground_bird: "Ground bird", flying_bird: "Flying bird", horse: "Four legs", biped: "Two legs, two arms", spider: "Many legs" };
 // Why a check matters, what the rigger did about it, and what you can do (To fix). Each is a string, a map by
 // level, or a function of (check, doc).
 const turnedAtBirth = (doc) => !!(doc && doc.rig && doc.rig.rest && doc.rig.rest.measured && doc.rig.rest.measured.turned);
@@ -92,6 +100,40 @@ const CHECK_HELP = {
     why: "A tear only shows when the model moves, so every clip is played and measured.",
     fix: { fail: "Re-rig to fix it." },
   },
+  template: {
+    why: "A skeleton built for this model sits on its own legs, neck, tail and wings, so its clips are made for its shape instead of borrowed from another animal's.",
+    did: { pass: "Built the skeleton from the model's predicted joints and made every clip for it.", warn: "Used the body plan's template instead." },
+    fix: { fail: "Re-rig. If it keeps failing, pick the body plan's template under Advanced.", warn: "Re-rig with Skeleton: build for the model under Advanced to see why." },
+  },
+  built: {
+    why: "Every joint of a built skeleton has to sit inside the body, both sides have to match, and the feet have to stand on the model's feet.",
+    fix: { fail: "Re-rig. A model whose head doesn't point to +Z (the picture's right) can't be built; redraw it side-on, head right." },
+  },
+  a2: {
+    why: "Weight on a bone far from the point it moves flings that point across the model in motion.",
+    fix: { warn: "Re-rig, or try another skin-weight binder under Advanced." },
+  },
+  foot: {
+    why: "The soles should follow the leg bones. A sole pulled by the body slides and sinks when the legs step.",
+  },
+  parts: {
+    why: "Each part (neck, legs, wings) should mostly follow its own bones; a part that leaks weight to the body bends with it instead.",
+    fix: { warn: "Re-rig, or try another skin-weight binder under Advanced." },
+  },
+  cshape: {
+    why: "A clip shouldn't grow the body's box much beyond its rest size; when it does, the body is being stretched rather than moved.",
+  },
+  slide: {
+    why: "A foot that is planted should stay put on the floor. A sliding foot looks like ice-skating.",
+    did: (c, doc) => (doc && doc.template && doc.template.built ? "Measured on the clips' own planted frames." : "Planted frames are guessed for these library clips, so this only warns."),
+  },
+  loop_seam: {
+    why: "A looping clip's last frame should match its first, or the loop jumps once per cycle. (Tears at corners are under Skin.)",
+  },
+  fbx: {
+    why: "The FBX is read back into Blender after export, to prove s&box will see every clip, every bone and at most 4 weights per point.",
+    fix: { fail: "Re-rig. If it keeps failing, export the rigged GLB instead." },
+  },
 };
 const helpText = (h, c, doc) => (typeof h === "function" ? h(c, doc) : h && typeof h === "object" ? h[c.level] : h) || "";
 const MOTION_HELP = "Every clip was played on this rig and measured. Tears: points whose corners come apart. Stretch: how far the worst 1% of edges grow or shrink; low-poly knees always change some.";
@@ -136,7 +178,7 @@ export function createRigInspect({
   THREE, scene, root, camera, controls, renderer, viewCamera, pixelScale, pane, clip,
   playAt = () => {}, resume = () => {}, restPose = () => {}, loadGLB = null, originalUrl = () => null,
   rerig = () => {}, recheck = () => Promise.resolve(), goToTake = () => {}, compare = () => null,
-  obstacles = () => [],
+  obstacles = () => [], renderSheet = null,
 }) {
   const panel = document.createElement("aside");
   panel.className = "rig-inspect";
@@ -150,7 +192,7 @@ export function createRigInspect({
   pane.append(labels, tip, panel);
 
   // open: the check row shown in full; head: rigged | original | both; paused: { clip, t } from the In motion table.
-  const S = { mode: "bones", bone: -1, skel: true, filter: "", open: "", head: "rigged", paused: null };
+  const S = { mode: "bones", bone: -1, skel: true, filter: "", open: "", head: "rigged", paused: null, tab: "checks" };
   let ghost = null; // the original model over (or instead of) the rig, at the rest pose
   let ghostTok = 0;
   const glbs = new Map();
@@ -174,6 +216,9 @@ export function createRigInspect({
   let mouse = null;
   let down = null;
   let colors = null;
+  let roles = []; // bone role per skin joint (inspect.json bones[].role): leg, wing, spine, head, tail, other, root
+  const roleCol = Object.fromEntries(Object.entries(ROLE_RGB).map(([k, [r, g, b]]) => [k, new THREE.Color(r / 255, g / 255, b / 255)]));
+  let sheet = { stem: "", ok: null, v: 0, busy: false, error: "" }; // rig/preview/contact_sheet.png
   const colMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, flatShading: true });
   const grey = new THREE.Color(0.27, 0.27, 0.3);
   const cold = new THREE.Color(0.05, 0.05, 0.35);
@@ -237,6 +282,10 @@ export function createRigInspect({
     const seen = {};
     for (const l of lab) seen[l] = (seen[l] || 0) + 1;
     nice = lab.map((l, i) => (seen[l] > 1 ? `${l} ${(names[i].match(/(\d+)/) || [])[1] || ""}`.trim() : l));
+    roles = names.map((n) => {
+      const k = doc.bones.findIndex((b) => b.name === n);
+      return (k >= 0 && (doc.bones[k].role || (doc.roles || [])[k])) || "";
+    });
     pal = names.map((_, i) => new THREE.Color().setHSL((i * 0.618034) % 1, 0.62, 0.55));
     NV = mesh.geometry.attributes.position.count;
     const tf = doc.weights && doc.weights.top_final;
@@ -317,7 +366,8 @@ export function createRigInspect({
       if (!b.parent || !b.parent.isBone) continue;
       const k = names.indexOf(b.name);
       const pk = names.indexOf(b.parent.name);
-      const col = k === S.bone || pk === S.bone ? hot : b.parent.name === "root" ? dim : ink;
+      const role = roles[k];
+      const col = k === S.bone || pk === S.bone ? hot : b.parent.name === "root" ? dim : role && ROLE_RGB[role] ? roleCol[role] : ink;
       ca.setXYZ(i++, col.r, col.g, col.b);
       ca.setXYZ(i++, col.r, col.g, col.b);
     }
@@ -687,8 +737,31 @@ export function createRigInspect({
     pose: () => { S.skel = true; },
     facing: () => { S.skel = true; setView("side"); },
     pred: () => { S.skel = true; },
+    template: () => { S.skel = true; S.mode = "bones"; setView("side"); },
+    built: () => { S.skel = true; S.mode = "texture"; setView("side"); },
+    // The bone with the most far weight, or the sole's worst owner, as One bone.
+    a2: (c) => { const n = ((c.worst || [])[0] || [])[0]; if (n && names.includes(n)) focusBone(n, sideOf(n)); else S.mode = "bones"; },
+    foot: (c) => { const n = ((c.owners || [])[0] || [])[0]; if (n && names.includes(n)) focusBone(n, "side"); else { S.mode = "bones"; setView("side"); } },
+    parts: () => { S.mode = "bones"; S.skel = true; setView("side"); },
+    cshape: (c) => worstClipMoment(c),
+    slide: (c) => worstClipMoment(c),
+    loop_seam: (c) => worstClipMoment(c, true),
+    fbx: () => ".rig-inspect-motion",
   };
+  // The clip a per-clip row is about (its worst, from c.clips {clip: value | [x,y,z]}), paused at its worst moment
+  // (or its first frame for a loop seam).
+  function worstClipMoment(c, start) {
+    const vals = Object.entries(c.clips || {}).map(([n, v]) => [n, Array.isArray(v) ? Math.max(...v) : Number(v)]);
+    const pick = (c.over && c.over[0]) || (vals.sort((a, b) => b[1] - a[1])[0] || [])[0];
+    if (!pick) return ".rig-inspect-motion";
+    const m = doc.motion && doc.motion.clips && doc.motion.clips[pick];
+    atMoment(pick, start ? 0 : (m && m.worst_t) || 0, false, start ? "" : m && m.worst_bone);
+    if (start) { S.mode = "texture"; S.skel = true; setView("side"); }
+    return undefined;
+  }
   const canShow = (c) => !!SHOW[c.key]
+    && (!["cshape", "slide", "loop_seam"].includes(c.key) || Object.keys(c.clips || {}).length > 0)
+    && (c.key !== "fbx" || !!doc.motion)
     && (c.key !== "rest" || (rest() && rest().straightened ? headUI() : !!(rest() && rest().measured && rest().measured.turned && names.includes("head"))))
     && (!["head", "fit"].includes(c.key) || names.includes(c.bone || "head"))
     && (c.key !== "motion" || (c.level === "fail" ? !!c.clip : !!doc.motion))
@@ -785,12 +858,15 @@ export function createRigInspect({
       const [bw, br] = headWords(b.head);
       rows.push(["Head", aw === bw ? "same" : pair(ar, br, aw, bw, false)]);
     }
-    // Stretch per clip: the two that changed most, the rest behind a toggle.
+    // Stretch per clip: the two that changed most, the rest behind a toggle. The same figure as the In motion table
+    // (1% of edges) when both versions have it; older summaries only kept the single worst edge.
+    const p99 = Object.entries(b.motion || {}).every(([n, m]) => m.stretch_p99 != null && (!a.motion || !a.motion[n] || a.motion[n].stretch_p99 != null));
+    const sOf = (m) => Number(p99 ? m.stretch_p99 : m.stretch_max);
     const both = Object.entries(b.motion || {}).filter(([n]) => a.motion && a.motion[n])
-      .map(([n, m]) => [n, a.motion[n].stretch_max, m.stretch_max])
+      .map(([n, m]) => [n, sOf(a.motion[n]), sOf(m)])
       .sort((x, y) => Math.abs(Math.log(y[2] / y[1])) - Math.abs(Math.log(x[2] / x[1])));
     const shown = S.allClips ? both : both.slice(0, 2);
-    for (const [n, o, m] of shown) rows.push([`${esc(tidy(n))} stretch`, pair(o, m, `${o.toFixed(1)}×`, `${m.toFixed(1)}×`)]);
+    for (const [n, o, m] of shown) rows.push([`${esc(tidy(n))} stretch${p99 ? " (1% of edges)" : " (worst edge)"}`, pair(o, m, `${o.toFixed(1)}×`, `${m.toFixed(1)}×`)]);
     const more = both.length > 2 ? `<button type="button" class="rig-inspect-link rig-compare-more" data-all-clips>${S.allClips ? "Fewer clips" : `All ${both.length} clips`}</button>` : "";
     if (a.class && b.class) rows.push(["Body plan", a.class === b.class ? "same" : `${esc(PLANS[a.class] || a.class)} → ${esc(PLANS[b.class] || b.class)}`]);
     rows.push(["Model", c.sameModel ? "same model" : "made from a different model"]);
@@ -811,9 +887,24 @@ export function createRigInspect({
       const cs = checks.filter((c) => c.step === id);
       return cs.length ? `<div class="rig-step"><div class="rig-step-title">${title}</div>${cs.map(checkRow).join("")}</div>` : "";
     }).join("");
+    const built = !!(t.built);
+    const planName = PLANS[t.plan] || PLANS[doc.rig && doc.rig.plan] || t.plan || "";
+    const tabs = `<div class="dock-group rig-inspect-tabs">
+        <button type="button" data-tab="checks" aria-pressed="${S.tab !== "sheet"}" title="What the rigger decided and how it measured.">Checks</button>
+        <button type="button" data-tab="sheet" aria-pressed="${S.tab === "sheet"}" title="Every clip rendered on the CPU from fixed cameras: the contact sheet.">Sheet</button>
+      </div>`;
+    const bar = `<div class="rig-inspect-bar"><span>Rig check</span><button type="button" class="rig-inspect-close" title="Close the rig check" aria-label="Close">×</button></div>`;
+    const badge = built ? `<div class="rig-inspect-badge" title="rig/template/: a skeleton and clips made for this model${planName ? ` from the ${esc(planName.toLowerCase())} body plan` : ""}.">Skeleton built for this model${planName ? ` · ${esc(planName)}` : ""}</div>` : "";
+    if (S.tab === "sheet") {
+      panel.innerHTML = `${bar}<div class="rig-inspect-body">${badge}${tabs}${sheetBlock()}</div>`;
+      if (sheet.stem !== stem || sheet.ok === null) checkSheet();
+      return;
+    }
     panel.innerHTML = `
-      <div class="rig-inspect-bar"><span>Rig check</span><button type="button" class="rig-inspect-close" title="Close the rig check" aria-label="Close">×</button></div>
+      ${bar}
       <div class="rig-inspect-body">
+        ${badge}
+        ${tabs}
         <div class="rail-label">How it was rigged</div>
         <div class="rig-inspect-checks">${steps}</div>
         ${motionBlock()}
@@ -841,7 +932,8 @@ export function createRigInspect({
         </div>
         <details class="rig-inspect-more"${S.details ? " open" : ""}><summary class="rail-label">Skeleton fit</summary>
         <table>
-          <tr><td>Template</td><td>${esc(String(t.rig || "?").split("/").pop().replace(/\.glb$/, ""))}</td></tr>
+          <tr><td>Template</td><td>${built ? `Built for this model${planName ? ` (${esc(planName)})` : ""}` : esc(String(t.rig || "?").split("/").pop().replace(/\.glb$/, ""))}</td></tr>
+          ${roles.some(Boolean) ? `<tr><td>Stick colours</td><td>${[...new Set(roles.filter((r) => r && r !== "root"))].map((r) => `<span class="rig-inspect-sw" style="background:#${roleCol[r] ? roleCol[r].getHexString() : "f0eadc"}"></span>${esc(ROLE_WORDS[r] || r)}`).join(" ")}</td></tr>` : ""}
           <tr><td>Start pose</td><td>${esc(t.ref_clip || "?")}, first frame</td></tr>
           <tr><td>Scale</td><td>${fmt(t.fit_scale)}</td></tr>
           <tr><td>Offset (m)</td><td>${(t.fit_offset || []).map((x) => fmt(x)).join(", ")}</td></tr>
@@ -851,6 +943,35 @@ export function createRigInspect({
         ${(doc.notes || []).length ? `<div class="rail-label">What the rigger did</div><ul class="rig-inspect-notes">${doc.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
       </div>`;
     panel.querySelector(".rig-inspect-body").scrollTop = scroll;
+  }
+
+  // The contact sheet (rig_render.py): Rest then every clip; columns side (camera at the model's left, so a head
+  // at +Z shows on the left), front and three-quarter. Floor line red.
+  function sheetUrl() { return `/out/${encodeURIComponent(stem)}/rig/preview/contact_sheet.png?v=${sheet.v}`; }
+  async function checkSheet() {
+    const want = stem;
+    sheet = { ...sheet, stem: want, ok: false };
+    const ok = await fetch(`/out/${encodeURIComponent(want)}/rig/preview/contact_sheet.png?t=${Date.now()}`, { method: "HEAD" }).then((r) => r.ok).catch(() => false);
+    if (want !== stem) return;
+    sheet = { ...sheet, ok, v: Date.now() };
+    if (S.tab === "sheet" && doc) renderPanel();
+  }
+  function sheetBlock() {
+    const again = renderSheet ? `<button type="button" class="takes-act" data-render-sheet${sheet.busy ? " disabled" : ""}>${sheet.busy ? "Rendering…" : sheet.ok ? "Render again" : "Render the sheet"}</button>` : "";
+    const err = sheet.error ? `<p class="rig-inspect-mute is-fail">${esc(sheet.error)}</p>` : "";
+    if (sheet.ok === null || (sheet.stem !== stem)) return `<p class="rig-inspect-mute">Looking for the contact sheet…</p>`;
+    if (!sheet.ok) return `<p class="rig-inspect-mute">No contact sheet for this rig yet. Rigs made now render one; this takes under a minute on the CPU.</p>${again}${err}`;
+    return `<a class="rig-inspect-sheet" href="${sheetUrl()}" target="_blank" rel="noopener" title="Open the sheet full size"><img alt="Contact sheet: every clip of this rig" src="${sheetUrl()}" /></a>
+      <p class="rig-inspect-mute">Rows: the rest pose, then each clip at its biggest move. Columns: side, front, three-quarter. The red line is the floor.</p>${again}${err}`;
+  }
+  async function doRenderSheet() {
+    if (!renderSheet || sheet.busy) return;
+    sheet = { ...sheet, busy: true, error: "" };
+    renderPanel();
+    try { await renderSheet(stem); } catch (e) { sheet.error = (e && e.message) || String(e); }
+    sheet.busy = false;
+    sheet.ok = null;
+    checkSheet();
   }
 
   async function measure() {
@@ -864,6 +985,8 @@ export function createRigInspect({
     if (!el) return;
     const d = el.dataset;
     if (el.classList.contains("rig-inspect-close")) { api.onClose && api.onClose(); return; }
+    if (d.tab) { S.tab = d.tab; renderPanel(); return; }
+    if (el.hasAttribute("data-render-sheet")) { doRenderSheet(); return; }
     if (d.modeRig) {
       S.mode = d.modeRig;
       paint();
@@ -931,6 +1054,8 @@ export function createRigInspect({
       stem = assetStem;
       if (!bind(root)) { doc = null; return false; }
       Object.assign(S, { bone: -1, open: "", head: "rigged", paused: null, checking: false, allClips: false });
+      if (opts && opts.focus) S.tab = "checks";
+      if (sheet.stem !== stem) sheet = { stem: "", ok: null, v: 0, busy: false, error: "" };
       paint();
       colorSkeleton();
       renderPanel();

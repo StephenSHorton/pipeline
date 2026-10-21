@@ -163,6 +163,35 @@ class FlowTest(unittest.TestCase):
         with self.assertRaises(flow.FlowError):
             flow.resave(self.root, "radio", "rig", "t9")
 
+    def test_rig_take_keeps_template_and_preview(self) -> None:
+        self.rig_files()
+        write(self.asset / "rig" / "template" / "rig.glb", "built rig")
+        write(self.asset / "rig" / "template" / "clips_report.json", "{}")
+        write(self.asset / "rig" / "preview" / "contact_sheet.png", "sheet one")
+        write(self.asset / "rig" / "preview" / "blender" / "side.png", "parity")
+        write(self.asset / "rig" / "fbx_check.json", "{}")
+        write(self.asset / "rig" / "plan.json", "{}")
+        write(self.asset / "rig" / "preview" / "frames.json", "{}")
+        write(self.asset / "rig" / "preview" / "Walk_0.25_side_texture.png", "a frame")
+        files = flow.stage_files(self.asset, "rig")
+        for rel in ("rig/template/rig.glb", "rig/template/clips_report.json", "rig/preview/contact_sheet.png",
+                    "rig/preview/frames.json", "rig/fbx_check.json", "rig/plan.json"):
+            self.assertIn(rel, files)
+        # the per-frame pictures can be rendered again: a take holds only the sheet and frames.json
+        self.assertNotIn("rig/preview/blender/side.png", files)
+        self.assertNotIn("rig/preview/Walk_0.25_side_texture.png", files)
+        take = flow.snapshot(self.root, "radio", "rig")
+        self.assertIn("rig/template/rig.glb", flow.read_manifest(self.asset)["stages"]["rig"]["takes"][0]["files"])
+        self.assertTrue((self.asset / "takes" / "rig" / "t1" / "rig" / "template" / "rig.glb").is_file(), take)
+        # Rendering the sheet again is about the rig, not a new rig.
+        write(self.asset / "rig" / "preview" / "contact_sheet.png", "sheet two, longer")
+        write(self.asset / "rig" / "render.log", "rig_render: Rest")
+        write(self.asset / "rig" / "frames_check.json", "{}")  # rig_frames check: about the rig too
+        self.assertFalse(self.stage("rig")["unsaved"])
+        # A rebuilt template is.
+        write(self.asset / "rig" / "template" / "rig.glb", "built rig two")
+        self.assertTrue(self.stage("rig")["unsaved"])
+
     def test_rig_takes_saved_before_still_match(self) -> None:
         self.rig_files()
         write(self.asset / "rig" / "inspect.json", "{}")

@@ -10,6 +10,9 @@ POST /cancel/<job_id>
 POST /intent/<stem>
 POST /rig/<stem>
 POST /rig/<stem>/inspect
+POST /rig/<stem>/render  the rig's contact sheet (rig/preview/) as a job
+GET  /rig/plans          the body plans (scripts/rig_plans/)
+POST /facing/detect      which way the head points in a picture {image|stem}
 GET  /glb/<stem>
 GET  /stack/<stem>
 POST /export/<stem>
@@ -124,8 +127,156 @@ def rig_env(root: Path) -> dict[str, str]:
 
 # Body plans scripts/rig.py has a template for.
 RIG_CLASSES = ("humanoid", "quadruped", "multileg", "avian")
+# POST /rig/<stem> options that pass straight through as rig.py flags of the same name.
+RIG_CHOICES = {
+    "template": ("auto", "fixed", "build"),
+    "binder": ("skin", "pred", "heat"),
+    "pred": ("auto", "always", "never"),
+}
+RIG_SWITCHES = ("floor", "render", "reframe")
+CLIP_NAME = re.compile(r"[A-Za-z0-9 _-]{1,48}")
+# POST /rig/<stem>/render {job}: the rig_render.py options a job may set.
+RENDER_VIEWS = ("side", "xside", "front", "back", "top", "q")
+RENDER_MODE = re.compile(r"(texture|groups|sticks|heat:[A-Za-z0-9_.-]{1,64})")
+RENDER_CLIPS = re.compile(r"[A-Za-z0-9 _.,;@-]{1,400}")
 # What the asset is meant to be; the app picks its stages and Export card from this.
 OUTPUTS = ("ps1", "model", "stack", "sprite")
+
+
+def rig_plans() -> list[dict[str, Any]]:
+    """Every body plan (scripts/rig_plans/*.json), slimmed for the app's body-plan select."""
+    import rig_plan
+
+    out = []
+    for p in rig_plan.all_plans():
+        out.append({
+            "id": p.get("id"),
+            "label": p.get("label") or p.get("id"),
+            "blurb": p.get("blurb") or "",
+            "class": p.get("class"),
+            "aliases": list(p.get("aliases") or []),
+            "built": bool(p.get("builder")),
+            "fixed": bool(p.get("fixed_template")),
+            "clips": [str(c.get("name")) for c in p.get("clips") or [] if isinstance(c, dict) and c.get("name")],
+        })
+    return out
+
+
+def _plan_class(plan_id: str) -> str:
+    """The class of a body plan id (or alias); ValueError when there is no such plan."""
+    for p in rig_plans():
+        if plan_id == p["id"] or plan_id in p["aliases"]:
+            return str(p["class"] or "")
+    raise ValueError(f"plan must be one of {', '.join(str(p['id']) for p in rig_plans())}")
+
+
+def _switch(key: str, value: Any) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    text = str(value).strip().lower()
+    if text in ("0", "1"):
+        return text
+    if text in ("true", "on", "yes"):
+        return "1"
+    if text in ("false", "off", "no"):
+        return "0"
+    raise ValueError(f"{key} must be 0 or 1")
+
+
+def rig_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]) -> list[str]:
+    """rig.py's argv for a POST /rig/<stem> body, every value checked (ValueError on a bad one):
+    {class, plan, template, binder, pred, floor, render, reframe, clips, straighten}."""
+    if not isinstance(body, dict):
+        raise ValueError("body must be a JSON object")
+    argv = [str(python), str(Path(root) / "scripts" / "rig.py"), "--stem", stem]
+    cls = str(body.get("class") or "")
+    if cls and cls not in RIG_CLASSES:
+        raise ValueError(f"class must be one of {', '.join(RIG_CLASSES)}")
+    plan = str(body.get("plan") or "")
+    if plan:
+        plan_cls = _plan_class(plan)
+        if cls and plan_cls and cls != plan_cls:
+            raise ValueError(f"plan {plan} is for class {plan_cls}, not {cls}")
+        cls = cls or plan_cls  # rig.py needn't ask the planner when the plan says the class
+    if cls:
+        argv += ["--class", cls]
+    if plan:
+        argv += ["--plan", plan]
+    for key, allowed in RIG_CHOICES.items():
+        value = body.get(key)
+        if value in (None, ""):
+            continue
+        if str(value) not in allowed:
+            raise ValueError(f"{key} must be one of {', '.join(allowed)}")
+        argv += [f"--{key}", str(value)]
+    for key in RIG_SWITCHES:
+        value = body.get(key)
+        if value in (None, ""):
+            continue
+        argv += [f"--{key}", _switch(key, value)]
+    clips = body.get("clips")
+    if isinstance(clips, str):
+        clips = [c for c in clips.split(",") if c.strip()]
+    if clips not in (None, "", []):
+        if not isinstance(clips, list):
+            raise ValueError("clips must be a list of clip names")
+        names = [str(c).strip() for c in clips]
+        bad = [n for n in names if not CLIP_NAME.fullmatch(n)]
+        if bad:
+            raise ValueError(f"bad clip name {bad[0]!r}")
+        argv += ["--clips", ",".join(names)]
+    straighten = str(body.get("straighten") or "")
+    if straighten not in ("", "auto", "off"):
+        raise ValueError("straighten must be auto or off")
+    if straighten:
+        argv += ["--straighten", straighten]
+    return argv
+
+
+def render_argv(python: Path | str, root: Path, stem: str, job: Any) -> list[str]:
+    """rig_render.py's argv for a POST /rig/<stem>/render {job} body. job is "default" (or missing) or a dict of
+    {views, modes, clips (or frames), size, floor}; ValueError on a bad value."""
+    argv = [str(python), str(Path(root) / "scripts" / "rig_render.py"), "--stem", stem]
+    if job in (None, "", "default", "auto"):
+        return argv
+    if not isinstance(job, dict):
+        raise ValueError('job must be "default" or an object')
+    for key, ok in (("views", lambda v: v in RENDER_VIEWS), ("modes", lambda v: bool(RENDER_MODE.fullmatch(v)))):
+        value = job.get(key)
+        if value in (None, "", []):
+            continue
+        items = value.split(",") if isinstance(value, str) else value
+        if not isinstance(items, list) or not items or not all(isinstance(v, str) and ok(v) for v in items):
+            raise ValueError(f"bad render {key}")
+        argv += [f"--{key}", ",".join(items)]
+    clips = job.get("clips", job.get("frames"))
+    if isinstance(clips, dict):
+        parts = []
+        for name, fr in clips.items():
+            if not CLIP_NAME.fullmatch(str(name)):
+                raise ValueError(f"bad clip name {name!r}")
+            if fr == "auto":
+                parts.append(str(name))
+            elif isinstance(fr, list) and fr and all(isinstance(f, (int, float)) and 0 <= f <= 1 for f in fr):
+                parts.append(f"{name}@" + ",".join(f"{float(f):g}" for f in fr))
+            else:
+                raise ValueError(f"bad frames for {name}")
+        clips = ";".join(parts) or "auto"
+    if clips not in (None, ""):
+        if not isinstance(clips, str) or not RENDER_CLIPS.fullmatch(clips):
+            raise ValueError("bad render clips")
+        argv += ["--clips", clips]
+    if job.get("size") not in (None, ""):
+        try:
+            size = int(job["size"])
+        except (TypeError, ValueError):
+            raise ValueError("size must be 64 to 1024") from None
+        if not 64 <= size <= 1024:
+            raise ValueError("size must be 64 to 1024")
+        argv += ["--size", str(size)]
+    if job.get("floor") is not None and _switch("floor", job["floor"]) == "0":
+        argv.append("--no-floor")
+    return argv
 
 
 def parse_progress(text: str) -> dict[str, Any] | None:
@@ -171,13 +322,39 @@ def clean_intent(raw: Any) -> dict[str, Any] | None:
     steps = raw.get("steps")
     if isinstance(steps, list):
         out["steps"] = [str(x) for x in steps if x in ("pieces", "motion", "say", "sound")]
+    # What the subject is (the canonical draw and the rig read these): {subject, kind, name}.
+    for key in ("subject", "kind"):
+        if isinstance(raw.get(key), str) and re.fullmatch(r"[A-Za-z0-9 _-]{1,48}", raw[key].strip()):
+            out[key] = raw[key].strip()
+    if isinstance(raw.get("name"), str) and re.fullmatch(r"[A-Za-z0-9 _-]{1,64}", raw["name"].strip()):
+        out["name"] = raw["name"].strip()
+    if raw.get("facing_source") in FACING_SOURCES:
+        out["facing_source"] = raw["facing_source"]
+    rig = raw.get("rig")
+    if isinstance(rig, dict):
+        keep: dict[str, Any] = {}
+        for key in ("plan", "plan_hint"):
+            if isinstance(rig.get(key), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,48}", rig[key]):
+                keep[key] = rig[key]
+        if isinstance(rig.get("canonical"), bool):
+            keep["canonical"] = rig["canonical"]
+        if keep:
+            out["rig"] = keep
     return out
+
+
+# Where a stored facing came from (section 8 of the rig design): the canonical draw, the VLM, a tap, the mesh cues.
+FACING_SOURCES = ("drawn", "detected", "user", "cues")
+# Written by the draw (canonical, plan hint) or a tap; a later intent that doesn't say keeps them.
+KEPT_INTENT = ("rig", "facing_source", "subject", "kind")
 
 
 def write_intent(root: Path, stem: str, intent: dict[str, Any]) -> None:
     path = stem_dir(root, stem) / "intent.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({**intent, "made": int(time.time())}, indent=2) + "\n", encoding="utf-8")
+    old = read_intent(path.parent) or {}
+    kept = {k: old[k] for k in KEPT_INTENT if k in old and k not in intent}
+    path.write_text(json.dumps({**kept, **intent, "made": int(time.time())}, indent=2) + "\n", encoding="utf-8")
 
 
 def read_intent(folder: Path) -> dict[str, Any] | None:
@@ -640,30 +817,79 @@ class Factory:
         stem = check_stem(stem)
         if not stem_dir(self.root, stem).is_dir():
             raise FileNotFoundError(f"no asset {stem!r}")
-        argv = [str(self.python), str(self.root / "scripts" / "rig.py"), "--stem", stem]
-        cls = str(body.get("class") or "")
-        if cls:
-            if cls not in RIG_CLASSES:
-                raise ValueError(f"class must be one of {', '.join(RIG_CLASSES)}")
-            argv += ["--class", cls]
-        clips = body.get("clips")
-        if isinstance(clips, list) and clips:
-            argv += ["--clips", ",".join(str(c) for c in clips if re.fullmatch(r"[A-Za-z0-9 _-]{1,48}", str(c)))]
-        straighten = str(body.get("straighten") or "")
-        if straighten not in ("", "auto", "off"):
-            raise ValueError("straighten must be auto or off")
-        if straighten:
-            argv += ["--straighten", straighten]
+        argv = rig_argv(self.python, self.root, stem, body)
+        return self._start_rig_job(stem, "rig", argv, stem_dir(self.root, stem) / "rig" / "rig.log")
+
+    def start_render(self, stem: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Render the rig's contact sheet (scripts/rig_render.py, CPU) into rig/preview/, in the job slot."""
+        stem = check_stem(stem)
+        folder = stem_dir(self.root, stem)
+        if not folder.is_dir():
+            raise FileNotFoundError(f"no asset {stem!r}")
+        if not (folder / "rigged.glb").is_file():
+            raise ValueError("this asset has no rig yet")
+        argv = render_argv(self.python, self.root, stem, (body or {}).get("job"))
+        return self._start_rig_job(stem, "render", argv, folder / "rig" / "render.log")
+
+    def _start_rig_job(self, stem: str, kind: str, argv: list[str], log: Path) -> dict[str, Any]:
         job_id = uuid.uuid4().hex[:8]
-        log = stem_dir(self.root, stem) / "rig" / "rig.log"
-        spec = {"job_id": job_id, "kind": "rig", "state": "running", "stem": stem, "argv": argv, "log": str(log),
+        spec = {"job_id": job_id, "kind": kind, "state": "running", "stem": stem, "argv": argv, "log": str(log),
                 "started": time.time(), "returncode": None, "error": None}
         with self._lock:
             if (self._job and self._job.get("state") == "running") or stem in self._checking or self._sync_draws:
                 raise RuntimeError("the factory is busy with another job")
             self._job = dict(spec)
         threading.Thread(target=self._run_rig_job, args=(spec,), daemon=False).start()
-        return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "status_url": f"/status/{job_id}"}
+        return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "kind": kind,
+                "status_url": f"/status/{job_id}"}
+
+    def detect_facing(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Which way the head points in a picture (scripts/facing.py, 3 VLM calls, ~11 s cold). Synchronous; holds
+        the slot while it asks. body: {image: path under the root} or {stem} (its flat/source.png, else input.*)."""
+        if not isinstance(body, dict):
+            raise ValueError("body must be a JSON object")
+        if body.get("image"):
+            png = resolve_under_root(self.root, str(body["image"]))
+            if png.suffix.lower() not in UPLOAD_EXTS:
+                raise ValueError("image must be a .png, .jpg or .webp")
+            if not png.is_file():
+                raise FileNotFoundError(f"image not found: {body['image']}")
+        elif body.get("stem"):
+            folder = stem_dir(self.root, check_stem(str(body["stem"])))
+            png = next((folder / rel for rel in ("flat/source.png", "input.png", "input.jpg", "input.jpeg", "input.webp")
+                        if (folder / rel).is_file()), None)
+            if png is None:
+                raise FileNotFoundError(f"no picture for {body['stem']!r}")
+        else:
+            raise ValueError("facing/detect needs image or stem")
+        import facing  # numpy and the VLM client: only when asked
+
+        self.sync_draw(True)
+        try:
+            det = facing.detect_image(png)
+        except OSError as e:  # PIL can't read it (UnidentifiedImageError is an OSError)
+            raise ValueError(f"not a picture: {png.name} ({e})") from None
+        finally:
+            self.sync_draw(False)
+        conf = float(det.get("confidence") or 0.0)
+        low = det.get("how") == "vlm" and (det.get("head") is None or conf < facing.ACCEPT)
+        return {"ok": True, **det, "low": low, "accept": facing.ACCEPT,
+                "image": png.relative_to(self.root).as_posix() if self.root in png.parents else str(png)}
+
+    def _keep_rig_take(self, folder: Path, work: Callable[[], Any]) -> tuple[Any, dict[str, Any] | None]:
+        """Run work() on a rig, then refresh the picked rig version in place if the rig on disk is still that version
+        (its checks or contact sheet ride along; they never make a new version)."""
+        entry = flow.read_manifest(folder)["stages"]["rig"]
+        live = flow.stage_files(folder, "rig")
+        found = flow.marks(folder, "rig", live)
+        take = next((t for t in entry["takes"] if t.get("print") in found), None)
+        before = flow.fingerprint(folder, flow.defining("rig", live))
+        result = work()
+        if take is not None and flow.fingerprint(folder, flow.defining("rig", flow.stage_files(folder, "rig"))) == before:
+            flow.resave(self.root, folder.name, "rig", str(take["id"]))
+        else:
+            take = None
+        return result, take
 
     def inspect_rig(self, stem: str) -> dict[str, Any]:
         """Check the rig on disk again (rig/inspect.json, rig/summary.json), on the CPU, in seconds. A version saved
@@ -687,19 +913,9 @@ class Factory:
                 raise RuntimeError("the factory is busy with another job")
             self._checking.add(stem)
         try:
-            entry = flow.read_manifest(folder)["stages"]["rig"]
-            live = flow.stage_files(folder, "rig")
-            found = flow.marks(folder, "rig", live)
-            take = next((t for t in entry["takes"] if t.get("print") in found), None)
-            before = flow.fingerprint(folder, flow.defining("rig", live))
             import rig_inspect
 
-            bundle = rig_inspect.rebuild(folder)
-            # Only refresh the version if the rig on disk is still that version's.
-            if take is not None and flow.fingerprint(folder, flow.defining("rig", flow.stage_files(folder, "rig"))) == before:
-                flow.resave(self.root, stem, "rig", str(take["id"]))
-            else:
-                take = None
+            bundle, take = self._keep_rig_take(folder, lambda: rig_inspect.rebuild(folder))
         finally:
             with self._lock:
                 self._checking.discard(stem)
@@ -707,33 +923,52 @@ class Factory:
                 "summary": bundle["summary"]}
 
     def _run_rig_job(self, spec: dict[str, Any]) -> None:
+        """A rig (kind rig: saves a rig version before and after) or its contact sheet (kind render: refreshes the
+        picked version in place, since a render is about the rig, not part of it)."""
         log = Path(spec["log"])
+        folder = stem_dir(self.root, spec["stem"])
+        render = spec.get("kind") == "render"
         try:
-            if stem_dir(self.root, spec["stem"]).is_dir():
+            if folder.is_dir() and not render:
                 autosave(self.root, spec["stem"], ("rig",))
             log.parent.mkdir(parents=True, exist_ok=True)
-            rc = -signal.SIGTERM
-            if not (self._snapshot() or {}).get("cancel"):
-                with log.open("w", encoding="utf-8") as fh:
-                    proc = subprocess.Popen(spec["argv"], cwd=str(self.root), stdout=fh, stderr=subprocess.STDOUT,
-                                            text=True, start_new_session=True, env=rig_env(self.root))
-                    with self._lock:
-                        if self._job and self._job.get("job_id") == spec["job_id"]:
-                            self._job["pid"] = proc.pid
-                    rc = proc.wait()
+            sheet = folder / "rig" / "preview" / "contact_sheet.png"
+            sheet_before = sheet.stat().st_mtime_ns if sheet.is_file() else None
+
+            def run() -> int:
+                rc = -signal.SIGTERM
+                if not (self._snapshot() or {}).get("cancel"):
+                    with log.open("w", encoding="utf-8") as fh:
+                        proc = subprocess.Popen(spec["argv"], cwd=str(self.root), stdout=fh, stderr=subprocess.STDOUT,
+                                                text=True, start_new_session=True, env=rig_env(self.root))
+                        with self._lock:
+                            if self._job and self._job.get("job_id") == spec["job_id"]:
+                                self._job["pid"] = proc.pid
+                        rc = proc.wait()
+                return rc
+
+            rc = self._keep_rig_take(folder, run)[0] if render else run()
             cancelled = bool((self._snapshot() or {}).get("cancel"))
-            ok = rc == 0 and (stem_dir(self.root, spec["stem"]) / "rigged.glb").is_file()
+            if render:
+                ok = rc == 0 and sheet.is_file() and sheet.stat().st_mtime_ns != sheet_before
+            else:
+                ok = rc == 0 and (folder / "rigged.glb").is_file()
             err = None
+            word = "rig_render:" if render else "rig:"
             if cancelled:
                 state, err = "cancelled", "Cancelled"
             elif ok:
                 state = "ok"
-                autosave(self.root, spec["stem"], ("rig",))
+                if not render:
+                    autosave(self.root, spec["stem"], ("rig",))
             else:
                 state = "error"
                 text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
-                lines = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("rig:") or "Error" in ln]
-                err = (lines[-1][4:].strip() if lines and lines[-1].startswith("rig:") else (lines[-1] if lines else f"rig exited {rc}"))[:400]
+                lines = [ln.strip() for ln in text.splitlines() if (ln.strip().startswith(word) and not render) or "Error" in ln]
+                if render and not lines:  # its own lines are progress; the last line says what stopped it
+                    lines = [ln.strip() for ln in text.splitlines() if ln.strip()][-1:]
+                err = (lines[-1][len(word):].strip() if lines and lines[-1].startswith(word)
+                       else (lines[-1] if lines else f"{word[:-1]} exited {rc}"))[:400]
             with self._lock:
                 if self._job and self._job.get("job_id") == spec["job_id"]:
                     self._job.update({"state": state, "returncode": rc, "finished": time.time(), "error": err})
@@ -964,6 +1199,9 @@ def _dispatch(
                     "POST /intent/<stem>",
                     "POST /rig/<stem>",
                     "POST /rig/<stem>/inspect",
+                    "POST /rig/<stem>/render",
+                    "GET /rig/plans",
+                    "POST /facing/detect",
                     "GET /glb/<stem>",
                     "GET /stack/<stem>",
                     "POST /stack/<stem>",
@@ -1179,6 +1417,42 @@ def _dispatch(
         except Exception as e:
             traceback.print_exc()
             return _json_bytes({"ok": False, "error": str(e)}, 500)
+
+    if method == "GET" and path == "/rig/plans":
+        try:
+            return _json_bytes({"ok": True, "plans": rig_plans()})
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            return _json_bytes({"ok": False, "error": f"couldn't read the body plans: {e}"}, 500)
+
+    if method == "POST" and path == "/facing/detect":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.detect_facing(raw if isinstance(raw, dict) else {}))
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            return _json_bytes({"ok": False, "error": f"couldn't check the facing: {e}"}, 500)
+
+    if method == "POST" and len(parts) == 3 and parts[0] == "rig" and parts[2] == "render":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.start_render(parts[1], raw if isinstance(raw, dict) else {}), 202)
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
 
     if method == "POST" and len(parts) == 3 and parts[0] == "rig" and parts[2] == "inspect":
         try:

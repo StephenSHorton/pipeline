@@ -254,14 +254,28 @@ def vlm_cue(source: Path, blender: str | None, out_prefix: Path) -> dict:
     return {"answers": answers, "vote": s1 if s1 is not None and s1 == s2 else 0, "model": model}
 
 
-def choose_yaw(reg: dict, cues: dict, vlm: dict | None) -> dict:
-    """Best Chamfer, unless the runner-up is within TIE: then the cues pick among the close yaws."""
+PRIOR_CONFLICT = 1.3  # a declared facing is questioned when the registration's best is opposite it by this margin
+
+
+def choose_yaw(reg: dict, cues: dict, vlm: dict | None, prior: dict | None = None) -> dict:
+    """Best Chamfer, unless the runner-up is within TIE: then the cues pick among the close yaws.
+
+    prior ({"yaw": 0, "source": ...}): the facing is already known (a canonical draw, or a psx facing check that
+    agreed), so the template is turned by the prior and the registration only verifies it: cue_conflict when its
+    best yaw is the opposite one by more than PRIOR_CONFLICT. No VLM call."""
     order = sorted(reg, key=lambda y: reg[y]["chamfer"])
     best = order[0]
     margin = reg[order[1]]["chamfer"] / max(reg[best]["chamfer"], 1e-9)
     close = [y for y in order if reg[y]["chamfer"] <= TIE * reg[best]["chamfer"]]
     out = {"chamfer": {str(y): reg[y]["chamfer"] for y in YAWS}, "margin": round(margin, 3), "close": close,
            "registration_best": best, "cues": cues, "vlm": None, "yaw": best, "decided_by": "registration"}
+    if prior is not None:
+        y = int(prior.get("yaw", 0)) % 360
+        out.update(yaw=y, decided_by="declared", prior=prior)
+        if best == (y + 180) % 360 and margin > PRIOR_CONFLICT:
+            out["cue_conflict"] = True
+            out["prior_conflict"] = f"the registration's best is {best}° (margin {margin:.2f}), opposite the declared facing"
+        return out
     if len(close) == 1:
         return out
     if callable(vlm):  # only render and ask when the registration can't decide

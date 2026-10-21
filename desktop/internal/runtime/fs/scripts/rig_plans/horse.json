@@ -1,0 +1,44 @@
+{
+  "id": "horse",
+  "version": 1,
+  "label": "Four legs",
+  "blurb": "Horse, cow, dog, deer: four legs, a neck and a tail (the vendor horse template)",
+  "class": "quadruped",
+  "aliases": ["quadruped"],
+  "select": {"class": "quadruped"},
+  "fixed_template": {
+    "rig": "rigs/rig-horse.glb",
+    "clips": ["animations/horse-animations.glb"],
+    "ref": "Idle",
+    "default": ["Idle", "Walk", "Trot", "Run", "Eating", "Kick", "Sleep", "Death"]
+  },
+  "builder": null,
+  "names": "rig-horse",
+  "side_suffix": ["_l", "_r"],
+  "frame": {"up": "+y", "forward": "+z", "left": "+x", "floor": 0.0},
+  "caps": {"legs": 4, "leg_kind": "unguligrade", "neck": true, "tail": true, "wings": null, "flight": false, "beak": false, "jaw": false, "toes": false},
+  "paths": {
+    "body": ["hips", "spine_1", "spine_2", "spine_3", "spine_4", "spine_5", "spine_6", "head", "nose", "head_leaf"],
+    "tail": ["hips", "tail_1", "tail_2", "tail_3", "tail_4", "tail_leaf"],
+    "legs": [["front_humerus_l", "front_leg_upper_l", "front_leg_lower_l", "front_leg_ankle_l", "front_leg_foot_l"],
+             ["front_humerus_r", "front_leg_upper_r", "front_leg_lower_r", "front_leg_ankle_r", "front_leg_foot_r"],
+             ["back_leg_upper_l", "back_leg_lower_l", "back_leg_ankle_l", "back_leg_foot_l"],
+             ["back_leg_upper_r", "back_leg_lower_r", "back_leg_ankle_r", "back_leg_foot_r"]],
+    "groups": {},
+    "needs": {},
+    "neck_lift": "spine_5",
+    "neck_from": "spine_4"
+  },
+  "ref": "Idle",
+  "clips": [
+    {"name": "Idle", "gen": "vendor"},
+    {"name": "Walk", "gen": "vendor"},
+    {"name": "Trot", "gen": "vendor"},
+    {"name": "Run", "gen": "vendor"},
+    {"name": "Eating", "gen": "vendor"},
+    {"name": "Kick", "gen": "vendor"},
+    {"name": "Sleep", "gen": "vendor"},
+    {"name": "Death", "gen": "vendor"}
+  ],
+  "default": ["Idle", "Walk", "Trot", "Run", "Eating", "Kick", "Sleep", "Death"]
+}

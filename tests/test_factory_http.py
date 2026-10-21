@@ -601,7 +601,8 @@ class FactoryHttpTests(unittest.TestCase):
     def test_intent_is_checked_and_written(self) -> None:
         self.assertIsNone(factory_http.clean_intent({"output": "rocket"}))
         intent = factory_http.clean_intent({"output": "ps1", "facing": "right", "height": 58, "name": "cow", "up": "q"})
-        self.assertEqual(intent, {"output": "ps1", "psx": {"facing": "right", "height": "58", "name": "cow"}})
+        # name is both the psx file name and what the subject is (the canonical draw reads it).
+        self.assertEqual(intent, {"output": "ps1", "psx": {"facing": "right", "height": "58", "name": "cow"}, "name": "cow"})
         status, payload = http_json(self.base + "/intent/radio", method="POST", data={"output": "stack"})
         self.assertEqual(status, 200)
         doc = json.loads((self.root / "out" / "radio" / "intent.json").read_text())

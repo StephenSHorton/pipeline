@@ -224,6 +224,47 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn("def caption_from_image", env)
         self.assertIn("asset-", env)
 
+    def test_facing_is_asked_not_guessed(self) -> None:
+        # The picture's shape never decides the facing; the head's side of the picture is asked (section 8).
+        self.assertNotIn("naturalWidth / Math.max", DESKTOP_HTML)
+        self.assertNotIn("it's probably side-on", DESKTOP_HTML)
+        for label in ("Which way does the head point in the picture?", "Looks at the camera",
+                      "Head points to the left of the picture", "Head points to the right of the picture",
+                      "Back to the camera", "As you look at the picture, not the animal's own left or right.",
+                      "side-on, head to the picture's left", "side-on, head to the picture's right",
+                      "Drawn in profile, head right"):
+            self.assertIn(label, DESKTOP_HTML)
+        self.assertNotIn("Side, facing left", DESKTOP_HTML)
+        self.assertIn('"/facing/detect"', DESKTOP_HTML)
+        self.assertIn("facingTouched = false", DESKTOP_HTML)
+        self.assertIn('setFacing(next, "user")', DESKTOP_HTML)
+        # buildFromConcept reads the concept's own facing, not the old camera default.
+        build = DESKTOP_HTML[DESKTOP_HTML.index("async function buildFromConcept"):]
+        build = build[:build.index("\n    }\n")]
+        self.assertIn("flat/key.json", build)
+        self.assertNotIn('facing: "camera"', build)
+
+    def test_rig_stage_surfaces(self) -> None:
+        self.assertIn('factoryJson("/rig/plans")', DESKTOP_HTML)
+        self.assertIn("made for this model", DESKTOP_HTML)
+        self.assertIn("rig/template/clips_report.json", DESKTOP_HTML)
+        self.assertIn("FBX checked:", DESKTOP_HTML)
+        self.assertIn('fold.className = "rig-advanced"', DESKTOP_HTML)
+        for flag in ('"template"', '"binder"', '"pred"'):
+            self.assertIn(flag, DESKTOP_HTML)
+        self.assertIn("/render`", DESKTOP_HTML)
+        inspect = (ROOT / "desktop" / "frontend" / "public" / "rig-inspect.js").read_text(encoding="utf-8")
+        self.assertIn("const LEG = /leg|foot|toe|thigh|shin|calf|knee|hoof|ball|humerus|femur|tibia/i;", inspect)
+        self.assertIn("const ARM = /arm|hand|shoulder|clavicle|elbow|wrist|finger/i;", inspect)
+        self.assertIn("const NO_FIT = /leaf|tip|_end$|^ear/i;", inspect)
+        self.assertIn("Skeleton built for this model", inspect)
+        self.assertIn("contact_sheet.png", inspect)
+        self.assertIn('data-tab="sheet"', inspect)
+        self.assertIn("ROLE_RGB", inspect)
+        for key in ("template", "built", "a2", "foot", "parts", "cshape", "slide", "loop_seam", "fbx"):
+            self.assertRegex(inspect, rf"[{{ ,]{key}: \"(skeleton|skin|motion)\"")
+        self.assertIn('seam: "skin"', inspect)  # seam stays the corner tears
+
     def test_viewer_fog_disabled(self) -> None:
         self.assertIn("scene.fog = null", DESKTOP_HTML)
         self.assertNotIn("THREE.Fog", DESKTOP_HTML)

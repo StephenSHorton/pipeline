@@ -174,7 +174,7 @@ class InspectTests(unittest.TestCase):
         self.assertEqual(got["line"], "No tears · head straightened 22° · worst stretch 6.5× (Kick)")
         self.assertEqual(got["level"], "warn")
         self.assertEqual(got["head"], {"before": -21.9, "after": 0.4, "straightened": True, "off_deg": 3.0, "made_before": False})
-        self.assertEqual(got["worst_stretch"], {"clip": "Kick", "x": 6.5})
+        self.assertEqual(got["worst_stretch"], {"clip": "Kick", "x": 6.5, "metric": "max"})
         self.assertEqual(got["problems"], [{"level": "warn", "key": "fit", "label": "Right back foot 0.33 m off"}])
         old = rig_inspect.summarize({"class": "quadruped"}, [
             {"level": "fail", "key": "seam", "step": "skin", "label": "Tears at 51 points"},
@@ -430,6 +430,253 @@ class PredTests(unittest.TestCase):
         k = pos[1] + qB.apply(pos[2] - pos[1])
         k = pos[0] + qA.apply(k - pos[0])
         np.testing.assert_allclose(k, target, atol=1e-6)
+
+
+def _stub_skin(P_fn):
+    """A run_skin stand-in: skin-tokens' skeleton shape (rig_pred.ours_from_posed) with nearest-bone distance weights."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    from fixtures import synth_bird
+
+    def run_skin(mesh: Path, skeleton: Path, out: Path, fit: str = "none") -> float:
+        bdoc, bbin = rig_pred.ours_from_posed(skeleton)
+        src, sbin = rig.read_glb(mesh)
+        P = rig.accessor(src, sbin, src["meshes"][0]["primitives"][0]["attributes"]["POSITION"]).astype(float)
+        sk = rig.Skeleton(bdoc)
+        w = sk.world({})
+        joints = bdoc["skins"][0]["joints"]
+        jpos = np.array([w[j][0] for j in joints])
+        par = [joints.index(sk.parent[j]) if sk.parent.get(j) in joints else -1 for j in joints]
+        J, W = synth_bird.distance_weights(P, jpos, par)
+        rig.write_rigged(out, bdoc, bbin, src, sbin, J, W, [])
+        P_fn.append(len(P))
+        return 0.0
+    return run_skin
+
+
+class SeamTests(unittest.TestCase):
+    def test_a_wrap_implied_vendor_loop_has_no_seam_but_a_pop_does(self) -> None:
+        from scipy.spatial.transform import Rotation as R
+        n = 30
+        ang = np.arange(n) * (360.0 / n)  # one full turn, the last key one step before the first (wrap implied)
+        Q = R.from_euler("x", ang[:, None], degrees=True).as_quat()[:, None, :]
+        self.assertLess(rig_inspect.seam_excess_deg(Q), 1e-6)
+        pop = Q.copy()
+        pop[-1, 0] = R.from_euler("x", [ang[-1] - 40], degrees=True).as_quat()
+        self.assertGreater(rig_inspect.seam_excess_deg(pop), 20)
+
+
+class PlanModeTests(unittest.TestCase):
+    """--template auto|fixed|build and the fixed path's plan (design section 4, 9.3)."""
+
+    def test_auto_builds_only_plans_with_a_builder_and_no_fixed_template(self) -> None:
+        import rig_plan
+        self.assertEqual(rig.decide(rig_plan.load("ground_bird"), "auto"), "build")
+        for pid in ("flying_bird", "horse", "biped", "spider"):
+            self.assertEqual(rig.decide(rig_plan.load(pid), "auto"), "fixed", pid)
+        self.assertEqual(rig.decide(rig_plan.load("ground_bird"), "fixed"), "fixed")
+        with self.assertRaises(SystemExit):
+            rig.decide(rig_plan.load("horse"), "build")
+
+    def test_cli_stops_on_a_plan_for_another_class_and_on_no_mesh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = rig.OUT
+            rig.OUT = Path(tmp)
+            try:
+                asset = Path(tmp) / "thing"
+                asset.mkdir()
+                with self.assertRaises(SystemExit) as cm:  # no mesh: said before the planner is asked for a class
+                    rig.main(["--stem", "thing", "--no-fbx"])
+                self.assertIn("no textured mesh", str(cm.exception))
+                (asset / "textured.glb").write_bytes(b"x")
+                with self.assertRaises(SystemExit) as cm:
+                    rig.main(["--stem", "thing", "--class", "quadruped", "--plan", "ground_bird", "--no-fbx"])
+                self.assertIn("is for class avian, not quadruped", str(cm.exception))
+            finally:
+                rig.OUT = saved
+
+    def test_the_fixed_path_reads_the_class_wrapper_plan(self) -> None:
+        import rig_plan
+        gb = rig_plan.load("ground_bird")
+        fp = rig.fixed_plan(gb, "avian")
+        self.assertEqual(fp["id"], "flying_bird")
+        self.assertEqual(rig_plan.spec(fp, "avian", "needs", {}), rig_pred.PATHS["avian"]["needs"])  # Flap and Glide
+        self.assertEqual(rig.fixed_plan(rig_plan.load("horse"), "quadruped")["id"], "horse")
+
+    def test_the_trial_runs_on_a_fixed_upright_avian_and_never_on_a_built_template(self) -> None:
+        import rig_plan
+        tall = np.random.default_rng(0).uniform([-0.2, 0, -0.3], [0.2, 1.0, 0.3], (500, 3))
+        long_ = np.random.default_rng(0).uniform([-0.2, 0, -1.0], [0.2, 0.5, 1.0], (500, 3))
+        names = rig.TEMPLATES["avian"]["default"]
+        fixed = rig.fixed_plan(rig_plan.load("ground_bird"), "avian")
+        self.assertEqual(rig.ground_bird_trial(fixed, "avian", tall, names, False, False), ["Flap", "Glide"])
+        self.assertEqual(rig.ground_bird_trial(fixed, "avian", long_, names, False, False), [])
+        self.assertEqual(rig.ground_bird_trial(fixed, "avian", tall, names, True, False), [])
+        self.assertEqual(rig.ground_bird_trial(rig_plan.load("ground_bird"), "avian", tall, names, False, True), [])
+        self.assertEqual(rig.ground_bird_trial(rig_plan.load("horse"), "quadruped", tall, ["Idle", "Kick"], False, False), [])
+
+    def test_class_lists_skip_built_templates(self) -> None:
+        rig.TEMPLATES["built:x"] = {"class": "avian", "built": True}
+        try:
+            self.assertEqual(rig.CLASSES, ("humanoid", "quadruped", "multileg", "avian"))
+            self.assertEqual(rig._template_class(rig.TEMPLATES["built:x"]), "avian")
+            self.assertEqual(rig._template_class(rig.TEMPLATES["quadruped"]), "quadruped")
+        finally:
+            del rig.TEMPLATES["built:x"]
+
+    def test_a_facing_prior_needs_a_checked_psx(self) -> None:
+        self.assertIsNone(rig.facing_prior_yaw({"facing": "right", "canonical": False}, "psx.glb"))
+        self.assertEqual(rig.facing_prior_yaw({"canonical": True}, "psx.glb")["yaw"], 0)
+        self.assertEqual(rig.facing_prior_yaw({"facing_check": {"agrees": True}}, "psx.glb")["yaw"], 0)
+        self.assertIsNone(rig.facing_prior_yaw({"canonical": True}, "textured.glb"))
+
+    def test_a_prior_turns_the_template_and_the_registration_only_verifies(self) -> None:
+        import rig_fit
+        reg = {0: {"chamfer": 0.09}, 90: {"chamfer": 0.2}, 180: {"chamfer": 0.05}, 270: {"chamfer": 0.2}}
+        got = rig_fit.choose_yaw(reg, {}, lambda: self.fail("no VLM with a prior"), prior={"yaw": 0})
+        self.assertEqual((got["yaw"], got["decided_by"]), (0, "declared"))
+        self.assertTrue(got["cue_conflict"])  # best 180 by 1.8x: the facing row warns
+        ok = rig_fit.choose_yaw({0: {"chamfer": 0.05}, 90: {"chamfer": 0.2}, 180: {"chamfer": 0.06}, 270: {"chamfer": 0.2}},
+                                {}, None, prior={"yaw": 0})
+        self.assertNotIn("cue_conflict", ok)
+
+    def test_predict_keeps_the_default_cache_and_keys_modes_apart(self) -> None:
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "psx.glb"
+            src.write_bytes(b"mesh")
+            key = hashlib.md5(b"mesh").hexdigest()
+            (Path(tmp) / "pred_rig.glb").write_bytes(b"glb")
+            (Path(tmp) / "pred_rig.json").write_text(json.dumps({"key": key, "seconds": 3}))
+            self.assertEqual(rig_pred.predict(src, Path(tmp))[2], True)
+            (Path(tmp) / "pred_rig.t0.7.glb").write_bytes(b"glb")
+            (Path(tmp) / "pred_rig.t0.7.json").write_text(json.dumps({"key": key + ":t0.7", "seconds": 5}))
+            out, secs, cached = rig_pred.predict(src, Path(tmp), temperature=0.7)
+            self.assertEqual((out.name, secs, cached), ("pred_rig.t0.7.glb", 5.0, True))
+            self.assertEqual(rig_pred.predict(src, Path(tmp), mode="sampled")[0].name, "pred_rig.t0.7.glb")
+
+
+@unittest.skipUnless((ROOT / "scripts" / "rig_plans" / "ground_bird.json").is_file(), "no body plans")
+class BuiltPathTests(unittest.TestCase):
+    """rig.py's build branch end to end on the synthetic bird (tests/fixtures/synth_bird.py), skin-tokens stubbed with
+    distance weights and the prediction with the fixture's: template mode built, all 7 clips, nothing dropped."""
+    STEM = "synth-bird"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import contextlib
+        import io
+        sys.path.insert(0, str(ROOT / "tests"))
+        from fixtures import synth_bird
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.asset = cls.root / "out" / cls.STEM
+        cls.d = synth_bird.write(cls.asset)
+        import rig_frames
+        cls.saved = (rig.OUT, rig.run_skin, rig_pred.predict, rig_pred.floor_pass, rig.far_motion, rig_frames.reframe)
+        cls.skinned, cls.calls = [], []
+        rig.OUT = cls.root / "out"
+        rig.run_skin = _stub_skin(cls.skinned)
+        rig_pred.predict = lambda source, work, **kw: (Path(cls.d["pred"]), 0.0, True)
+
+        def record(name, fn):
+            def wrapped(*a, **k):
+                cls.calls.append(name)
+                return fn(*a, **k)
+            return wrapped
+        rig_pred.floor_pass = record("floor_pass", cls.saved[3])
+        rig.far_motion = record("far_motion", cls.saved[4])
+        rig_frames.reframe = record("reframe", cls.saved[5])
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                cls.code = rig.main(["--stem", cls.STEM, "--class", "avian", "--no-fbx", "--render", "0", "--reframe", "1"])
+        finally:
+            rig.OUT, rig.run_skin, rig_pred.predict, rig_pred.floor_pass, rig.far_motion, rig_frames.reframe = cls.saved
+            cls.log = buf.getvalue()
+        cls.info = json.loads((cls.asset / "rig" / "rig.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        for k in [k for k in rig.TEMPLATES if str(k).startswith("built:")]:
+            del rig.TEMPLATES[k]
+        cls.tmp.cleanup()
+
+    def test_the_rig_is_built_for_the_model(self) -> None:
+        import rig_plan
+        info = self.info
+        self.assertEqual(self.code, 0, self.log[-2000:])
+        self.assertEqual(self.skinned, [len(self.d["V"])])
+        self.assertEqual(info["template"]["mode"], "built", self.log[-2000:])
+        self.assertTrue(info["template"]["built"])
+        self.assertEqual((info["plan"], info["template"]["plan"]), ("ground_bird", "ground_bird"))
+        self.assertFalse(info["fit"]["registration"]["poor_match"])
+        self.assertEqual((info["fit"]["yaw"], info["fit"]["facing"]["yaw"]), (0, 0))
+        self.assertEqual(info["fit"]["unsupported"], [])
+        self.assertNotIn("pred_register", info["fit"])
+        self.assertNotIn("first_gate", info["fit"])
+        self.assertNotIn("fallback", info)
+        self.assertEqual(info["clips"], rig_plan.load("ground_bird")["default"])
+        self.assertEqual(info["clips"], ["Idle", "Walk", "Run", "Peck", "Flap", "Sleep", "Death"])
+        self.assertEqual((info["unsupported_clips"], info["dropped_clips"], info["clips_failed"]), ([], [], []))
+        self.assertTrue(json.loads((self.asset / "rig" / "template" / "validate.json").read_text())["ok"])
+        rep = json.loads((self.asset / "rig" / "template" / "clips_report.json").read_text())
+        self.assertTrue(all(c["passed"] for c in rep["clips"].values()))
+
+    def test_rigged_glb_carries_every_clip_on_our_joints(self) -> None:
+        doc, _ = rig.read_glb(self.asset / "rigged.glb")
+        self.assertEqual([a["name"] for a in doc["animations"]], self.info["clips"])
+        tj = json.loads((self.asset / "rig" / "template" / "template.json").read_text())
+        self.assertEqual(tj["default"], self.info["clips"])
+        names = {doc["nodes"][j]["name"] for j in doc["skins"][0]["joints"]}
+        import rig_plan
+        self.assertEqual(names, set(rig_plan.joint_names(rig_plan.load("ground_bird"))))
+
+    def test_the_check_rows_cover_the_built_template(self) -> None:
+        insp = json.loads((self.asset / "rig" / "inspect.json").read_text())
+        keys = {c["key"]: c for c in insp["checks"]}
+        self.assertNotIn("match", keys)
+        self.assertNotIn("unsupported", keys)
+        for k in ("template", "built", "a2", "cshape", "clips"):
+            self.assertIn(k, keys, sorted(keys))
+        self.assertEqual(keys["template"]["level"], "pass")
+        self.assertEqual(keys["clips"]["level"], "pass")
+        self.assertTrue(insp["template"]["built"])
+        self.assertEqual(len(insp["roles"]), len(insp["bones"]))
+
+    def test_reframe_stays_last(self) -> None:
+        # the designed frames go on after the floor pass and the far-bone check (FK / _skin assume identity rests)
+        self.assertEqual(self.calls[-1], "reframe", self.calls)
+        self.assertIn("floor_pass", self.calls)
+        self.assertTrue(self.info["reframe"]["applied"], self.info["reframe"])
+        self.assertLess(self.info["reframe"]["max_delta_H"], 1e-5)
+        doc, _ = rig.read_glb(self.asset / "rigged.glb")
+        hips = next(n for n in doc["nodes"] if n.get("name") == "hips")
+        self.assertGreater(1 - abs(hips.get("rotation", [0, 0, 0, 1])[3]), 1e-3)  # a real rest frame, not identity
+
+    def test_a_rebuild_in_a_fresh_process_uses_template_json(self) -> None:
+        import os
+        import subprocess
+        env = {**os.environ, "FACTORY_ROOT": str(self.root)}
+        proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "rig_inspect.py"), "--stem", self.STEM],
+                              env=env, capture_output=True, text=True, timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        insp = json.loads((self.asset / "rig" / "inspect.json").read_text())
+        self.assertEqual(Path(insp["template"]["rig"]), (self.asset / "rig" / "template" / "rig.glb").resolve())
+        self.assertEqual(insp["template"]["ref_clip"], "Rest")
+        self.assertEqual(next(c for c in insp["checks"] if c["key"] == "template")["level"], "pass")
+
+    def test_a_built_rig_without_its_template_json_fails_the_check_instead_of_using_the_vendor_one(self) -> None:
+        tj = self.asset / "rig" / "template" / "template.json"
+        saved = tj.read_bytes()
+        for k in [k for k in rig.TEMPLATES if str(k).startswith("built:")]:
+            del rig.TEMPLATES[k]
+        tj.unlink()
+        try:
+            b = rig_inspect.rebuild(self.asset)
+        finally:
+            tj.write_bytes(saved)
+        row = next(c for c in b["checks"] if c["key"] == "template")
+        self.assertEqual(row["level"], "fail")
 
 
 if __name__ == "__main__":

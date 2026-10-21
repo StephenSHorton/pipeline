@@ -82,13 +82,18 @@ PSX_FACING = {"camera", "right", "left", "away"}
 
 
 def clean_psx(raw: dict[str, Any] | None) -> dict[str, str]:
-    """generate.sh --quality psx options from a request, checked; unknown or bad values are dropped."""
+    """generate.sh --quality psx options from a request, checked; unknown or bad values are dropped, except an
+    unknown facing, which raises ValueError (a typo there would build the model turned the wrong way). A missing
+    facing is fine: generate.sh defaults to camera."""
     out: dict[str, str] = {}
     for key, value in (raw or {}).items():
         if key not in PSX_KEYS or value in (None, ""):
             continue
         text = str(value).strip()
-        if key == "facing" and text in PSX_FACING:
+        if key == "facing":
+            if text not in PSX_FACING:
+                raise ValueError(f"facing must be one of {', '.join(sorted(PSX_FACING))} (the side of the picture "
+                                 f"the head points to), not {text!r}")
             out[key] = text
         elif key == "up" and text in {"z", "y"}:
             out[key] = text

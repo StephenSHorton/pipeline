@@ -56,8 +56,10 @@ def _find(data: dict, file: str) -> dict:
     raise FlatError(f"no idea {file!r}")
 
 
-def draw_idea(root: Path, stem: str, prompt: str, seed: int | None = None) -> dict:
-    """One more still for the grid. A new seed each time, so the same prompt gives different pictures."""
+def draw_idea(root: Path, stem: str, prompt: str, seed: int | None = None, intent: dict | None = None) -> dict:
+    """One more still for the grid. A new seed each time, so the same prompt gives different pictures.
+    A creature intent (flat2d.pose.pose_for) draws it in the canonical pose; Ideas do not run the facing check
+    (it would cost a vision call per picture), so an idea is never marked canonical."""
     text = " ".join((prompt or "").split())
     if not text:
         raise FlatError("describe the thing first")
@@ -66,7 +68,10 @@ def draw_idea(root: Path, stem: str, prompt: str, seed: int | None = None) -> di
     if len(read_ideas(root, stem)["items"]) >= MAX_IDEAS:
         raise FlatError("too many ideas; clear the ones you did not keep")
     seed = int(seed) if seed is not None else random.randint(1, 2**31 - 1)
-    image, seed, redrawn = clean_still(still_prompt(text), seed)
+    from flat2d.pose import POSE_NAME, pose_for
+
+    kind = pose_for(intent, text)
+    image, seed, redrawn = clean_still(still_prompt(text, kind), seed)
     # Read again after the draw: Keep, Use or Clear may have changed the grid while it drew.
     with _lock(stem):
         data = read_ideas(root, stem)
@@ -80,6 +85,8 @@ def draw_idea(root: Path, stem: str, prompt: str, seed: int | None = None) -> di
         item = {"file": name, "seed": seed, "prompt": text, "keep": False}
         if redrawn:
             item["redrawn"] = redrawn
+        if kind:
+            item["pose"] = POSE_NAME[kind]
         data["items"].append(item)
         data["prompt"] = text
         _write(root, stem, data)
@@ -127,7 +134,14 @@ def _use(root: Path, stem: str, file: str) -> dict:
     still = Image.open(src)
     still.save(buf, format="PNG")
     saved = save_source(root, stem, buf.getvalue())
-    write_json(flat_dir(root, stem) / "key.json", ground_key(still))
+    key = ground_key(still)
+    if item.get("pose"):
+        # Drawn in the pose, so the facing is known, but no vision check ran: not canonical.
+        side = {"profile_right": "right", "front_apose": "camera"}.get(item["pose"])
+        key = {**key, "pose": item["pose"], "canonical": False, "facing_check": {"how": "unchecked"}}
+        if side:
+            key.update(facing=side, facing_source="drawn")
+    write_json(flat_dir(root, stem) / "key.json", key)
     (flat_dir(root, stem) / "prompt.txt").write_text(item.get("prompt", "") + "\n", encoding="utf-8")
     for other in data["items"]:
         other.pop("used", None)

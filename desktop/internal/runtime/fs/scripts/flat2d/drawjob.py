@@ -36,8 +36,10 @@ STEPS = ("pieces", "motion", "say", "sound")
 TEXTS = ("prompt", "pieces", "motion", "say", "sound")
 MAX_IDEAS = 8
 PREVIEW_PX = 768
-FLAW_TEXT = {"cloudy": "Ground is cloudy.", "shadow": "There is a shadow on the ground."}
-FLAW_PAST = {"cloudy": "ground was cloudy", "shadow": "ground had a shadow"}
+FLAW_TEXT = {"cloudy": "Ground is cloudy.", "shadow": "There is a shadow on the ground.",
+             "facing": "The head points the wrong way.", "profile": "It is not a side view."}
+FLAW_PAST = {"cloudy": "ground was cloudy", "shadow": "ground had a shadow", "facing": "head pointed the wrong way",
+             "profile": "not a side view"}
 
 
 def times_path(root: Path) -> Path:
@@ -342,6 +344,41 @@ def _remember(root: Path, backend: str, hook: Hook | None) -> None:
         print(f"drawjob: could not write draw-times.json: {e}")
 
 
+def canonical_intent(root: Path, stem: str, intent: dict[str, Any] | None, saved: dict[str, Any]) -> str:
+    """After a posed creature draw: intent.json gets psx.facing (the drawn facing) and rig {plan_hint, canonical}.
+    Returns a note for the log when the picture was mirrored or is not canonical ("" otherwise)."""
+    from flat2d.pose import PLAN_HINT
+
+    check = saved.get("facing_check") or {}
+    canonical = bool(saved.get("canonical"))
+    path = stem_dir(root, stem) / "intent.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        doc = dict(intent or {})
+    if isinstance(doc, dict) and doc.get("output"):
+        psx = dict(doc.get("psx") or {}) if isinstance(doc.get("psx"), dict) else {}
+        if saved.get("facing"):
+            psx["facing"] = saved["facing"]
+        doc["psx"] = psx
+        rig = dict(doc.get("rig") or {}) if isinstance(doc.get("rig"), dict) else {}
+        rig["canonical"] = canonical
+        hint = PLAN_HINT.get(str(saved.get("kind") or ""))
+        if hint:
+            rig["plan_hint"] = hint
+        doc["rig"] = rig
+        doc["facing_source"] = "drawn" if canonical else "detected"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name("intent.json.tmp")
+        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    if check.get("how") == "mirrored":
+        return "The head pointed left; the picture was mirrored so it points right."
+    if not canonical:
+        return "Warning: the drawing is not a strict side view; it will be treated like a photo."
+    return ""
+
+
 def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: list[Hook]) -> dict[str, Any]:
     from flow import autosave
     from flat2d.steps import apply_steps
@@ -367,10 +404,17 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
             hook.stage("draw")
             hook.attempt_t0 = time.time()
         with optional.drawing(hook):
-            saved = optional.generate_still(root, stem, str(payload.get("prompt") or ""))
+            saved = optional.generate_still(root, stem, str(payload.get("prompt") or ""), intent=payload.get("intent"))
         hook.ground_done()
         result["seed"] = saved.get("seed")
         result["redrawn"] = list(saved.get("redrawn") or [])
+        if saved.get("pose"):
+            for k in ("pose", "facing", "canonical", "facing_check"):
+                result[k] = saved.get(k)
+            note = canonical_intent(root, stem, payload.get("intent"), saved)
+            if note:
+                result["notes"].append(note)
+                hook.line(note)
         hook.line("Picture saved.")
         autosave(root, stem, ("concept",))
     texts = {k: payload[k] for k in TEXTS if isinstance(payload.get(k), str)}
@@ -423,7 +467,7 @@ def _run_ideas(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: li
             hook.stage(hook.target)
         hook.attempt_t0 = None if hook.current == "load" else time.time()
         with optional.drawing(hook):
-            drawn = draw_idea(root, stem, str(payload.get("prompt") or ""))
+            drawn = draw_idea(root, stem, str(payload.get("prompt") or ""), intent=payload.get("intent"))
         hook.ground_done()
         items.append(drawn["item"])
         result = {"items": list(items), "ideas": {"prompt": drawn.get("prompt"), "items": drawn.get("items")}}

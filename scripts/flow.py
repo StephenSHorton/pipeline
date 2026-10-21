@@ -73,7 +73,9 @@ FILES: dict[str, tuple[str, ...]] = {
         "inspect.json",
         "preview.png",
     ),
-    "rig": ("rigged.glb", "rig/*"),
+    # rig/template/* is a template built for this model (rig.glb, clips.glb, its reports); of rig/preview/ only the
+    # contact sheet and frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be rendered again.
+    "rig": ("rigged.glb", "rig/*", "rig/template/*", "rig/preview/contact_sheet.png", "rig/preview/frames.json"),
     "stack": ("stack/*",),
     "export": ("export/**/*",),
 }
@@ -103,7 +105,13 @@ def stage_files(folder: Path, stage: str) -> list[str]:
 
 INPUTS = ("input.png", "input.jpg", "input.jpeg", "input.webp")
 # Written about a rig, not part of it: checking a version again must not make it a new one.
-RIG_DERIVED = {"rig/inspect.json", "rig/summary.json", "rig/rig.log"}
+RIG_DERIVED = {"rig/inspect.json", "rig/summary.json", "rig/rig.log", "rig/render.log", "rig/frames_check.json"}
+# A contact sheet is a picture of the rig: rendering it again doesn't make a new version either.
+RIG_DERIVED_DIRS = ("rig/preview/",)
+
+
+def rig_derived(rel: str) -> bool:
+    return rel in RIG_DERIVED or rel.startswith(RIG_DERIVED_DIRS)
 
 
 def defining(stage: str, rels: list[str]) -> list[str]:
@@ -111,7 +119,7 @@ def defining(stage: str, rels: list[str]) -> list[str]:
     2D still to input.*; those ride along in the take but do not make a new one. A rig's
     checks and log are written about it, so they don't either."""
     if stage == "rig":
-        return [r for r in rels if r not in RIG_DERIVED] or rels
+        return [r for r in rels if not rig_derived(r)] or rels
     if stage != "concept":
         return rels
     derived = {"lifted.png"}

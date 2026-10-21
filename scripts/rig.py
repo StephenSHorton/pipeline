@@ -17,6 +17,12 @@
    arc length, chains it doesn't have (a chicken's wings) folded away and their clips (Flap, Glide) not shipped.
    A skeleton that still misses the body is rigged with the predicted skeleton itself (clips mapped chain by
    chain); with no prediction it stops the rig.
+   Built path (--template auto|build; design section 4): a body plan (scripts/rig_plans/, rig_plan.resolve) that
+   has a builder and no fixed template (a ground bird) gets a skeleton built for this model instead
+   (rig_build on the sampled prediction, rig_template: rig/template/rig.glb, yaw 0, scale 1, nothing folded away),
+   skinned by skin-tokens like any other, then its own clips made and gated on those weights (rig_clips:
+   every clip of the plan, rig/template/clips.glb + clips_report.json + template.json, verified) and baked as a
+   near-identity. A failed build falls back to the class's template with a warning (auto) or stops (build).
 3. skin-tokens.cpp (vendor/skin-tokens.cpp, Metal) learns the weights onto that named skeleton. The mesh is not
    moved; the skeleton is fitted to it. No --postprocess: its voxel cleanup never links corners at exactly the same
    point, so on flat-shaded (unshared-corner) meshes each triangle got its own bones and the mesh tore when it moved.
@@ -33,7 +39,11 @@
    keeps the clips before it.
 6. Check: rig/inspect.json and rig/summary.json (scripts/rig_inspect.py), with every clip played and measured for
    tears and stretch (scripts/rig_motion.py).
-7. out/<stem>/rigged.glb (textured, clips inside), out/<stem>/rig/<name>.fbx (+ .png) through Blender, rig/rig.json.
+7. out/<stem>/rigged.glb (textured, clips inside), out/<stem>/rig/<name>.fbx (+ .png) through Blender and checked
+   by re-importing it (rig_fbx: rig/fbx_check.json), rig/rig.json, and the contact sheet (rig_render:
+   rig/preview/contact_sheet.png, --render 0 skips it). --reframe 1 gives the joints designed frames (bone rolls,
+   rig_frames) as the very last step; the skinning is unchanged. The default (auto) does so for a built skeleton
+   only; the fixed path keeps identity rests (byte-for-byte as before).
 
 Prints STAGES/STAGE lines for the app's progress, like generate.sh.
 """
@@ -47,7 +57,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -92,6 +101,10 @@ TEMPLATES = {
         "default": ["Idle", "Walk", "Flap", "Glide"],
     },
 }
+# The body-plan classes; rig.TEMPLATES also holds templates built for one asset ("built:<stem>", rig_template),
+# so anything that lists the classes reads this, never TEMPLATES' keys.
+CLASSES = tuple(TEMPLATES)
+PRED_ENV = {"0": "never", "never": "never", "auto": "auto", "always": "always"}  # RIG_PRED's old values
 UNSUPPORTED = {
     "bust": "Busts (head and shoulders) don't get a body rig; they need head-turn and talk motion, which comes later.",
     "rigid": "Vehicles and props are rigged by parts with pivots, which comes in a later step.",
@@ -455,12 +468,58 @@ FLAGS = frozenset("abcdef")
 
 
 def _template_class(template: dict) -> str | None:
-    return next((k for k, v in TEMPLATES.items() if v is template), None)
+    """The body-plan class a template is for: a built template says so; a vendor one is found by identity."""
+    return template.get("class") or next((k for k, v in TEMPLATES.items() if v is template), None)
+
+
+def decide(plan: dict, want: str) -> str:
+    """'fixed' or 'build' for a resolved body plan and --template auto|fixed|build (design section 4)."""
+    builder, fixed = bool(plan.get("builder")), bool(plan.get("fixed_template"))
+    if want == "fixed":
+        return "fixed"
+    if want == "build":
+        if not builder:
+            raise SystemExit(f"rig: the {plan.get('label') or plan.get('id')} body plan has no skeleton builder; "
+                             "use --template fixed or auto")
+        return "build"
+    return "build" if builder and not fixed else "fixed"  # no builder, or both (v1 has none): the fixed template
+
+
+def fixed_plan(plan: dict, cls: str) -> dict:
+    """The body plan the class's fixed template goes with. A plan that only builds (ground_bird) has none of its
+    own, so the fixed path reads the class's wrapper plan (avian: flying_bird), which matches today's tables."""
+    if plan.get("fixed_template") or not plan.get("builder"):
+        return plan
+    import rig_plan
+    return rig_plan.load(cls)
+
+
+def ground_bird_trial(plan: dict, cls: str, P: np.ndarray, names: list[str], explicit: bool, built: bool) -> list[str]:
+    """The fixed path's ground-bird trial (FLAGS e): on an upright mesh whose plan asks for it (flying_bird's
+    trial_when_upright), every clip but Idle and Walk ships only if it keeps the body together. Never on a built
+    template (its clips were made and gated for this model) or when the clips were asked for by name."""
+    import rig_plan
+    if built or explicit or "e" not in FLAGS or not rig_plan.spec(plan, cls, "trial_when_upright", False):
+        return []
+    upright = float(np.ptp(P[:, 1])) > 0.9 * float(max(np.ptp(P[:, 0]), np.ptp(P[:, 2])))
+    return [n for n in names if n not in ("Idle", "Walk")] if upright else []
+
+
+def facing_prior_yaw(facing_prior: dict, source_name: str) -> dict | None:
+    """The fixed path's facing prior: yaw 0 when psx.glb is known to have its head at +Z (a canonical draw, or a
+    psx facing check that agreed or flipped it there). None otherwise, or for a mesh that isn't psx.glb."""
+    if source_name != "psx.glb":
+        return None
+    chk = facing_prior.get("facing_check") or {}
+    if facing_prior.get("canonical") or chk.get("agrees") or chk.get("flipped"):
+        why = "canonical draw" if facing_prior.get("canonical") else ("psx flipped it" if chk.get("flipped") else "psx check agreed")
+        return {"yaw": 0, "source": facing_prior.get("facing_source"), "why": why}
+    return None
 
 
 def posed_template(template: dict, out: Path, mesh_points: np.ndarray, surface: np.ndarray | None = None,
                    facing: dict | None = None, mesh_faces: np.ndarray | None = None, pred_fn=None,
-                   force_pred: bool = False) -> tuple[dict, dict, list[str]]:
+                   force_pred: bool = False, plan: dict | None = None) -> tuple[dict, dict, list[str]]:
     """The template rig at frame 0 of the reference clip, turned, scaled and fitted onto the mesh; written to `out`
     for skin-tokens (which then runs with --fit none).
 
@@ -486,7 +545,8 @@ def posed_template(template: dict, out: Path, mesh_points: np.ndarray, surface: 
         reg = rig_fit.register(TV, TF, samples)
         fitinfo["registration"] = {str(k): v for k, v in reg.items()}
         if "a" in FLAGS:
-            choice = rig_fit.choose_yaw(reg, (facing or {}).get("geometric") or {}, (facing or {}).get("vlm"))
+            choice = rig_fit.choose_yaw(reg, (facing or {}).get("geometric") or {}, (facing or {}).get("vlm"),
+                                        prior=(facing or {}).get("prior"))
             yaw = int(choice["yaw"])
             fitinfo["facing"] = choice
             notes.append(f"Faced the template {yaw}° (Chamfer " + ", ".join(f"{y}°: {choice['chamfer'][str(y)]:.3f}" for y in rig_fit.YAWS)
@@ -562,7 +622,7 @@ def posed_template(template: dict, out: Path, mesh_points: np.ndarray, surface: 
                 import rig_pred
                 lt = {k: ({**v, "line": to_t(v["line"], s, off)} if k != "legs" else [{**q, "line": to_t(q["line"], s, off)} for q in v])
                       for k, v in pred_lines.items()}
-                reg_p = rig_pred.register(cls, Pt, children, lt, mesh_t, tV, mesh_faces, H_t)
+                reg_p = rig_pred.register(cls, Pt, children, lt, mesh_t, tV, mesh_faces, H_t, plan=plan)
                 fitinfo["pred_register"] = reg_p
                 fitinfo["unsupported"] = reg_p["unsupported"]
                 for c in reg_p["paths"]:
@@ -927,42 +987,242 @@ def blender_path() -> str | None:
     return None
 
 
-FBX_SCRIPT = """
-import bpy, sys
-a = sys.argv[sys.argv.index("--") + 1:]
-bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath=a[0])
-# The glTF importer adds an Icosphere as the bones' display shape; ship only the armature and the skinned mesh.
-for o in list(bpy.data.objects):
-    if o.type == "MESH" and not any(m.type == "ARMATURE" for m in o.modifiers):
-        bpy.data.objects.remove(o)
-for o in bpy.data.objects:
-    if o.type == "ARMATURE":
-        o.name = o.data.name = "rig"
-for act in bpy.data.actions:  # "SkinTokens learned binding|Walk" -> "Walk"; the FBX take becomes "rig|Walk"
-    act.name = act.name.split("|")[-1]
-bpy.ops.export_scene.fbx(filepath=a[1], add_leaf_bones=False, bake_anim=True, bake_anim_use_all_actions=True,
-                         bake_anim_use_nla_strips=False, mesh_smooth_type="FACE", path_mode="STRIP")
-print("FBX_OK", len(bpy.data.actions))
-"""
+def export_fbx(glb: Path, fbx: Path, clips: list[str] | None = None) -> tuple[str, dict | None]:
+    """The FBX for s&box through Blender (scripts/rig_fbx.py: today's export at 30 fps), re-imported and checked:
+    clip count and names, bones, influences, fps. Writes rig/fbx_check.json next to the FBX. (note, check)."""
+    import rig_fbx
+    return rig_fbx.export_and_check(glb, fbx, clips)
 
 
-def export_fbx(glb: Path, fbx: Path) -> str:
-    blender = blender_path()
-    if not blender:
-        return "Blender not found; skipped the FBX (set BLENDER to its binary)."
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
-        fh.write(FBX_SCRIPT)
-    proc = subprocess.run([blender, "-b", "--factory-startup", "-P", fh.name, "--", str(glb), str(fbx)],
-                          capture_output=True, text=True, timeout=600)
-    os.unlink(fh.name)
-    ok = [ln for ln in proc.stdout.splitlines() if ln.startswith("FBX_OK")]
-    if not ok or not fbx.is_file():
-        return "Blender could not write the FBX: " + (proc.stderr or proc.stdout)[-400:]
-    return f"FBX with {ok[0].split()[1]} clips"
+def _plain(x):
+    """numpy scalars and arrays in rig.json, as JSON."""
+    if isinstance(x, np.ndarray):
+        return x.tolist()
+    if isinstance(x, np.generic):
+        return x.item()
+    return str(x)
 
 
-def main() -> int:
+def template_info(template: dict, plan: dict) -> dict:
+    """rig.json `template`: which template the rig used and how (mode built | fixed)."""
+    out = {"mode": "built" if template.get("built") else "fixed", "rig": template["rig"] if not template.get("built") else "rig/template/rig.glb",
+           "plan": plan.get("id"), "built": bool(template.get("built"))}
+    if template.get("built"):
+        out["dir"] = "rig/template/"
+    return out
+
+
+def slim_fbx_check(check: dict | None) -> dict | None:
+    if not check:
+        return None
+    keep = ("ok", "problems", "warnings", "scene_fps", "max_influences", "up_axis", "unit_scale", "clips")
+    out = {k: check.get(k) for k in keep if k in check}
+    out["actions"] = len(check.get("actions") or [])
+    out["bones"] = check.get("bones") if isinstance(check.get("bones"), int) else len(check.get("bone_names") or [])
+    return out
+
+
+# ---------------------------------------------------------------- the built path (a template made for this model)
+
+TEMPLATE_FILES = ("skeleton.json", "build.json", "rig.glb", "clips.glb", "template.json", "validate.json",
+                  "clips_report.json", "frames.json")
+
+
+def _slim_build(info: dict) -> dict:
+    """rig.json fit.build: the build report without the arrays skeleton.json already holds."""
+    drop = {"skeleton", "pos", "parents", "parent_index", "names"}
+    out = {k: v for k, v in info.items() if k not in drop}
+    chk = dict(out.get("checks") or {})
+    chk.pop("flagged_joints", None)
+    out["checks"] = chk
+    return json.loads(json.dumps(out, default=str))
+
+
+def build_skeleton(asset: Path, source: Path, work: Path, plan: dict, pred_opt: str, facing_prior: dict, note) -> dict:
+    """Design section 9.2: predict (sampled, as the plan says), build the plan's skeleton on the mesh
+    (rig_build), write rig/template/rig.glb and rig/template_posed.glb, and the fit record (yaw 0, scale 1, nothing
+    unsupported). Returns {info, ref_store, pred_ctx}. Raises rig_build.BuildError, or whatever the prediction
+    raised; the caller falls back to the class's template in auto mode."""
+    import rig_build
+    import rig_pred
+    import rig_template
+    tdir = work / "template"
+    pp = plan.get("pred") or {}
+    beams = int(pp.get("beams") or 1)
+    temp = pp.get("temperature")
+    pred, pred_ctx, pmode = None, {}, "none"
+    if pred_opt != "never":
+        kw = {"beams": beams if beams > 1 else None, "temperature": float(temp) if temp else None}
+        pglb, psecs, cached = rig_pred.predict(source, work, **kw)
+        pred = rig_pred.Pred(pglb)
+        pmode = "sampled" if kw["temperature"] else ("beam" if kw["beams"] else "default")
+        pred_ctx = {"seconds": round(psecs, 1), "cached": cached, "joints": len(pred.names), "mode": pmode,
+                    "file": f"rig/{pglb.name}", **{k: v for k, v in kw.items() if v}}
+        note(f"Predicted a skeleton of its own for the model ({len(pred.names)} joints, {pmode}, {psecs:.0f} s"
+             + (", from the cache" if cached else "") + ")")
+    info = rig_build.build(source, plan, pred, tdir, pred_mode=pmode)
+    rig_template.write_rig(tdir / "skeleton.json", tdir / "rig.glb")
+    rig_template.write_posed(tdir / "rig.glb", work / "template_posed.glb")
+    chk = info.get("checks") or {}
+    fc = facing_prior.get("facing_check") or {}
+    declared = bool(facing_prior.get("canonical") or fc.get("agrees") or fc.get("flipped"))
+    fitinfo = {"flags": "".join(sorted(FLAGS)),
+               "registration": {"built": True, "scale_ratio": 1.0, "poor_match": False},
+               "facing": {"yaw": 0, "decided_by": "declared" if declared else "built",
+                          "check": info.get("facing_check")},
+               "yaw": 0, "scale": [1.0, 1.0, 1.0], "offset": [0.0, 0.0, 0.0], "unsupported": [],
+               "gate": chk.get("gate"), "build": _slim_build(info)}
+    store = rig_template.ref_store(tdir / "rig.glb", fitinfo)
+    lens = chk.get("lengths_H") or {}
+    note(f"Built a {plan.get('label') or plan['id']} skeleton for the model: {info.get('joints')} joints, legs from "
+         f"{info.get('legs_source')}, mirror error {chk.get('mirror_err_H', 0):.3f}× height, leg {lens.get('leg', 0):.2f} / "
+         f"neck {lens.get('neck', 0):.2f} / tail {lens.get('tail', 0):.2f}× height")
+    return {"info": info, "ref_store": store, "pred_ctx": pred_ctx}
+
+
+def make_clips(asset: Path, plan: dict, wanted: list[str], ours: dict, obin: bytes, skel: Skeleton, ref_store: dict,
+               src: dict, sbin: bytes, P: np.ndarray, faces: np.ndarray, J: np.ndarray, W: np.ndarray, height: float,
+               names_j: list[str], parent_j: dict[int, int], jpos: np.ndarray, info: dict, note):
+    """Design section 9.2.8-10: synthesise the plan's clips on the real (cleaned) weights, write
+    rig/template/clips.glb + clips_report.json + template.json, load and verify the template, and bake the clips
+    that passed onto our skeleton (a near-identity bake). Returns (clips, missing, J, W, clips_report, clips_failed,
+    template); J/W are the weights the clips were gated on (after any wing-weight repair)."""
+    import rig_clips
+    import rig_template
+    tdir = asset / "rig" / "template"
+    known = [c["name"] for c in plan.get("clips") or []]
+    plan_run = plan if not wanted else {**plan, "clips": [c for c in plan["clips"] if c["name"] in wanted]}
+    missing = [n for n in wanted if n not in known]
+    skel_s = {"names": names_j, "parent": [parent_j.get(k, -1) for k in range(len(names_j))], "pos": jpos,
+              "H": info.get("H", height), "cx": info.get("cx")}
+    pre = None
+    import rig_build
+    # weight on the other side's bones (a staggered stance's inner toes bound to the far foot) drags a planted foot
+    J, W, side_fix = rig_build.side_weight_repair(P, J, W, skel_s, plan)
+    if side_fix.get("applied"):
+        note(f"Moved {side_fix.get('moved_mass', 0):.1f} weight on {side_fix.get('verts')} points off the other "
+             f"side's bones ({', '.join(list(side_fix.get('bones') or {})[:4])}) before making the clips")
+    # floor points (a hind toe) bound to the tarsus swing through the floor in a stride: they belong to the foot
+    J, W, sole_fix = rig_build.sole_weight_repair(P, J, W, skel_s, plan)
+    if sole_fix.get("applied"):
+        note(f"Moved {sole_fix.get('moved_mass', 0):.1f} weight on {sole_fix.get('verts')} floor points onto the feet "
+             f"(from {', '.join(list(sole_fix.get('bones') or {})[:4])}) before making the clips")
+    if (plan.get("caps") or {}).get("wings"):  # folded wings the skin barely gave weight to can't move in Flap
+        J, W, pre = rig_build.wing_weight_repair(P, J, W, skel_s, plan)
+        if pre.get("applied"):
+            note(f"The wings owned {pre.get('share_before', 0):.1%} of the body sides; gave {pre.get('reassigned')} points "
+                 f"to the wing bones ({pre.get('share_after', 0):.1%}) before making the clips")
+    region = None
+    if (plan.get("caps") or {}).get("wings"):  # the wing region (points nearest a wing bone) on the wings, not the body
+        J, W, region = rig_build.wing_region_repair(P, J, W, skel_s, plan)
+        if region.get("applied"):
+            note(f"The wing region put {region.get('share_before', 0):.0%} of its weight on the wings; moved "
+                 f"{region.get('reassigned')} points onto them ({region.get('share_after', 0):.0%}) and took the wings off "
+                 f"{region.get('stripped')} points far from them before making the clips")
+    sclips, crep = rig_clips.synthesise(plan_run, skel_s, P, faces, J, W, height, names=names_j)
+    smooth = crep.get("wing_weight_smooth")
+    if smooth and smooth.get("applied"):
+        note(f"Softened the wings' weight edge over {smooth.get('verts')} points before making the clips")
+    J = np.asarray(crep["J"]).astype(np.int64)
+    W = np.asarray(crep["W"], np.float32)
+    wr = crep.get("wing_weight_repair") or {}
+    if wr.get("applied"):
+        note(f"The wings owned {wr.get('share_before', 0):.1%} of the body sides; gave {wr.get('reassigned')} points "
+             f"to the wing bones ({wr.get('share_after', 0):.1%}) so Flap can move them")
+    ok = [c for c in sclips if c["passed"]]
+    failed = crep.get("clips_failed") or []
+    for f in failed:
+        note(f"warn: couldn't make {f['name']} for this model: " + "; ".join(f.get("reasons") or ["no reason given"]))
+    rig_clips.write_report(tdir / "clips_report.json", crep)
+    if not ok:
+        raise SystemExit("rig: none of the body plan's clips kept the body together on this model: "
+                         + "; ".join(f"{f['name']}: {', '.join(f.get('reasons') or [])}" for f in failed))
+    rig_template.write_clips(tdir / "rig.glb", src, sbin, J, W, ok, tdir / "clips.glb", names=names_j)
+    rig_template.write_template_json(tdir, plan, [c["name"] for c in ok])
+    template = rig_template.load_template(asset)
+    # a clip that failed its gates is a `clips` fail row (clips_failed), not a broken template: verify the defaults made
+    made = {c["name"] for c in ok}
+    probs = rig_template.verify(tdir / "rig.glb", tdir / "clips.glb",
+                                {**plan, "default": [d for d in plan.get("default") or [] if d in made]})
+    errs = [p for p in probs if p["level"] == "error"]
+    if errs:
+        raise SystemExit("rig: the template built for this model breaks the template contract: "
+                         + "; ".join(f"{p['key']}: {p['msg']}" for p in errs))
+    for p in probs:
+        note(f"Template check: {p['msg']}")
+    names = [c["name"] for c in ok]
+    clips, gone = bake_clips(template, names, ours, skel, ref_store)
+    by = {c["name"]: c for c in ok}
+    for c in clips:
+        s_ = by[c["name"]]
+        c["track"] = s_.get("track")
+        c["loop"] = s_.get("loop")
+    note(f"Made {len(ok)} clips for this model in {crep.get('seconds', 0):.0f} s: " + ", ".join(
+        f"{c['name']} (energy {c.get('energy', 0):.2f})" for c in ok))
+    report = {"file": "rig/template/clips_report.json", "ok": names, "failed": [f["name"] for f in failed],
+              "seconds": crep.get("seconds"), "energy": {c["name"]: round(float(c.get("energy", 0)), 3) for c in ok},
+              "wing_weight_repair": {k: v for k, v in wr.items() if k != "bones"} or None,
+              "wing_weight_repair_before": {k: v for k, v in (pre or {}).items() if k != "bones"} or None,
+              "side_weight_repair": side_fix,
+              "sole_weight_repair": sole_fix,
+              "wing_region_repair": {k: v for k, v in (region or {}).items() if k != "bones"} or None,
+              "wing_weight_smooth": smooth,
+              "contacts": {c["name"]: {k: np.asarray(v, bool).reshape(-1).astype(int).tolist()
+                                       for k, v in ((c.get("track") or {}).get("contact") or {}).items()} for c in ok}}
+    return clips, missing + gone, J, W, report, failed, template
+
+
+def apply_reframe(work: Path, plan: dict, built: bool, posed: Path, names_j: list[str], ours: dict, obin: bytes,
+                  src: dict, sbin: bytes, P: np.ndarray, J: np.ndarray, W: np.ndarray, clips: list[dict],
+                  out_glb: Path, note) -> dict:
+    """Design section 5: designed local frames, applied last (after the floor pass and the checks) and only when
+    the skinning comes out identical. Rewrites out_glb; returns what was done."""
+    import rig_frames
+    try:
+        if built:
+            Q = rig_frames.frames(json.loads((work / "template" / "skeleton.json").read_text()), plan)
+            qsrc = "rig/template/skeleton.json"
+        else:
+            Q = rig_frames.frames_from_template(posed, names_j)
+            qsrc = "rig/template_posed.glb"
+        o2, b2, c2 = rig_frames.reframe(ours, obin, clips, Q)
+        H = max(float(np.ptp(P[:, 1])), 1e-9)
+        delta = rig_frames.check_identical((ours, obin, clips), (o2, b2, c2), P, J, W) / H
+    except Exception as e:  # noqa: BLE001 - the rig stands without bone rolls
+        note(f"warn: couldn't give the joints their frames ({str(e)[:160]}); kept identity rests")
+        return {"applied": False, "error": str(e)[:300]}
+    if delta > 1e-4:
+        note(f"warn: the joint frames would move the skin ({delta:.1e}× height); kept identity rests")
+        return {"applied": False, "max_delta_H": delta, "source": qsrc}
+    write_rigged(out_glb, o2, b2, src, sbin, J, W, c2)
+    fdir = work / "template" if built else work
+    rig_frames.write_frames(fdir / "frames.json", Q, {"source": qsrc})
+    note(f"Gave the joints designed frames (from {qsrc}); the skinning is unchanged ({delta:.1e}× height)")
+    return {"applied": True, "max_delta_H": delta, "source": qsrc, "frames": str((fdir / "frames.json").relative_to(work.parent))}
+
+
+def render_sheet(asset: Path, note) -> dict:
+    """rig/preview/contact_sheet.png and frames.json (scripts/rig_render.py, CPU)."""
+    try:
+        import rig_render
+        t0 = time.time()
+        res = rig_render.render(asset, {"frames": "auto"})
+    except Exception as e:  # noqa: BLE001 - a missing picture never fails the rig
+        note(f"warn: couldn't render the contact sheet ({str(e)[:160]})")
+        return {"error": str(e)[:300]}
+    rel = lambda p: str(Path(p).relative_to(asset)) if p and Path(p).is_absolute() and asset in Path(p).parents else p  # noqa: E731
+    out = {"sheet": rel(res.get("sheet")), "frames": rel(str(Path(res.get("out") or asset / "rig" / "preview") / "frames.json")),
+           "min_y_rel_min": res.get("min_y_rel_min"), "seconds": round(time.time() - t0, 1),
+           "rows": res.get("sheet_rows"), "cols": res.get("sheet_cols")}
+    fr = res.get("frames") or []
+    feet = [f.get("foot_mesh_y_rel") for f in fr if f.get("foot_mesh_y_rel") is not None]
+    if feet:
+        out["foot_mesh_y_rel"] = [round(float(min(feet)), 4), round(float(max(feet)), 4)]  # lowest leg point, min / max
+    note(f"Rendered the contact sheet ({len(fr)} frames, {out['seconds']:.0f} s): {out['sheet']}")
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stem", required=True)
     ap.add_argument("--class", dest="cls", default="", help="humanoid | quadruped | multileg | avian (default: ask the planner)")
@@ -973,28 +1233,59 @@ def main() -> int:
     ap.add_argument("--straighten", choices=("auto", "off"), default="auto",
                     help="auto: rig a straightened copy when an animal's head is turned from its body (default)")
     ap.add_argument("--no-fbx", action="store_true")
-    args = ap.parse_args()
+    env = os.environ.get
+    ap.add_argument("--template", choices=("auto", "fixed", "build"), default=env("RIG_TEMPLATE") or "auto",
+                    help="auto (default): build a skeleton for the model when its body plan has a builder and no fixed "
+                         "template (a ground bird), else the class's template; fixed: the class's template (the old "
+                         "path); build: always build (an error when the body plan has no builder)")
+    ap.add_argument("--plan", default=env("RIG_PLAN") or "", help="body plan id (scripts/rig_plans/); default: intent.json "
+                    "rig.plan, then the class rule")
+    ap.add_argument("--binder", choices=("skin", "pred", "heat"), default=env("RIG_BINDER") or "skin",
+                    help="skin: skin-tokens (default); pred: the predicted rig's weights; heat: Blender's heat bind")
+    ap.add_argument("--pred", choices=("auto", "always", "never"), default=PRED_ENV.get(env("RIG_PRED") or "auto", "auto"),
+                    help="the model's own predicted skeleton as the fitting target: auto (poor match or a missed body), "
+                         "always, never")
+    ap.add_argument("--floor", choices=("0", "1"), default=env("RIG_FLOOR") or "1", help="the floor pass (default 1)")
+    ap.add_argument("--render", choices=("0", "1"), default=env("RIG_RENDER") or "1",
+                    help="render the contact sheet (rig/preview/) after the rig (default 1)")
+    ap.add_argument("--reframe", choices=("0", "1", "auto"), default=env("RIG_REFRAME") or "auto",
+                    help="give the joints designed local frames (bone rolls) as the last step; auto (the default): on "
+                         "for a skeleton built for the model (no vendor rolls to keep), off on the fixed path")
+    args = ap.parse_args(argv)
 
     asset = OUT / args.stem
     if not asset.is_dir():
         raise SystemExit(f"rig: no asset {args.stem}")
     print("STAGES classify rest pose skin clean clips check" + ("" if args.no_fbx else " fbx"), flush=True)
     stage("classify", "Working out the body plan")
-    planner = classify(asset) if not args.cls else {"choice": args.cls, "confidence": None}
-    cls = planner["choice"]
-    if cls in UNSUPPORTED:
-        raise SystemExit(f"rig: {UNSUPPORTED[cls]}")
-    if cls not in TEMPLATES:
-        raise SystemExit(f"rig: unknown class {cls!r} ({', '.join(TEMPLATES)})")
-    template = TEMPLATES[cls]
+    # no mesh is the real problem for a prop with only a picture (or none): say so before asking the planner
     source = asset / args.source if args.source else next(
         (asset / n for n in ("psx.glb", "textured_photo.glb", "textured.glb") if (asset / n).is_file()), None)
     if source is None or not source.is_file():
         raise SystemExit("rig: no textured mesh to rig yet; make the model first")
+    import rig_plan
+    plan_cls = None
+    if args.plan:
+        try:
+            plan_cls = rig_plan.load(args.plan).get("class")
+        except KeyError:
+            raise SystemExit(f"rig: unknown body plan {args.plan!r} ({', '.join(p['id'] for p in rig_plan.all_plans())})")
+        if args.cls and plan_cls and args.cls != plan_cls:  # as POST /rig answers 400
+            raise SystemExit(f"rig: plan {args.plan} is for class {plan_cls}, not {args.cls}")
+    want_cls = args.cls or plan_cls  # the plan says the class: no need to ask the planner
+    planner = classify(asset) if not want_cls else {"choice": want_cls, "confidence": None}
+    cls = planner["choice"]
+    if cls in UNSUPPORTED:
+        raise SystemExit(f"rig: {UNSUPPORTED[cls]}")
+    if cls not in CLASSES:
+        raise SystemExit(f"rig: unknown class {cls!r} ({', '.join(CLASSES)})")
+    template = TEMPLATES[cls]
     work = asset / "rig"
     work.mkdir(exist_ok=True)
-    for old in ("inspect.json", "summary.json"):  # the last version's checks must never stand in for this one's
+    for old in ("inspect.json", "summary.json", "fbx_check.json"):  # the last version's checks must never stand in
         (work / old).unlink(missing_ok=True)
+    for old in TEMPLATE_FILES:  # nor a template built by an earlier run
+        (work / "template" / old).unlink(missing_ok=True)
     original = source
     notes: list[str] = []
 
@@ -1019,166 +1310,215 @@ def main() -> int:
         note(f"Head is turned {deg(rest['measured']['head_yaw_deg'])} from the body; rigged as made" if rest["measured"]["turned"]
              else f"Head lines up with the body ({deg(rest['measured']['head_yaw_deg'])})")
 
-    stage("pose", "Posing the template like the model")
+    try:
+        plan = rig_plan.resolve(asset, cls, args.plan or None, mesh_points, write=False)
+    except KeyError:
+        raise SystemExit(f"rig: unknown body plan {args.plan!r} ({', '.join(p['id'] for p in rig_plan.all_plans())})")
+    if (plan.get("resolved") or {}).get("class_mismatch"):
+        raise SystemExit(f"rig: {plan['resolved']['class_mismatch']}")
+    (work / "plan.json").unlink(missing_ok=True)  # written below with the plan the run actually uses
+    mode = decide(plan, args.template)
+    facing_prior = {k: plan[k] for k in ("facing", "facing_source", "canonical", "facing_check") if k in plan}
+    note(f"Body plan: {plan.get('label') or plan['id']} ({plan['resolved']['why']}); "
+         + ("building a skeleton for this model" if mode == "build" else "the class's template"))
+
+    stage("pose", "Building a skeleton for the model" if mode == "build" else "Posing the template like the model")
     posed = work / "template_posed.glb"
     surface = np.asarray(trimesh.load(source, force="mesh").sample(40000, seed=0), float)
     import rig_fit
     sprim = sdoc["meshes"][0]["primitives"][0]
     faces = accessor(sdoc, sbin0, sprim["indices"]).reshape(-1, 3).astype(np.int64) if "indices" in sprim else np.arange(len(mesh_points)).reshape(-1, 3)
-    vlm_cache = work / "facing_vlm.json"
+    built, build_error = None, None
+    if mode == "build":
+        try:
+            built = build_skeleton(asset, source, work, plan, args.pred, facing_prior, note)
+        except Exception as e:  # noqa: BLE001 - BuildError, a failed prediction or a template the verifier rejects
+            import rig_build
+            code = e.code if isinstance(e, rig_build.BuildError) else type(e).__name__
+            msg = e.msg if isinstance(e, rig_build.BuildError) else str(e)[:300]
+            if args.template == "build":
+                raise SystemExit(f"rig: couldn't build a skeleton ({code}: {msg})")
+            build_error = {"code": code, "msg": msg}
+            note(f"warn: couldn't build a skeleton ({code}: {msg}); using the class's vendor template")
+            mode = "fixed"
+    plan_used = plan if built is not None else fixed_plan(plan, cls)
+    if built is not None:  # rig/plan.json: the plan the built template was made with (rig_clips/rig_frames read it)
+        rig_plan.write_plan(work, plan_used)
+    if built is None:  # the fixed path: today's template, posed and fitted onto the mesh
+        vlm_cache = work / "facing_vlm.json"
 
-    def vlm() -> dict:
-        key = f"{source.stat().st_size}:{int(source.stat().st_mtime)}"
-        if vlm_cache.is_file():
-            got = json.loads(vlm_cache.read_text())
-            if got.get("key") == key:
-                return got["vlm"]
-        got = rig_fit.vlm_cue(source, blender_path(), work / "facing")
-        vlm_cache.write_text(json.dumps({"key": key, "vlm": got}))
-        return got
-    facing = {"geometric": rig_fit.geometric_cues(mesh_points, cls, rig_fit._texel_colours(sdoc, sbin0)), "vlm": vlm}
-    import rig_pred
-    # The model's own predicted skeleton (skin-tokens `rig`) is the fitting target when the template is a poor
-    # body-plan match (rig_fit.POOR_MATCH: a chicken on the flying bird) or the geometric fit misses the body.
-    # RIG_PRED: auto (default) | always | 0 (never).
-    use_pred = os.environ.get("RIG_PRED", "auto")
-    pred_ctx: dict = {}
-    holder: dict = {}
-    mesh_tm = trimesh.Trimesh(mesh_points, faces, process=False)
-    red = rig_pred._red(sdoc, sbin0)
+        def vlm() -> dict:
+            key = f"{source.stat().st_size}:{int(source.stat().st_mtime)}"
+            if vlm_cache.is_file():
+                got = json.loads(vlm_cache.read_text())
+                if got.get("key") == key:
+                    return got["vlm"]
+            got = rig_fit.vlm_cue(source, blender_path(), work / "facing")
+            vlm_cache.write_text(json.dumps({"key": key, "vlm": got}))
+            return got
+        facing = {"geometric": rig_fit.geometric_cues(mesh_points, cls, rig_fit._texel_colours(sdoc, sbin0)), "vlm": vlm,
+                  "prior": facing_prior_yaw(facing_prior, original.name)}
+        import rig_pred
+        # The model's own predicted skeleton (skin-tokens `rig`) is the fitting target when the template is a poor
+        # body-plan match (rig_fit.POOR_MATCH: a chicken on the flying bird) or the geometric fit misses the body.
+        # RIG_PRED: auto (default) | always | 0 (never).
+        use_pred = {"never": "0"}.get(args.pred, args.pred)
+        pred_ctx: dict = {}
+        holder: dict = {}
+        mesh_tm = trimesh.Trimesh(mesh_points, faces, process=False)
+        red = rig_pred._red(sdoc, sbin0)
 
-    def get_pred():
-        if "pred" not in holder:
-            holder["pred"] = None
-            try:
-                pglb, psecs, cached = rig_pred.predict(source, work)
-                pr_ = rig_pred.Pred(pglb)
-                same = len(pr_.P) == len(mesh_points) and float(np.abs(pr_.P - mesh_points).max()) < 1e-6
-                pred_ctx.update(seconds=round(psecs, 1), cached=cached, joints=len(pr_.names), same_vertices=same,
-                                independent=rig_pred.label(pr_, None, red))
-                note(f"Predicted a skeleton of its own for the model ({len(pr_.names)} joints, {psecs:.0f} s"
-                     + (", from the cache" if cached else "") + ")")
-                holder["pred"] = pr_
-            except Exception as e:  # noqa: BLE001 - no prediction: the geometric fit (rig_fit) does it alone
-                pred_ctx["error"] = str(e)[:300]
-                note(f"Couldn't predict a skeleton ({str(e)[:120]}); fitting the template by its own shape")
-        return holder["pred"]
+        def get_pred():
+            if "pred" not in holder:
+                holder["pred"] = None
+                try:
+                    pglb, psecs, cached = rig_pred.predict(source, work)
+                    pr_ = rig_pred.Pred(pglb)
+                    same = len(pr_.P) == len(mesh_points) and float(np.abs(pr_.P - mesh_points).max()) < 1e-6
+                    pred_ctx.update(seconds=round(psecs, 1), cached=cached, joints=len(pr_.names), same_vertices=same,
+                                    independent=rig_pred.label(pr_, None, red))
+                    note(f"Predicted a skeleton of its own for the model ({len(pr_.names)} joints, {psecs:.0f} s"
+                         + (", from the cache" if cached else "") + ")")
+                    holder["pred"] = pr_
+                except Exception as e:  # noqa: BLE001 - no prediction: the geometric fit (rig_fit) does it alone
+                    pred_ctx["error"] = str(e)[:300]
+                    note(f"Couldn't predict a skeleton ({str(e)[:120]}); fitting the template by its own shape")
+            return holder["pred"]
 
-    def pred_fn(yaw: int):
-        pr_ = get_pred()
-        if pr_ is None:
-            return None
-        f = rig_fit.yaw_matrix(yaw) @ np.array([0, 0, 1.0])
-        lab = rig_pred.label(pr_, f, red)
-        pred_ctx.update(labels=lab, template_yaw=int(yaw), head_chain_yaw=rig_pred.head_chain_yaw(pr_, lab),
-                        independent_head_chain_yaw=rig_pred.head_chain_yaw(pr_, pred_ctx["independent"]))
-        pred_ctx["yaw_agrees"] = pred_ctx["independent_head_chain_yaw"] == int(yaw)
-        if lab["legs"] < 2:
-            pred_ctx["skipped"] = f"only {lab['legs']} predicted legs"
-            return None
-        lines = rig_pred.target_lines(pr_, lab, mesh_tm, float(mesh_points[:, 1].min()))
-        pred_ctx["lines"] = {k: ({kk: vv for kk, vv in v.items() if kk != "line"} if k != "legs" else
-                                 [{kk: vv for kk, vv in q.items() if kk != "line"} for q in v]) for k, v in lines.items()}
-        pred_ctx["used"] = True
-        return lines
+        def pred_fn(yaw: int):
+            pr_ = get_pred()
+            if pr_ is None:
+                return None
+            f = rig_fit.yaw_matrix(yaw) @ np.array([0, 0, 1.0])
+            lab = rig_pred.label(pr_, f, red)
+            pred_ctx.update(labels=lab, template_yaw=int(yaw), head_chain_yaw=rig_pred.head_chain_yaw(pr_, lab),
+                            independent_head_chain_yaw=rig_pred.head_chain_yaw(pr_, pred_ctx["independent"]))
+            pred_ctx["yaw_agrees"] = pred_ctx["independent_head_chain_yaw"] == int(yaw)
+            if lab["legs"] < 2:
+                pred_ctx["skipped"] = f"only {lab['legs']} predicted legs"
+                return None
+            lines = rig_pred.target_lines(pr_, lab, mesh_tm, float(mesh_points[:, 1].min()))
+            pred_ctx["lines"] = {k: ({kk: vv for kk, vv in v.items() if kk != "line"} if k != "legs" else
+                                     [{kk: vv for kk, vv in q.items() if kk != "line"} for q in v]) for k, v in lines.items()}
+            pred_ctx["used"] = True
+            return lines
 
-    can_pred = use_pred != "0" and cls in rig_pred.PATHS
+        can_pred = use_pred != "0" and cls in rig_pred.PATHS
 
-    def pose(force: bool) -> tuple[dict, dict, np.ndarray, list, dict, dict]:
-        _, rs, pn_ = posed_template(template, posed, mesh_points, surface, facing, faces,
-                                    pred_fn if can_pred else None, force or use_pred == "always")
-        if pred_ctx.get("used") and pred_ctx.get("labels"):
-            lab = pred_ctx["labels"]
-            pn_ = pn_ + ["Predicted chains: " + ", ".join(f"{d['label']} {d['names'][0]}..{d['names'][-1]}" for d in lab["chains"])
-                         + f"; its head chain points {pred_ctx['independent_head_chain_yaw']}° on its own cues "
-                         f"({pred_ctx['independent']['how']}), the template was turned {pred_ctx['template_yaw']}°"
-                         + ("" if pred_ctx["yaw_agrees"] else " (they disagree)")]
-        pd_, _ = read_glb(posed)
-        sk_ = Skeleton(pd_)
-        w_ = sk_.world({})
-        pj_ = pd_["skins"][0]["joints"]
-        jp_ = np.array([w_[i][0] for i in pj_])
-        sg_ = [(pj_.index(sk_.parent[i]), k) for k, i in enumerate(pj_) if sk_.parent.get(i) in pj_]
-        return rs, pd_, jp_, sg_, rig_fit.pose_gate(jp_, sg_, mesh_points, faces, surface), {"notes": pn_, "pj": pj_}
+        def pose(force: bool) -> tuple[dict, dict, np.ndarray, list, dict, dict]:
+            _, rs, pn_ = posed_template(template, posed, mesh_points, surface, facing, faces,
+                                        pred_fn if can_pred else None, force or use_pred == "always", plan=plan_used)
+            if pred_ctx.get("used") and pred_ctx.get("labels"):
+                lab = pred_ctx["labels"]
+                pn_ = pn_ + ["Predicted chains: " + ", ".join(f"{d['label']} {d['names'][0]}..{d['names'][-1]}" for d in lab["chains"])
+                             + f"; its head chain points {pred_ctx['independent_head_chain_yaw']}° on its own cues "
+                             f"({pred_ctx['independent']['how']}), the template was turned {pred_ctx['template_yaw']}°"
+                             + ("" if pred_ctx["yaw_agrees"] else " (they disagree)")]
+            pd_, _ = read_glb(posed)
+            sk_ = Skeleton(pd_)
+            w_ = sk_.world({})
+            pj_ = pd_["skins"][0]["joints"]
+            jp_ = np.array([w_[i][0] for i in pj_])
+            sg_ = [(pj_.index(sk_.parent[i]), k) for k, i in enumerate(pj_) if sk_.parent.get(i) in pj_]
+            return rs, pd_, jp_, sg_, rig_fit.pose_gate(jp_, sg_, mesh_points, faces, surface), {"notes": pn_, "pj": pj_}
 
-    ref_store, pdoc, jp_pose, segs, gate, extra = pose(False)
-    for n in extra["notes"]:
-        note(n)
-    if gate["level"] == "fail" and can_pred and not pred_ctx.get("used"):
-        note(f"Pose check: {gate['joints_outside_box']:.0%} of joints outside the model's box, "
-             f"{gate['bone_far_outside_0p08H']:.0%} of the bones well outside it; fitting again on the model's predicted skeleton")
-        first_gate = gate
-        ref_store, pdoc, jp_pose, segs, gate, extra = pose(True)
+        ref_store, pdoc, jp_pose, segs, gate, extra = pose(False)
         for n in extra["notes"]:
             note(n)
-        ref_store["__fit__"]["first_gate"] = first_gate
-    pj = extra["pj"]
-    pred = holder.get("pred") if pred_ctx.get("used") else None
-    fitinfo = ref_store["__fit__"]
-    fitinfo["gate"] = gate
-    if pred is not None and pred_ctx.get("labels"):
-        Hm = float(np.ptp(mesh_points[:, 1]))
-        unsup = set(fitinfo.get("unsupported") or [])
-        pn = [pdoc["nodes"][i].get("name", "") for i in pj]
-        skip = {k for k, n in enumerate(pn) if ("wings" in unsup and n.startswith("wing")) or n == "root"}
-        t_segs = [(jp_pose[a], jp_pose[b]) for a, b in segs if a not in skip and b not in skip]
-        p_segs = [(pred.jp[pred.par[k]], pred.jp[k]) for k in range(len(pred.names)) if pred.par[k] >= 0]
-        keep = [k for k in range(len(pn)) if k not in skip]
-        d_pt = rig_pred.cd_j2b(pred.jp, t_segs) / Hm
-        d_tp = rig_pred.cd_j2b(jp_pose[keep], p_segs) / Hm
-        pred_ctx["cd_j2b"] = {"pred_to_template": round(float(d_pt.mean()), 4), "template_to_pred": round(float(d_tp.mean()), 4),
-                              "symmetric": round(float((d_pt.mean() + d_tp.mean()) / 2), 4), "pred_to_template_max": round(float(d_pt.max()), 4)}
-        note(f"Predicted joints sit {pred_ctx['cd_j2b']['pred_to_template']:.3f}× height from the fitted template's bones "
-             f"(template joints {pred_ctx['cd_j2b']['template_to_pred']:.3f}× from the predicted bones)")
-    note(f"Pose check: {gate['joints_outside_box']:.0%} of joints outside the model's box, "
-         f"{gate['bone_far_outside_0p08H']:.0%} of the bones well outside the model; skeleton/model size "
-         + " / ".join(f"{x:.2f}" for x in gate["skeleton_over_mesh_extent"]))
-    if (gate["level"] == "fail" or os.environ.get("RIG_FORCE_FALLBACK")) and pred is not None and pred_ctx.get("labels") \
-            and pred_ctx.get("same_vertices"):
-        # E3 fallback: the template can't be fitted; ship the predicted rig itself with the template's clips mapped
-        # chain by chain onto it
-        note(f"The {cls} template doesn't fit ({gate['joints_outside_box']:.0%} of joints outside the box, "
-             f"{gate['bone_far_outside_0p08H']:.0%} of bones well outside); rigging with the model's own predicted skeleton")
-        stage("skin", "Using the predicted skin weights")
-        names = [c.strip() for c in args.clips.split(",") if c.strip()] or template["default"]
-        needs = rig_pred.PATHS.get(cls, {}).get("needs", {})
-        has = {d["label"] for d in pred_ctx["labels"]["chains"]}
-        unsupported_clips = [n for g, cl in needs.items() if g not in has for n in cl if n in names]
-        names = [n for n in names if n not in unsupported_clips]
-        stage("clips", "Baking animation clips")
-        fclips, finfo = rig_pred.fallback_clips(pred, pred_ctx["labels"], template, cls, names, float(fitinfo.get("yaw", 0)))
-        pdoc2 = json.loads(json.dumps(pred.doc))
-        pdoc2.pop("animations", None)
-        src, sbin = read_glb(source)
-        out_glb = asset / "rigged.glb"
-        write_rigged(out_glb, pdoc2, pred.b, src, sbin, pred.J, pred.W.astype(np.float32), fclips)
-        far = far_motion(out_glb)
-        report = {"class": cls, "template": template["rig"], "source": original.name, "rigged": out_glb.name, "rest": rest,
-                  "joints": len(pred.names), "clips": [c["name"] for c in fclips], "missing_clips": [], "skin_seconds": 0.0,
-                  "binder": "pred-rig", "fallback": {"why": "pose gate", "gate": gate, **finfo}, "fit": fitinfo,
-                  "far_motion": far, "unsupported_clips": unsupported_clips, "made": int(time.time()), "fbx": None,
-                  "fbx_note": "skipped", "pred": {k: v for k, v in pred_ctx.items() if k != "independent"}}
-        (work / "rig.json").write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
-        bad = [c for c, v in far.items() if v["level"] == "fail"]
-        summary = {"version": 1, "made": report["made"], "class": cls, "level": "fail" if bad else "warn",
-                   "line": "Rigged on the model's own predicted skeleton (the template didn't fit)", "tears": 0,
-                   "motion": None, "head": None, "worst_stretch": None,
-                   "problems": [{"level": "warn", "key": "fallback", "label": "Template didn't fit: predicted skeleton, clips mapped chain by chain, no floor pass"}]
-                   + [{"level": "fail", "key": "far", "label": f"{c}: points pulled by far bones"} for c in bad]}
-        (work / "summary.json").write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
-        note("Fallback rig written: " + ", ".join(report["clips"]) + (" (left out " + ", ".join(unsupported_clips) + ")" if unsupported_clips else ""))
-        if not args.no_fbx:
-            stage("fbx", "Writing the FBX for s&box")
-            fbx = work / f"{args.stem.replace('-', '_')}.fbx"
-            report["fbx_note"] = export_fbx(out_glb, fbx)
-            report["fbx"] = f"rig/{fbx.name}" if fbx.is_file() else None
+        if gate["level"] == "fail" and can_pred and not pred_ctx.get("used"):
+            note(f"Pose check: {gate['joints_outside_box']:.0%} of joints outside the model's box, "
+                 f"{gate['bone_far_outside_0p08H']:.0%} of the bones well outside it; fitting again on the model's predicted skeleton")
+            first_gate = gate
+            ref_store, pdoc, jp_pose, segs, gate, extra = pose(True)
+            for n in extra["notes"]:
+                note(n)
+            ref_store["__fit__"]["first_gate"] = first_gate
+        pj = extra["pj"]
+        pred = holder.get("pred") if pred_ctx.get("used") else None
+        fitinfo = ref_store["__fit__"]
+        fitinfo["gate"] = gate
+        if pred is not None and pred_ctx.get("labels"):
+            Hm = float(np.ptp(mesh_points[:, 1]))
+            unsup = set(fitinfo.get("unsupported") or [])
+            pn = [pdoc["nodes"][i].get("name", "") for i in pj]
+            skip = {k for k, n in enumerate(pn) if ("wings" in unsup and n.startswith("wing")) or n == "root"}
+            t_segs = [(jp_pose[a], jp_pose[b]) for a, b in segs if a not in skip and b not in skip]
+            p_segs = [(pred.jp[pred.par[k]], pred.jp[k]) for k in range(len(pred.names)) if pred.par[k] >= 0]
+            keep = [k for k in range(len(pn)) if k not in skip]
+            d_pt = rig_pred.cd_j2b(pred.jp, t_segs) / Hm
+            d_tp = rig_pred.cd_j2b(jp_pose[keep], p_segs) / Hm
+            pred_ctx["cd_j2b"] = {"pred_to_template": round(float(d_pt.mean()), 4), "template_to_pred": round(float(d_tp.mean()), 4),
+                                  "symmetric": round(float((d_pt.mean() + d_tp.mean()) / 2), 4), "pred_to_template_max": round(float(d_pt.max()), 4)}
+            note(f"Predicted joints sit {pred_ctx['cd_j2b']['pred_to_template']:.3f}× height from the fitted template's bones "
+                 f"(template joints {pred_ctx['cd_j2b']['template_to_pred']:.3f}× from the predicted bones)")
+        note(f"Pose check: {gate['joints_outside_box']:.0%} of joints outside the model's box, "
+             f"{gate['bone_far_outside_0p08H']:.0%} of the bones well outside the model; skeleton/model size "
+             + " / ".join(f"{x:.2f}" for x in gate["skeleton_over_mesh_extent"]))
+        if (gate["level"] == "fail" or os.environ.get("RIG_FORCE_FALLBACK")) and pred is not None and pred_ctx.get("labels") \
+                and pred_ctx.get("same_vertices"):
+            # E3 fallback: the template can't be fitted; ship the predicted rig itself with the template's clips mapped
+            # chain by chain onto it
+            note(f"The {cls} template doesn't fit ({gate['joints_outside_box']:.0%} of joints outside the box, "
+                 f"{gate['bone_far_outside_0p08H']:.0%} of bones well outside); rigging with the model's own predicted skeleton")
+            stage("skin", "Using the predicted skin weights")
+            names = [c.strip() for c in args.clips.split(",") if c.strip()] or template["default"]
+            needs = rig_plan.spec(plan_used, cls, "needs", {}) or {}
+            has = {d["label"] for d in pred_ctx["labels"]["chains"]}
+            unsupported_clips = [n for g, cl in needs.items() if g not in has for n in cl if n in names]
+            names = [n for n in names if n not in unsupported_clips]
+            stage("clips", "Baking animation clips")
+            fclips, finfo = rig_pred.fallback_clips(pred, pred_ctx["labels"], template, cls, names, float(fitinfo.get("yaw", 0)),
+                                                    plan=plan_used)
+            pdoc2 = json.loads(json.dumps(pred.doc))
+            pdoc2.pop("animations", None)
+            src, sbin = read_glb(source)
+            out_glb = asset / "rigged.glb"
+            write_rigged(out_glb, pdoc2, pred.b, src, sbin, pred.J, pred.W.astype(np.float32), fclips)
+            far = far_motion(out_glb)
+            report = {"class": cls, "template": template_info(template, plan_used), "plan": plan_used["id"],
+        "plan_resolved": plan["id"],
+                      "facing_prior": facing_prior, "build_error": build_error, "source": original.name, "rigged": out_glb.name, "rest": rest,
+                      "joints": len(pred.names), "clips": [c["name"] for c in fclips], "missing_clips": [], "skin_seconds": 0.0,
+                      "binder": "pred-rig", "fallback": {"why": "pose gate", "gate": gate, **finfo}, "fit": fitinfo,
+                      "far_motion": far, "unsupported_clips": unsupported_clips, "made": int(time.time()), "fbx": None,
+                      "fbx_note": "skipped", "pred": {k: v for k, v in pred_ctx.items() if k != "independent"}}
             (work / "rig.json").write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
-        print("RIG_RESULT " + json.dumps(report, default=str), flush=True)
-        return 0
-    if gate["level"] == "fail" and "f" in FLAGS:
-        raise SystemExit(f"rig: the {cls} template doesn't fit this model: {gate['joints_outside_box']:.0%} of its joints "
-                         f"are outside the model and {gate['bone_far_outside_0p08H']:.0%} of its bones lie well outside it "
-                         "(red above 20% / 30%). Not skinning a skeleton that misses the body; try another body plan.")
+            bad = [c for c, v in far.items() if v["level"] == "fail"]
+            summary = {"version": 1, "made": report["made"], "class": cls, "level": "fail" if bad else "warn",
+                       "line": "Rigged on the model's own predicted skeleton (the template didn't fit)", "tears": 0,
+                       "motion": None, "head": None, "worst_stretch": None,
+                       "problems": [{"level": "warn", "key": "fallback", "label": "Template didn't fit: predicted skeleton, clips mapped chain by chain, no floor pass"}]
+                       + [{"level": "fail", "key": "far", "label": f"{c}: points pulled by far bones"} for c in bad]}
+            (work / "summary.json").write_text(json.dumps(summary, indent=1) + "\n", encoding="utf-8")
+            note("Fallback rig written: " + ", ".join(report["clips"]) + (" (left out " + ", ".join(unsupported_clips) + ")" if unsupported_clips else ""))
+            if not args.no_fbx:
+                stage("fbx", "Writing the FBX for s&box")
+                fbx = work / f"{args.stem.replace('-', '_')}.fbx"
+                report["fbx_note"], fchk = export_fbx(out_glb, fbx, [c["name"] for c in fclips])
+                report["fbx_check"] = slim_fbx_check(fchk)
+                report["fbx"] = f"rig/{fbx.name}" if fbx.is_file() else None
+                (work / "rig.json").write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
+            print("RIG_RESULT " + json.dumps(report, default=str), flush=True)
+            return 0
+        if gate["level"] == "fail" and "f" in FLAGS:
+            import rig_plan
+            others = [p["id"] for p in rig_plan.all_plans() if p.get("class") == cls and p.get("id") != plan_used.get("id")]
+            advice = (f"try another body plan ({', '.join(others)})" if others else
+                      f"the {cls} class has no other body plan, so this model can't be rigged with it yet")
+            raise SystemExit(f"rig: the {cls} template doesn't fit this model: {gate['joints_outside_box']:.0%} of its joints "
+                             f"are outside the model and {gate['bone_far_outside_0p08H']:.0%} of its bones lie well outside it "
+                             f"(red above 20% / 30%). Not skinning a skeleton that misses the body; {advice}.")
+
+    else:  # the built path: the skeleton built for this model is the template (yaw 0, scale 1, no fallback)
+        import rig_pred
+        ref_store = built["ref_store"]
+        fitinfo = ref_store["__fit__"]
+        pred_ctx = built["pred_ctx"]
+        pred = None
+        gate = fitinfo.get("gate") or {}
+        if gate:
+            note(f"Pose check: {gate.get('joints_outside_box', 0):.0%} of joints outside the model's box, "
+                 f"{gate.get('bone_far_outside_0p08H', 0):.0%} of the bones well outside the model")
 
     stage("skin", "Learning the skin weights")
     raw = work / "skinned_raw.glb"
@@ -1186,7 +1526,8 @@ def main() -> int:
     if args.bind == "weld":
         inv = weld(source, work / "welded.glb")
         note(f"Joined {len(inv)} corners into {int(inv.max()) + 1} points before skinning")
-    binder = os.environ.get("RIG_BINDER", "skin")
+    binder = args.binder
+    binder_report = None
     if binder == "pred" and pred is not None and pred_ctx.get("same_vertices") and pred_ctx.get("labels"):
         t0 = time.time()
         bdoc, bbin = rig_pred.ours_from_posed(posed)
@@ -1198,9 +1539,23 @@ def main() -> int:
         pred_ctx["transfer"] = tinfo
         note(f"Moved the predicted skeleton's weights onto the template's bones in {secs:.1f} s ({tinfo['bones_used']} bones used)")
     else:
-        binder = "skin"
-        secs = run_skin(work / "welded.glb" if inv is not None else source, posed, raw)
-        note(f"Learned the skin weights in {secs:.0f} s")
+        if binder == "heat":
+            import rig_heat
+            try:
+                hrep = rig_heat.run_heat(work / "welded.glb" if inv is not None else source, posed, raw)
+                secs = float(hrep["seconds"])
+                for n in hrep.get("notes") or []:
+                    note(n)
+                binder_report = {k: v for k, v in hrep.items() if k != "notes"}
+                note(f"Heat-bound the skin weights in Blender in {secs:.0f} s")
+            except rig_heat.HeatError as e:
+                binder_report = {"error": str(e)[:400]}
+                note(f"warn: the heat bind failed ({str(e)[:160]}); learning the weights with skin-tokens instead")
+                binder = "skin"
+        if binder != "heat":
+            binder = "skin"
+            secs = run_skin(work / "welded.glb" if inv is not None else source, posed, raw)
+            note(f"Learned the skin weights in {secs:.0f} s")
 
     stage("clean", "Cleaning up the weights")
     ours, obin = read_glb(raw)
@@ -1229,7 +1584,8 @@ def main() -> int:
     # the root's bone runs from the floor to the hips through the belly; its weight is folded away anyway
     skip_k = [root_k]
     if fitinfo.get("unsupported"):  # folded, unsupported chains (a ground bird's wings) never stand in as the nearest bone
-        roots_u = [r_ for g in fitinfo["unsupported"] for r_ in rig_pred.PATHS.get(cls, {}).get("groups", {}).get(g, [])]
+        groups = (rig_pred.paths_for(cls, plan_used) or {}).get("groups", {})
+        roots_u = [r_ for g in fitinfo["unsupported"] for r_ in groups.get(g, [])]
         sub = [joints.index(skel.index[r_]) for r_ in roots_u if r_ in skel.index]
         while sub:
             k = sub.pop()
@@ -1250,29 +1606,34 @@ def main() -> int:
     note(f"Gave every copy of a point the same bones ({split} points had copies on different bones)" if split
          else "Checked that every copy of a point has the same bones, so corners move together")
 
-    stage("clips", "Baking animation clips")
-    names = [c.strip() for c in args.clips.split(",") if c.strip()] or template["default"]
-    unsupported_clips = []
-    if fitinfo.get("unsupported"):
-        needs = rig_pred.PATHS.get(cls, {}).get("needs", {})
-        unsupported_clips = [n for g in fitinfo["unsupported"] for n in needs.get(g, []) if n in names]
-        if unsupported_clips:
-            names = [n for n in names if n not in unsupported_clips]
-            note("Left out " + ", ".join(unsupported_clips) + " (the model has no " + ", ".join(
-                g for g in fitinfo["unsupported"] if needs.get(g)) + " for them to move)")
     out_glb = asset / "rigged.glb"
-    upright = float(np.ptp(P[:, 1])) > 0.9 * float(max(np.ptp(P[:, 0]), np.ptp(P[:, 2])))
-    ground_bird = cls == "avian" and upright
-    trial = []
-    if ground_bird and "e" in FLAGS and not args.clips:
-        trial = [n for n in names if n not in ("Idle", "Walk")]
-        note("A ground bird (as tall as it is long): Idle and Walk; flight clips only if they keep the body together")
-    clips, missing = bake_clips(template, names, ours, skel, ref_store)
+    wanted = [c.strip() for c in args.clips.split(",") if c.strip()]
+    unsupported_clips, trial, trial_stretch, dropped_clips = [], [], {}, []
+    clips_report, clips_failed = None, []
+    if built is not None:
+        stage("clips", "Making animation clips for this model")
+        clips, missing, J, W, clips_report, clips_failed, template = make_clips(
+            asset, plan, wanted, ours, obin, skel, ref_store, src, sbin, P, faces, J, W, height, names_j, parent_j,
+            jpos, built["info"], note)
+        names = [c["name"] for c in clips]
+    else:
+        stage("clips", "Baking animation clips")
+        names = wanted or template["default"]
+        if fitinfo.get("unsupported"):
+            needs = rig_plan.spec(plan_used, cls, "needs", {}) or {}
+            unsupported_clips = [n for g in fitinfo["unsupported"] for n in needs.get(g, []) if n in names]
+            if unsupported_clips:
+                names = [n for n in names if n not in unsupported_clips]
+                note("Left out " + ", ".join(unsupported_clips) + " (the model has no " + ", ".join(
+                    g for g in fitinfo["unsupported"] if needs.get(g)) + " for them to move)")
+        trial = ground_bird_trial(plan_used, cls, P, names, bool(args.clips), False)
+        if trial:
+            note("A ground bird (as tall as it is long): Idle and Walk; flight clips only if they keep the body together")
+        clips, missing = bake_clips(template, names, ours, skel, ref_store)
     write_rigged(out_glb, ours, obin, src, sbin, J, W, clips)
     far = far_motion(out_glb)
     if any(c in far for c in names):
         shutil.copy2(out_glb, work / "rigged_allclips.glb")
-    trial_stretch = {}
     if trial:  # B2 alone passes a correctly bound chicken whose Flap still spreads its body sides into slabs
         import rig_motion
         Jt = np.asarray(J)
@@ -1288,21 +1649,29 @@ def main() -> int:
             f"{trial_stretch.get(n, 0):.1f}×" for n in dropped_clips) + "; kept when under 10% / 0.75× / 3×)")
 
     floor = None
-    if os.environ.get("RIG_FLOOR", "1") != "0" and clips:
+    if args.floor != "0" and clips:
         fixing = True  # creatures: grounding + leg IK + neck lift; people: grounding only
         if fixing:
             shutil.copy2(out_glb, work / "rigged_nofloor.glb")
         t0 = time.time()
         lateral = R.from_euler("y", float(fitinfo.get("yaw", 0)), degrees=True).apply([1.0, 0, 0])
         Hs = float(np.ptp(P[:, 1]))
-        floor = rig_pred.floor_pass(clips, ours, P, np.asarray(J), np.asarray(W), template, cls, Hs, lateral)
+        floor = rig_pred.floor_pass(clips, ours, P, np.asarray(J), np.asarray(W), template, cls, Hs, lateral,
+                                    plan=plan_used, prefer_track=built is not None)
         if fixing:
             write_rigged(out_glb, ours, obin, src, sbin, J, W, clips)
             far = far_motion(out_glb)
-        note(("Floor pass (" if cls in rig_pred.PATHS else "Floor pass, grounding only (") + f"{time.time() - t0:.0f} s): " + "; ".join(
+        note(("Floor pass (" if rig_pred.paths_for(cls, plan_used) else "Floor pass, grounding only (") + f"{time.time() - t0:.0f} s): " + "; ".join(
             f"{c} lowest {v['low_min_before']:+.2f}→{v['low_min_after']:+.2f}× height" for c, v in floor.items()))
+    # last: designed joint frames (bone rolls for the FBX); the skinning is unchanged, so nothing above is re-run
+    reframed = None
+    if (args.reframe == "1" or (args.reframe == "auto" and built is not None)) and clips:
+        reframed = apply_reframe(work, plan, built is not None, posed, names_j, ours, obin, src, sbin, P, J, W, clips,
+                                 out_glb, note)
     report = {
-        "class": cls, "template": template["rig"], "source": original.name, "rigged": out_glb.name, "rest": rest,
+        "class": cls, "template": template_info(template, plan_used), "plan": plan_used["id"],
+        "plan_resolved": plan["id"],
+        "source": original.name, "rigged": out_glb.name, "rest": rest,
         "joints": len(joints), "clips": [c["name"] for c in clips], "missing_clips": missing,
         "skin_seconds": round(secs, 1), "dropped_influences": dropped, "folded_weight": round(folded, 4), "split_points": split,
         "bind": args.bind, "fbx": None, "fbx_note": "skipped", "made": int(time.time()),
@@ -1311,6 +1680,8 @@ def main() -> int:
         "binder": binder, "pred": {k: v for k, v in pred_ctx.items() if k not in ("independent",)} | (
             {"independent": {k: v for k, v in pred_ctx["independent"].items() if k != "chains"}} if pred_ctx.get("independent") else {}),
         "unsupported_clips": unsupported_clips, "floor": floor,
+        "clips_report": clips_report, "clips_failed": clips_failed, "facing_prior": facing_prior,
+        "build_error": build_error, "binder_report": binder_report, "reframe": reframed, "fbx_check": None,
     }
     stage("check", "Checking the rig")
     bundle = None
@@ -1332,15 +1703,24 @@ def main() -> int:
     if not args.no_fbx:
         stage("fbx", "Writing the FBX for s&box")
         fbx = work / f"{name}.fbx"
-        fbx_note = export_fbx(out_glb, fbx)
+        fbx_note, fchk = export_fbx(out_glb, fbx, [c["name"] for c in clips])
+        report["fbx_check"] = slim_fbx_check(fchk)
+        if fchk is not None:
+            print(f"rig: {'pass' if fchk.get('ok') else 'fail'}: {fbx_note}", flush=True)
         tex = asset / "psx" / f"{name}.png"
         if tex.is_file():
             shutil.copy2(tex, work / tex.name)
     report.update({"fbx": f"rig/{name}.fbx" if (work / f"{name}.fbx").is_file() else None, "fbx_note": fbx_note})
-    (work / "rig.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    if bundle is not None:  # bundle["rig"] is report: now with the FBX
+    if args.render == "1" and clips:
+        report["render"] = render_sheet(asset, note)
+    (work / "rig.json").write_text(json.dumps(report, indent=2, default=_plain) + "\n", encoding="utf-8")
+    if bundle is not None:  # bundle["rig"] is report: now with the FBX check and the contact sheet
+        try:
+            rig_inspect.add_late_rows(bundle, asset, report)
+        except Exception as e:  # noqa: BLE001
+            print(f"rig: couldn't add the FBX check to the report ({e})", flush=True)
         rig_inspect.write(asset, bundle)
-    print("RIG_RESULT " + json.dumps(report), flush=True)
+    print("RIG_RESULT " + json.dumps(report, default=_plain), flush=True)
     return 0
 
 
