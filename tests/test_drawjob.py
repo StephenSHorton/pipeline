@@ -103,6 +103,27 @@ class DrawJobTests(unittest.TestCase):
     def keys(self, st: dict) -> list[str]:
         return [s["key"] for s in (st.get("progress") or {}).get("stages") or []]
 
+    def test_a_photo_draw_runs_the_sheet_from_the_photo(self) -> None:
+        import facing
+        from PIL import Image
+
+        (self.root / "in").mkdir(exist_ok=True)
+        Image.new("RGB", (64, 48), (200, 10, 10)).save(self.root / "in" / "cow.jpg")
+        answers = iter(["a red cow", "YES"])
+        with mock.patch.dict("os.environ", {"FLAT2D_SHEET": "1152x1152"}), mock.patch.object(
+            facing, "detect_image", return_value={"head": "right", "profile": True, "confidence": 0.9, "how": "vlm"}
+        ), mock.patch.object(facing, "ask", side_effect=lambda *a, **k: next(answers)):
+            job = self.start({"kind": "flat2d", "stem": "cow", "reference": "in/cow.jpg",
+                              "intent": {"output": "ps1", "kind": "quadruped"}})
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        self.assertEqual(self.keys(st)[-3:], ["draw", "views_split", "views_check"])
+        self.assertIn("Your photo shows a red cow.", st.get("log_tail") or "")
+        self.assertIn("They show your photo's subject.", st.get("log_tail") or "")
+        doc = json.loads((self.root / "out" / "cow" / "flat" / "views.json").read_text())
+        self.assertEqual(doc["sheet"]["reference"]["file"], "in/cow.jpg")
+        self.assertEqual(st["result"]["views"], "flat/views.json")
+
     def test_a_3d_bound_draw_is_a_four_view_sheet_in_its_own_stages(self) -> None:
         import facing
 
@@ -397,6 +418,33 @@ class DrawJobTests(unittest.TestCase):
                 self.factory.start_flat({"kind": "flat2d", "stem": "lamp", "prompt": "a lamp", "views": 3})
         self.assertEqual(seen[0]["views"], 1)
         self.assertFalse(optional.wants_views(seen[0]["intent"], seen[0]["views"]))
+
+    def test_a_photo_reference_reaches_the_draw_payload(self) -> None:
+        from PIL import Image
+
+        (self.factory.root / "in").mkdir(exist_ok=True)
+        Image.new("RGB", (64, 48), (200, 10, 10)).save(self.factory.root / "in" / "cow.jpg")
+        (self.factory.root / "in" / "notes.png").write_text("not a picture")
+        seen: list[tuple[dict, dict]] = []
+        with mock.patch.object(drawjob, "run", lambda factory, spec, payload, **k: seen.append((spec, payload))):
+            # No words needed with a photo: the vision model names it.
+            self.factory.start_flat({"kind": "flat2d", "stem": "cow", "prompt": "", "reference": "in/cow.jpg",
+                                     "intent": {"output": "ps1"}})
+            with self.factory._lock:
+                self.factory._job["state"] = "ok"
+            for bad, err in ((dict(reference="../cow.jpg"), ValueError), (dict(reference="in/notes.png"), ValueError),
+                             (dict(reference="in/gone.jpg"), FileNotFoundError),
+                             (dict(reference="in/cow.jpg", intent={"output": "sprite"}), ValueError),
+                             (dict(reference="in/cow.jpg", views=1), ValueError),
+                             (dict(reference="in/cow.jpg", kind="ideas"), ValueError)):
+                body = {"kind": "flat2d", "stem": "cow", "prompt": "a cow", "intent": {"output": "ps1"}, **bad}
+                with self.assertRaises(err, msg=bad):
+                    self.factory.start_flat(body)
+        spec, payload = seen[0]
+        self.assertEqual(payload["reference"], str((self.factory.root / "in" / "cow.jpg").resolve()))
+        self.assertEqual(spec["reference"], "in/cow.jpg")
+        self.assertEqual(spec["backend"], "stub")  # sheet.edit_backend(): the photo draw keeps its own times
+        self.assertEqual(payload["prompt"], "")
 
     def test_2d_writes_wait_for_the_job_on_that_asset(self) -> None:
         with mock.patch.dict("os.environ", {"FLAT2D_STUB_STEP": "0.3"}):

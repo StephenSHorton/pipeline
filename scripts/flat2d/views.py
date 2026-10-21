@@ -6,12 +6,16 @@ parts when a gap is missing. Each panel is cut out with Apple Vision (store.visi
 is unavailable), with thin full-width lines (a drawn baseline or frame) dropped first.
 
 check_panels runs the hard checks. Any failure is a flaw:
-    one subject per panel, at least AREA_MIN of it;     height spread at most HEIGHT_SPREAD;
+    one subject per panel, at least AREA_MIN of it;
     Lab colour distance to the median at most COLOUR_DE; right against mirrored left IoU at least SIDE_IOU;
     side-on creatures: ONE facing.detect_image call on the right panel. Head left on a clean profile mirrors every
     panel in place (the turnaround of the mirrored creature, labels unchanged). An unavailable vision model is a
     hard flaw (checks.facing.how = 'unavailable'), never a pass.
-A cloudy ground or a shadow is a note: matting and despill handle it.
+A cloudy ground or a shadow is a note: matting and despill handle it. So is a height spread over HEIGHT_SPREAD (one
+view drawn bigger than another): both readers of the views frame each one on its own (Hunyuan3D-2mv's recenter crops
+every view to its box and scales it to fill; retexture fits each silhouette cropped to its box and stretched square),
+so a view's size on the sheet never reaches the mesh or the paint. As a flaw it threw away three of five good photo
+sheets of one cow and the lantern's views.
 
 write_views writes flat/sheet.png, flat/views/<id>.png, flat/views.json and flat/source.png (the canonical panel).
 """
@@ -47,7 +51,8 @@ SHADOW_SHARE = 0.005
 NO_REDRAW = {"facing_unavailable"}
 NOTE_TEXT = {"cloudy": "The ground is cloudy; matting handles it.", "shadow": "There is a shadow on the ground; "
              "matting handles it.", "quarters": "No clear gaps between the views; cut in equal parts.",
-             "mask_key": "Apple Vision was unavailable; the views were cut out on the magenta key."}
+             "mask_key": "Apple Vision was unavailable; the views were cut out on the magenta key.",
+             "height": "The views are drawn at different sizes; the shape and paint steps frame each one on its own."}
 
 
 # ---------------------------------------------------------------- masks
@@ -192,7 +197,7 @@ def to_lab(rgb: np.ndarray) -> np.ndarray:
 
 def side_iou(right: np.ndarray, left: np.ndarray, size: int = 256) -> float:
     """IoU of the right panel's silhouette against the mirrored left one. Each is cropped to its box and scaled to
-    the same HEIGHT (keeping its aspect: the height check covers size), then centred on one canvas."""
+    the same HEIGHT (keeping its aspect; size on the sheet is only a note), then centred on one canvas."""
     a, b = right[_slices(right)], np.fliplr(left[_slices(left)])
     if a.size == 0 or b.size == 0:
         return 0.0
@@ -278,7 +283,7 @@ def check_panels(image: Image.Image, key: dict, kind: str | None, layout: str = 
     body_spread = round(max(bodies.values()) - min(bodies.values()), 4)
     creature = bool(kind and FACING.get(kind) == "right")
     if spread > HEIGHT_SPREAD and (creature or body_spread > HEIGHT_SPREAD):
-        flaws.append("height")
+        notes.append("height")
     de = 0.0
     if len(labs) >= 2:
         med = np.median(np.stack(list(labs.values())), axis=0)

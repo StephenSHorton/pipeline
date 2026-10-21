@@ -264,6 +264,57 @@ def still_backend() -> str:
     return "qwen-2512" if q2512_ready() else "z-image"
 
 
+# The photo draw: a picture the user added is a reference, never a view. Qwen-Image-Edit-2511 (Apache-2.0) with
+# lightx2v's Lightning LoRA (Apache-2.0) draws the same four-view sheet from it, and the sheet takes the words
+# path from there (split, check, views.json, source.png = the canonical drawn panel).
+EDITS = {
+    "qwen-edit": {"model": "qwen-image-edit-2511+lightning8", "licence": "apache-2.0"},
+    "stub": {"model": "stub", "licence": "none"},
+}
+QEDIT_STEPS = 8
+
+
+def edit_backend() -> str:
+    """The photo-draw model: 'stub' when the draws are stubbed, 'qwen-edit' when mflux ships Qwen-Image-Edit,
+    else '' (no photo draw: the factory falls back to the photo as one picture, loudly)."""
+    if still_choice() == "stub":
+        return "stub"
+    if not mflux_ready():
+        return ""
+    return "qwen-edit" if _mflux_has("qwen/variants/edit") else ""
+
+
+def qedit_repo() -> str:
+    return (os.environ.get("FLAT2D_QWEN_EDIT") or "Qwen/Qwen-Image-Edit-2511").strip()
+
+
+def qedit_lora() -> str:
+    """lightx2v's 8-step Lightning LoRA for Qwen-Image-Edit-2511, from the Hugging Face cache."""
+    env = (os.environ.get("FLAT2D_QEDIT_LORA") or "").strip()
+    if env:
+        return env
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download("lightx2v/Qwen-Image-Edit-2511-Lightning",
+                           "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors")
+
+
+def qedit_saved_dir() -> Path:
+    return weights_root() / "qwen-image-edit-2511-q8"
+
+
+def qedit_saved() -> Path | None:
+    """The pre-saved 8-bit Qwen-Image-Edit-2511 (optional.build_qwen_edit writes it on first use), when complete.
+    Quantizing the 108 GB bf16 cache at every start would cost minutes; the saved copy loads in seconds."""
+    path = qedit_saved_dir()
+    return path if all((path / d).is_dir() for d in ("transformer", "text_encoder", "vae", "tokenizer")) else None
+
+
+def edit_info(backend: str | None = None) -> dict:
+    b = edit_backend() if backend is None else backend
+    return {"backend": b, **EDITS.get(b, {"model": b or "none", "licence": "unknown"})}
+
+
 # The four-view sheet's size (plan 1.1, picked by the A/B in scratchpad qmv/p2/ab.md): the largest that keeps a warm
 # sheet within 75 s. A square size is a 2x2 grid, a wide one a strip. FLAT2D_SHEET=WxH overrides it.
 SHEET_SIZE = (1152, 1152)

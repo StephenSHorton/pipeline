@@ -305,19 +305,29 @@ class FactoryHttpTests(unittest.TestCase):
     def test_draw_feature_names_the_licence(self) -> None:
         from unittest import mock
 
+        def draw_feature():
+            out = factory_http.draw_feature()
+            out.pop("photo", None)
+            return out
+
         with mock.patch.object(factory_http, "still_backend", return_value="z-image"):
-            self.assertEqual(factory_http.draw_feature(),
+            self.assertEqual(draw_feature(),
                              {"backend": "z-image", "model": "z-image-turbo", "licence": "apache-2.0"})
         with mock.patch.object(factory_http, "still_backend", return_value="qwen-2512"):
-            self.assertEqual(factory_http.draw_feature(), {"backend": "qwen-2512",
-                                                           "model": "qwen-image-2512+lightning8",
-                                                           "licence": "apache-2.0"})
+            self.assertEqual(draw_feature(), {"backend": "qwen-2512", "model": "qwen-image-2512+lightning8",
+                                              "licence": "apache-2.0"})
         with mock.patch.object(factory_http, "still_backend", return_value="qwen-image"):
-            self.assertIn("non-commercial", factory_http.draw_feature()["licence"])
+            self.assertIn("non-commercial", draw_feature()["licence"])
         with mock.patch.object(factory_http, "still_backend", return_value="brand-new"):
-            self.assertEqual(factory_http.draw_feature()["licence"], "unknown")
+            self.assertEqual(draw_feature()["licence"], "unknown")
         with mock.patch.object(factory_http, "still_backend", return_value=""):
-            self.assertEqual(factory_http.draw_feature(), {"backend": "", "licence": "none"})
+            self.assertEqual(draw_feature(), {"backend": "", "licence": "none"})
+        with mock.patch("flat2d.sheet.edit_backend", return_value="qwen-edit"):
+            self.assertEqual(factory_http.draw_feature()["photo"], {"backend": "qwen-edit",
+                                                                    "model": "qwen-image-edit-2511+lightning8",
+                                                                    "licence": "apache-2.0"})
+        with mock.patch("flat2d.sheet.edit_backend", return_value=""):
+            self.assertEqual(factory_http.draw_feature()["photo"]["backend"], "")
 
     def test_inspect_radio_ok(self) -> None:
         status, payload = http_json(self.base + "/inspect/radio")

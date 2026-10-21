@@ -497,10 +497,13 @@ def build_qwen2512():
 
 def qwen2512_still(prompt: str, seed: int = 1, width: int = 1024, height: int = 1024):
     """The default draw: Qwen-Image-2512 + Lightning, sheet.Q2512_STEPS steps on the Lightning schedule, CFG 1."""
-    global _Q2512, _Q2512_RELAY
+    global _Q2512, _Q2512_RELAY, _QEDIT, _QEDIT_RELAY
     from flat2d.sheet import q2512_steps
 
     if _Q2512 is None:
+        if _QEDIT is not None:  # one big model at a time: the photo draw's model goes first
+            _QEDIT = _QEDIT_RELAY = None
+            _clear_mlx()
         if DRAW is not None:
             DRAW.loading(True)
         _cap_mlx_cache()
@@ -520,17 +523,117 @@ def qwen2512_still(prompt: str, seed: int = 1, width: int = 1024, height: int = 
         _release(_Q2512)
 
 
+_QEDIT = None
+_QEDIT_RELAY = None
+
+
+def build_qwen_edit():
+    """Qwen-Image-Edit-2511 (Apache-2.0) with lightx2v's Lightning LoRA, 8-bit. The first build quantizes the
+    bf16 cache and saves the 8-bit base (sheet.qedit_saved_dir(), ~35 GB); every later one loads that copy."""
+    from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
+
+    from flat2d.sheet import qedit_lora, qedit_repo, qedit_saved, qedit_saved_dir
+
+    saved = qedit_saved()
+    if saved is None:
+        base = QwenImageEdit(quantize=8, model_path=qedit_repo())
+        base.save_model(str(qedit_saved_dir()))
+        del base
+        saved = qedit_saved()
+    return QwenImageEdit(quantize=None, model_path=str(saved), lora_paths=[qedit_lora()], lora_scales=[1.0])
+
+
+def _qwen_edit_cfg1(model, seed: int, prompt: str, reference: str, num_inference_steps: int, width: int,
+                    height: int, scheduler: str = "flat2d.turbo.Lightning"):
+    """mflux QwenImageEdit.generate_image at CFG 1 with ONE transformer pass a step (see _qwen_cfg1: at guidance
+    1 the negative pass changes nothing), and the negative prompt never encoded. Same conditioning as mflux."""
+    import mlx.core as mx
+    from mflux.models.common.vae.vae_util import VAEUtil
+    from mflux.models.qwen.latent_creator.qwen_latent_creator import QwenLatentCreator
+    from mflux.models.qwen.variants.edit.qwen_edit_util import QwenEditUtil
+    from mflux.utils.image_util import ImageUtil
+
+    paths = [str(reference)]
+    config, vl_w, vl_h, vae_w, vae_h = model._compute_dimensions(
+        width=width, height=height, guidance=1.0, scheduler=scheduler, image_path=None, image_paths=paths,
+        num_inference_steps=num_inference_steps)
+    latents = QwenLatentCreator.create_noise(seed=seed, width=config.width, height=config.height)
+    ids, mask, pixels, grid = model.tokenizers["qwen_vl"].tokenize_with_image(prompt, paths, vl_width=vl_w,
+                                                                             vl_height=vl_h)
+    hidden = model.qwen_vl_encoder(input_ids=ids, attention_mask=mask, pixel_values=pixels, image_grid_thw=grid)
+    embeds, embeds_mask = hidden[0].astype(mx.float16), hidden[1].astype(mx.float16)
+    static, image_ids, cond_h, cond_w, _n = QwenEditUtil.create_image_conditioning_latents(
+        vae=model.vae, width=vae_w, height=vae_h, image_paths=paths, tiling_config=model.tiling_config)
+    ctx = model.callbacks.start(seed=seed, prompt=prompt, config=config)
+    ctx.before_loop(latents)
+    for t in config.time_steps:
+        noise = model.transformer(t=t, config=config, hidden_states=mx.concatenate([latents, static], axis=1),
+                                  encoder_hidden_states=embeds, encoder_hidden_states_mask=embeds_mask,
+                                  qwen_image_ids=image_ids, cond_image_grid=(1, cond_h, cond_w))[:, : latents.shape[1]]
+        latents = config.scheduler.step(noise=noise, timestep=t, latents=latents)
+        ctx.in_loop(t, latents)
+        mx.eval(latents)
+    ctx.after_loop(latents)
+    latents = QwenLatentCreator.unpack_latents(latents=latents, height=config.height, width=config.width)
+    decoded = VAEUtil.decode(vae=model.vae, latent=latents, tiling_config=model.tiling_config)
+    return ImageUtil.to_image(decoded_latents=decoded, config=config, seed=seed, prompt=prompt,
+                              quantization=model.bits, lora_paths=model.lora_paths, lora_scales=model.lora_scales,
+                              image_path=None, image_strength=None, image_paths=paths,
+                              generation_time=config.time_steps.format_dict["elapsed"])
+
+
+def qwen_edit_still(prompt: str, reference: str, seed: int = 1, width: int = 1024, height: int = 1024):
+    """The photo draw: Qwen-Image-Edit-2511 + Lightning, sheet.QEDIT_STEPS steps, CFG 1, the picture as reference.
+    Never resident beside another draw model (one big model at a time): the text-to-image models go first."""
+    global _QEDIT, _QEDIT_RELAY, _Q2512, _Q2512_RELAY, _QWEN, _QWEN_RELAY, _ZIMAGE, _ZIMAGE_RELAY
+    from flat2d.sheet import QEDIT_STEPS
+
+    if _QEDIT is None:
+        if any(m is not None for m in (_Q2512, _QWEN, _ZIMAGE)):
+            _Q2512 = _Q2512_RELAY = _QWEN = _QWEN_RELAY = _ZIMAGE = _ZIMAGE_RELAY = None
+            _clear_mlx()
+        if DRAW is not None:
+            DRAW.loading(True)
+        _cap_mlx_cache()
+        model = build_qwen_edit()
+        relay = _Relay(model, preview=False)
+        model.callbacks.register(relay)
+        _QEDIT, _QEDIT_RELAY = model, relay
+    _cold(_QEDIT_RELAY)
+    try:
+        return _qwen_edit_cfg1(_QEDIT, seed=seed, prompt=prompt, reference=reference,
+                               num_inference_steps=QEDIT_STEPS, width=width, height=height)
+    except BaseException as e:
+        traceback.clear_frames(e.__traceback__)
+        raise
+    finally:
+        _QEDIT_RELAY.prev = None
+        _release(_QEDIT)
+
+
+def _clear_mlx() -> None:
+    import gc
+
+    gc.collect()
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return
+    mx.clear_cache()
+
+
 def unload() -> dict:
     """Free every draw model (the factory calls this before shape and paint: plan 1.9) and hand MLX's buffer
     cache back to the system. Safe to call when nothing is loaded. Returns what was freed."""
-    global _ZIMAGE, _ZIMAGE_RELAY, _QWEN, _QWEN_RELAY, _Q2512, _Q2512_RELAY, _STUB_LOADED
+    global _ZIMAGE, _ZIMAGE_RELAY, _QWEN, _QWEN_RELAY, _Q2512, _Q2512_RELAY, _QEDIT, _QEDIT_RELAY, _STUB_LOADED
 
     def run() -> list[str]:
-        freed = [name for name, m in (("qwen-2512", _Q2512), ("qwen-2.1", _QWEN), ("z-image", _ZIMAGE)) if m is not None]
+        freed = [name for name, m in (("qwen-2512", _Q2512), ("qwen-2.1", _QWEN), ("z-image", _ZIMAGE),
+                                      ("qwen-edit", _QEDIT)) if m is not None]
         return freed
 
     freed = on_model_thread(run)
-    _Q2512 = _Q2512_RELAY = _QWEN = _QWEN_RELAY = _ZIMAGE = _ZIMAGE_RELAY = None
+    _Q2512 = _Q2512_RELAY = _QWEN = _QWEN_RELAY = _ZIMAGE = _ZIMAGE_RELAY = _QEDIT = _QEDIT_RELAY = None
     if _STUB_LOADED:
         freed.append("stub")
     _STUB_LOADED = False
@@ -683,11 +786,13 @@ def stub_still(prompt: str, seed: int = 1, width: int = STUB_SIZE, height: int =
     return _stub_picture(seed, 1.0, cloudy=cloudy)
 
 
-def model_loaded() -> bool:
-    """The picked still model is already in memory, so a draw skips the load."""
+def model_loaded(photo: bool = False) -> bool:
+    """The picked still model (photo: the photo-draw model) is already in memory, so a draw skips the load."""
     backend = still_backend()
     if backend == "stub":
         return _STUB_LOADED
+    if photo:
+        return _QEDIT_RELAY is not None and _QEDIT_RELAY.warm
     if backend == "qwen-2512":
         return _Q2512_RELAY is not None and _Q2512_RELAY.warm
     if backend == "qwen-image":
@@ -839,11 +944,58 @@ def wants_views(intent: dict | None, views=None) -> bool:
     return isinstance(intent, dict) and intent.get("output") in CREATURE_OUTPUTS
 
 
-def draw(root: Path, stem: str, prompt: str, intent: dict | None = None, views=None) -> dict:
-    """The draw a request gets: generate_views for a 3D-bound intent, else (or with views: 1) generate_still."""
+def draw(root: Path, stem: str, prompt: str, intent: dict | None = None, views=None, reference=None) -> dict:
+    """The draw a request gets: generate_views for a 3D-bound intent, else (or with views: 1) generate_still.
+    reference: the user's photo, drawn from (never kept as a view); only a 3D-bound draw takes one."""
+    if reference:
+        return generate_views(root, stem, prompt, intent, reference=reference)
     if wants_views(intent, views):
         return generate_views(root, stem, prompt, intent)
     return generate_still(root, stem, prompt, intent=intent)
+
+
+def edit_image(prompt: str, reference, seed: int = 1, width: int = 1024, height: int = 1024):
+    """The photo draw from whichever model sheet.edit_backend() picked (the stub ignores the reference)."""
+    from flat2d.sheet import edit_backend
+
+    backend = edit_backend()
+    if backend == "stub":
+        return stub_still(prompt, seed=seed, width=width, height=height)
+    if backend == "qwen-edit":
+        return on_model_thread(qwen_edit_still, prompt, str(reference), seed=seed, width=width, height=height)
+    raise FlatUnavailable("No local photo-draw model. Install mflux.")
+
+
+# The photo draw's lead: the sheet prompt follows it, the photo rides along as the edit model's reference.
+# A photo's writing (a photographer's stamp, a caption, a watermark) came back as garbled labels under every view
+# of the first real photo draw, so the lead names it as part of the picture to leave behind.
+PHOTO_LEAD = ("Redraw the subject of this picture as a clean game-asset turnaround: the same subject with the same "
+              "shape, parts, markings and colours, without the picture's background, lighting or grain, and without "
+              "any writing, signature, watermark, frame or border that is in the picture. ")
+
+
+def photo_as_still(root: Path, stem: str, photo: Path, text: str) -> dict:
+    """No photo-draw model: the photo itself becomes flat/source.png, one picture, said loudly."""
+    from factory_env import degraded_entry
+    from flat2d.store import save_source
+
+    clear_views(root, stem)
+    saved = save_source(root, stem, Path(photo).read_bytes())
+    from PIL import Image
+
+    key = ground_key(Image.open(flat_dir(root, stem) / "source.png").convert("RGB"))
+    write_json(flat_dir(root, stem) / "key.json", key)
+    saved.update({"prompt": text, "key": key["rgb"], "still": "", "seed": None, "redrawn": [],
+                  "degraded": [degraded_entry("draw", "no_photo_draw",
+                                              "no photo-draw model; your photo is used as one picture")]})
+    return saved
+
+
+def _root_rel(root: Path, path: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(Path(root).resolve()))
+    except ValueError:
+        return Path(path).name
 
 
 def _phase(name: str) -> None:
@@ -851,16 +1003,27 @@ def _phase(name: str) -> None:
         DRAW.phase(name)
 
 
-def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = None) -> dict:
+def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = None, reference=None) -> dict:
     """The four-view draw (plan 1.1-1.3): one sheet, front | right | back | left, split at its magenta gaps,
     cut out and checked (flat2d/views.py). At most SHEET_REDRAWS new sheets, for hard flaws only (a cloudy ground
     or a shadow is a note); when every sheet is flawed the best one is kept with consistent: false.
+    reference (the user's photo): the same sheet drawn FROM the photo by the edit model (sheet.edit_backend), the
+    words optional (photo.caption names the subject when there are none). The photo is never a view. Each sheet is
+    also asked whether it still shows the photo's subject (photo.likeness): a drift is redrawn like a flaw, and a
+    sheet that still drifts is kept with DEGRADED views drift (the views agree with each other; they are not
+    inconsistent). No edit model: the photo is the one picture, DEGRADED draw no_photo_draw.
     Writes flat/sheet.png, flat/views/*.png, flat/views.json, flat/source.png (the canonical panel), key.json
     (+ "views": "flat/views.json") and prompt.txt."""
+    from flat2d import photo as P
+    from flat2d.sheet import edit_backend, edit_info
+
     text = " ".join((prompt or "").split())
-    if not text:
+    photo = Path(reference) if reference else None
+    if not text and photo is None:
         raise FlatUnavailable("empty prompt")
-    backend = still_backend()
+    backend = edit_backend() if photo is not None else still_backend()
+    if photo is not None and not backend:
+        return photo_as_still(root, stem, photo, text)
     if not backend:
         raise FlatUnavailable("No local image model. Install mflux.")
     from flat2d import views as V
@@ -868,6 +1031,18 @@ def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = Non
     from flat2d.sheet import SHEET_REDRAWS, sheet_size, still_info
     from flat2d.store import save_source
     from factory_env import degraded_entry
+
+    early: list[dict[str, str]] = []
+    if photo is not None and not text:
+        if DRAW is not None and hasattr(DRAW, "line"):
+            DRAW.line("Looking at your photo.")
+        text = P.caption(photo) or ""
+        if not text:
+            early.append(degraded_entry("draw", "caption_unavailable",
+                                        "no words and the vision model could not name the photo"))
+            text = "the subject of the picture"
+        elif DRAW is not None and hasattr(DRAW, "line"):
+            DRAW.line(f"Your photo shows {text}.")
 
     global _STUB_FLAWS_LEFT, _STUB_SHEET_FLAWS_LEFT
     _STUB_FLAWS_LEFT = _stub_flaws()
@@ -878,34 +1053,52 @@ def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = Non
     kind = pose_for(intent, text)
     w, h, layout = sheet_size()
     ask = sheet_prompt(text, kind, layout)
+    if photo is not None:
+        ask = PHOTO_LEAD + ask
     seed = random.randint(1, 2**31 - 1)
     tries: list[dict] = []
     redrawn: list[str] = []
     for attempt in range(SHEET_REDRAWS + 1):
         _check_cancel()
         if attempt and DRAW is not None:
-            DRAW.attempt(attempt + 1, SHEET_REDRAWS + 1, V.redrawable(tries[-1]["result"]["flaws"]))
-        image = still_image(ask, seed=seed, width=w, height=h)
+            DRAW.attempt(attempt + 1, SHEET_REDRAWS + 1, tries[-1]["again"])
+        if photo is not None:
+            image = edit_image(ask, photo, seed=seed, width=w, height=h)
+        else:
+            image = still_image(ask, seed=seed, width=w, height=h)
         image = getattr(image, "image", image).convert("RGB")
         if DRAW is not None:
             DRAW.preview(image)
         key = ground_key(image)
         _check_cancel()
         result = V.check_panels(image, key, kind, layout, phase=_phase)
-        tries.append({"image": image, "seed": seed, "key": key, "result": result})
+        like = P.likeness(photo, image) if photo is not None else None
+        drift = bool(like) and like.get("same") is False
+        again = V.redrawable(result["flaws"]) + (["drift"] if drift else [])
+        tries.append({"image": image, "seed": seed, "key": key, "result": result, "likeness": like,
+                      "drift": drift, "again": again})
         if DRAW is not None and hasattr(DRAW, "line"):
             DRAW.line("Views: " + (", ".join(result["flaws"]) if result["flaws"] else "consistent") + ".")
-        again = V.redrawable(result["flaws"])
+            if like is not None:
+                DRAW.line({True: "They show your photo's subject.", False: "They drift from your photo.",
+                           None: "Could not compare them with your photo."}[like.get("same")])
         if not again or attempt == SHEET_REDRAWS:
             break
         redrawn.extend(again)
         seed = random.randint(1, 2**31 - 1)
-    best = min(tries, key=lambda t: V.score(t["result"]))
+    best = min(tries, key=lambda t: (t["drift"], V.score(t["result"])))
     result, image = best["result"], best["image"]
     if DRAW is not None and best is not tries[-1]:
         DRAW.preview(image)  # the one kept, not the last one drawn
     canonical = canonical_view(kind)
-    degraded = list(still_degraded(backend))
+    degraded = early + (list(still_degraded(backend)) if photo is None else [])
+    if photo is not None:
+        like = best["likeness"] or {}
+        if best["drift"]:
+            degraded.append(degraded_entry("views", "drift", "the drawn views drift from your photo"))
+        elif like.get("same") is None:
+            degraded.append(degraded_entry("views", "likeness_unchecked",
+                                           like.get("why") or "could not compare the views with your photo"))
     fc = result["checks"].get("facing") or {}
     if fc.get("how") == "unavailable":
         degraded.append(degraded_entry("draw", "facing_unchecked", fc.get("why") or "vision model unavailable"))
@@ -917,9 +1110,12 @@ def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = Non
     buf = __import__("io").BytesIO()
     result["panels"][canonical].convert("RGB").save(buf, format="PNG")
     saved = save_source(root, stem, buf.getvalue())
-    info = still_info(backend)
+    info = edit_info(backend) if photo is not None else still_info(backend)
     meta = {"w": w, "h": h, "layout": layout, "seed": best["seed"], "redraws": len(tries) - 1,
             "model": info["model"], "licence": info["licence"], "backend": backend, "prompt": ask}
+    if photo is not None:
+        meta["reference"] = {"file": _root_rel(root, photo), "sha256": V.sha256_file(photo),
+                             "likeness": best["likeness"]}
     doc = V.write_views(folder, image, result, kind=kind, canonical=canonical, meta=meta, degraded=degraded)
     key = ground_key(result["panels"][canonical])
     key["views"] = "flat/views.json"
@@ -934,6 +1130,8 @@ def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = Non
         key.update(posed)
     write_json(folder / "key.json", key)
     (folder / "prompt.txt").write_text(text + "\n", encoding="utf-8")
+    if photo is not None:
+        saved["reference"] = meta["reference"]["file"]
     saved.update({"prompt": text, "key": key["rgb"], "still": backend, "seed": best["seed"], "redrawn": redrawn,
                   "views": "flat/views.json", "consistent": doc["consistent"], "flaws": doc["flaws"],
                   "notes": [V.NOTE_TEXT.get(n, n) for n in doc["notes"]], "degraded": degraded,

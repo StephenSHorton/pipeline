@@ -44,11 +44,11 @@ FLAW_TEXT = {"cloudy": "Ground is cloudy.", "shadow": "There is a shadow on the 
              "facing": "The head points the wrong way.", "profile": "It is not a side view.",
              "height": "The views are not the same height.", "colour": "The views are not the same colours.",
              "side": "The two side views do not match.", "empty": "A view is missing.",
-             "pieces": "A view holds more than one subject."}
+             "pieces": "A view holds more than one subject.", "drift": "The views drift from your photo."}
 FLAW_PAST = {"cloudy": "ground was cloudy", "shadow": "ground had a shadow", "facing": "head pointed the wrong way",
              "profile": "not a side view", "height": "views were different heights", "colour": "views were "
              "different colours", "side": "side views did not match", "empty": "a view was missing",
-             "pieces": "a view held more than one subject"}
+             "pieces": "a view held more than one subject", "drift": "views drifted from your photo"}
 VIEW_STAGES = ("views_split", "views_check")
 
 
@@ -421,7 +421,9 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
         autosave(root, stem, ("concept",))
     had_parts = (flat_dir(root, stem) / "parts.json").is_file() and "pieces" not in steps
     views = not drop and optional.wants_views(payload.get("intent"), payload.get("views"))
-    plan = plan_for("flat2d", loaded=optional.model_loaded(), steps=steps, drop=drop, views=views)
+    reference = payload.get("reference") or None
+    plan = plan_for("flat2d", loaded=optional.model_loaded(photo=bool(reference)), steps=steps, drop=drop,
+                    views=views)
     hook = Hook(factory, job_id, stem, stem_dir(root, stem) / "draw.log", plan, "flat2d", spec.get("backend") or "")
     hooks.append(hook)
     hook.set_plan(plan)
@@ -436,7 +438,7 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
             hook.attempt_t0 = time.time()
         with optional.drawing(hook):
             saved = optional.draw(root, stem, str(payload.get("prompt") or ""), intent=payload.get("intent"),
-                                  views=payload.get("views"))
+                                  views=payload.get("views"), reference=reference)
         hook.ground_done()
         result["seed"] = saved.get("seed")
         result["redrawn"] = list(saved.get("redrawn") or [])

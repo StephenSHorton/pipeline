@@ -138,6 +138,7 @@ DRAW_LICENCES = {
     "qwen-2512": "apache-2.0",  # Qwen-Image-2512 + Lightning LoRA
     "qwen-image": "qwen-research (non-commercial)",  # Qwen-Image-2.1-Turbo: Qwen RESEARCH LICENSE, NC only
     "z-image": "apache-2.0",
+    "qwen-edit": "apache-2.0",  # Qwen-Image-Edit-2511 + Lightning LoRA: the photo draw
     "stub": "none (test stub)",
 }
 
@@ -160,6 +161,13 @@ def draw_feature() -> dict[str, Any]:
     else:
         licence = DRAW_LICENCES.get(backend, "unknown") if backend else "none"
     out["licence"] = str(licence)
+    # The photo draw (a picture the user added is drawn from, never used as a view): '' when there is none.
+    try:
+        photo = sheet.edit_info()
+    except Exception:  # noqa: BLE001
+        photo = {"backend": ""}
+    out["photo"] = {"backend": photo.get("backend") or "", "model": photo.get("model") or "none",
+                    "licence": DRAW_LICENCES.get(photo.get("backend") or "", "none")}
     return out
 
 
@@ -955,11 +963,27 @@ class Factory:
         if drop:
             if not (stem_dir(self.root, stem) / "flat" / "source.png").is_file():
                 raise FileNotFoundError("no picture to work from; drop one first")
-        elif not prompt:
+        reference = None
+        if body.get("reference") not in (None, ""):
+            # A photo the user added: a reference the four views are drawn from, never a view itself.
+            if kind != "flat2d" or drop:
+                raise ValueError("reference is for a flat2d draw")
+            from flat2d.optional import wants_views
+            from flat2d.photo import reference_path
+
+            if not wants_views(clean_intent(body.get("intent")), body.get("views")):
+                raise ValueError("reference needs a 3D-bound draw (intent output ps1, model or stack)")
+            reference = reference_path(self.root, str(body["reference"]))
+        if not drop and not prompt and reference is None:
             raise ValueError("empty prompt")
         backend = still_backend()
         if not drop and not backend:
             raise ValueError("No local image model. Install mflux.")
+        if reference is not None:
+            # The photo draw's own model: its times (draw-times.json) and estimates never mix with the words draw's.
+            from flat2d.sheet import edit_backend
+
+            backend = edit_backend() or backend
         count = 1
         if kind == "ideas":
             try:
@@ -978,6 +1002,8 @@ class Factory:
             if step not in steps:
                 steps.append(step)
         payload: dict[str, Any] = {"prompt": prompt, "intent": clean_intent(body.get("intent"))}
+        if reference is not None:
+            payload["reference"] = str(reference)
         views = body.get("views")
         if views not in (None, ""):  # API-only opt-in (plan 1.1): views 1 is the old single draw, 4 the sheet
             if str(views).strip() not in ("1", "4"):
@@ -992,7 +1018,8 @@ class Factory:
             payload["frames"] = [f for f in body["frames"] if isinstance(f, str)]
         from flat2d.optional import model_loaded
 
-        plan = drawjob.plan_for(kind, loaded=drop or model_loaded(), steps=steps, count=count, drop=drop)
+        plan = drawjob.plan_for(kind, loaded=drop or model_loaded(photo=reference is not None), steps=steps,
+                                count=count, drop=drop, views=reference is not None)
         job_id = uuid.uuid4().hex[:8]
         spec = {
             "job_id": job_id,
@@ -1003,6 +1030,7 @@ class Factory:
             "steps": steps,
             "revise": bool(body.get("revise")) and kind == "flat2d",
             "source": "drop" if drop else None,
+            "reference": str(reference.relative_to(self.root.resolve())) if reference is not None else None,
             "backend": backend,
             "count": count,
             "log": str(stem_dir(self.root, stem) / "draw.log"),
