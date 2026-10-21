@@ -1,9 +1,12 @@
 """Optional local models. Missing weights disable the button. No paid API."""
 from __future__ import annotations
 
+import contextlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 import random
+import time
 import urllib.request
 from pathlib import Path
 
@@ -28,6 +31,100 @@ from flat2d.store import flat_dir
 
 class FlatUnavailable(RuntimeError):
     pass
+
+
+class DrawCancelled(Exception):
+    """Cancel was pressed while a still was drawing. The runner catches it."""
+
+
+# The running draw's hook (flat2d/drawjob.py), or None for a plain call. It has step(k, n),
+# preview(pil), attempt(i, total, flaws), ground(), loading(bool) and cancelled().
+DRAW = None
+
+
+@contextlib.contextmanager
+def drawing(hook):
+    global DRAW
+    before = DRAW
+    DRAW = hook
+    try:
+        yield hook
+    finally:
+        DRAW = before
+
+
+# MLX streams belong to the thread that made them, so a model built on one job's thread fails on the
+# next ("There is no Stream(cpu, 1) in current thread"). Every MLX model is built and run on this one thread.
+_MODEL_THREAD = ThreadPoolExecutor(max_workers=1, thread_name_prefix="flat2d-model")
+
+
+def on_model_thread(fn, *args, **kwargs):
+    return _MODEL_THREAD.submit(fn, *args, **kwargs).result()
+
+
+def previews_on() -> bool:
+    return (os.environ.get("FLAT2D_PREVIEW") or "").strip().lower() not in ("off", "0", "no", "false")
+
+
+def _check_cancel() -> None:
+    if DRAW is not None and DRAW.cancelled():
+        raise DrawCancelled("Cancelled")
+
+
+class _Relay:
+    """One mflux callback per cached model, forwarding to DRAW when a draw has a hook.
+    mflux's registry only appends, so this is registered once, when the model is built.
+    in_loop(t) fires before step t is evaluated (MLX is lazy), so t means t steps are done."""
+
+    def __init__(self, model, preview: bool):
+        self.model = model
+        self.preview = preview
+        self.prev = None
+        self.loading = False
+        self.warm = False  # the weights are in memory: step 0 has been evaluated once
+
+    def call_before_loop(self, seed, prompt, latents, config, canny_image=None, depth_image=None, control_images=None):
+        self.prev = latents
+
+    def call_in_loop(self, t, seed, prompt, latents, config, time_steps):
+        if t >= 1:
+            self.warm = True
+        hook = DRAW
+        if hook is None:
+            self.prev = latents
+            return
+        if t >= 1 and self.loading:
+            self.loading = False
+            hook.loading(False)
+        # The weights load in the eval after in_loop(0): a cancel during the load stops at step 1,
+        # once they are in memory ("Stops after loading"), so a cancelled load is never half a model.
+        if hook.cancelled() and not (t == 0 and self.loading):
+            raise DrawCancelled("Cancelled")
+        if t >= 1:
+            hook.step(t, config.num_inference_steps)
+            if self.preview and previews_on() and getattr(hook, "wants_preview", True) and t in (1, 3, 5) and self.prev is not None:
+                try:
+                    self._preview(hook, t, latents, config)
+                except Exception:
+                    pass  # a preview never breaks the draw
+        self.prev = latents
+
+    def _preview(self, hook, t, latents, config) -> None:
+        from mflux.models.qwen21.latent_creator.qwen21_latent_creator import Qwen21LatentCreator
+        from mflux.utils.image_util import ImageUtil
+
+        s = config.scheduler.sigmas
+        v = (latents - self.prev) / (s[t + 1] - s[t])
+        x0 = latents - s[t + 1] * v
+        lat = Qwen21LatentCreator.unpack_latents(latents=x0, height=config.height, width=config.width)
+        hook.preview(ImageUtil.to_pil(self.model.vae.decode(lat)))
+
+    def call_after_loop(self, seed, prompt, latents, config):
+        self.prev = None
+        self.warm = True
+        if DRAW is not None:
+            n = config.num_inference_steps
+            DRAW.step(n, n)
 
 
 def parse_llm_json(text: str) -> dict:
@@ -177,12 +274,21 @@ def clean_still(prompt: str, seed: int):
     """Draw, and redraw on a new seed while the ground is cloudy or holds a shadow.
     When every try has a flaw, the one with the flattest ground is kept.
     Returns the image, the seed it was drawn with, and the flaws the redraws were for."""
+    global _STUB_FLAWS_LEFT
+    _STUB_FLAWS_LEFT = _stub_flaws()
     replaced: list[str] = []
     best = None
+    flaws: list[str] = []
     for attempt in range(REDRAWS + 1):
+        _check_cancel()
+        if attempt and DRAW is not None:
+            DRAW.attempt(attempt + 1, REDRAWS + 1, list(flaws))
         image = still_image(prompt, seed=seed)
         if hasattr(image, "image"):
             image = image.image
+        if DRAW is not None:
+            DRAW.preview(image)
+            DRAW.ground()
         flaws = ground_flaws(image)
         if not flaws:
             return image, seed, replaced
@@ -192,19 +298,34 @@ def clean_still(prompt: str, seed: int):
         if attempt < REDRAWS:
             replaced.extend(flaws)
             seed = random.randint(1, 2**31 - 1)
+    if DRAW is not None:
+        DRAW.preview(best[1])  # the one kept, not the last one drawn
     return best[1], best[2], replaced
 
 
 _ZIMAGE = None
+_ZIMAGE_RELAY = None
+
+
+def _cold(relay) -> None:
+    """Weights not in memory yet (first draw, or the last one stopped before step 1): this draw loads them."""
+    relay.loading = False
+    if not relay.warm and DRAW is not None:
+        DRAW.loading(True)
+        relay.loading = True
 
 
 def zimage_still(prompt: str, seed: int = 1):
     """Z-Image Turbo through mflux. Weights download on first use."""
-    global _ZIMAGE
+    global _ZIMAGE, _ZIMAGE_RELAY
     if _ZIMAGE is None:
         from mflux.models.z_image import ZImageTurbo
 
-        _ZIMAGE = ZImageTurbo(quantize=8)
+        model = ZImageTurbo(quantize=8)
+        relay = _Relay(model, preview=False)  # the x0 preview is only checked on Qwen-Image
+        model.callbacks.register(relay)
+        _ZIMAGE, _ZIMAGE_RELAY = model, relay
+    _cold(_ZIMAGE_RELAY)
     return _ZIMAGE.generate_image(
         seed=seed,
         prompt=prompt,
@@ -215,6 +336,7 @@ def zimage_still(prompt: str, seed: int = 1):
 
 
 _QWEN = None
+_QWEN_RELAY = None
 
 
 def qwen_still(prompt: str, seed: int = 1):
@@ -223,14 +345,20 @@ def qwen_still(prompt: str, seed: int = 1):
     The transformer is quantized to 8 bits; the Qwen3-VL text encoder stays bf16
     (mflux never quantizes it), so plan on about 30 GB of unified memory.
     """
-    global _QWEN
+    global _QWEN, _QWEN_RELAY
     from flat2d.turbo import TurboGrid, load_grid
 
     if _QWEN is None:
         from mflux.models.qwen21.variants.txt2img.qwen_image_21 import QwenImage21
 
-        _QWEN = QwenImage21(quantize=8, model_path=qwen_repo())
+        if DRAW is not None:
+            DRAW.loading(True)  # building the model takes a while too
+        model = QwenImage21(quantize=8, model_path=qwen_repo())
         TurboGrid.NODES = load_grid(qwen_repo())
+        relay = _Relay(model, preview=True)
+        model.callbacks.register(relay)
+        _QWEN, _QWEN_RELAY = model, relay
+    _cold(_QWEN_RELAY)  # weights load lazily inside step 1
     return _QWEN.generate_image(
         seed=seed,
         prompt=prompt,
@@ -241,13 +369,99 @@ def qwen_still(prompt: str, seed: int = 1):
     )
 
 
+_STUB_LOADED = False
+_STUB_FLAWS_LEFT = 0
+STUB_SIZE = 1024
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name) or default))
+    except ValueError:
+        return default
+
+
+def _stub_flaws() -> int:
+    try:
+        return max(0, int(os.environ.get("FLAT2D_STUB_FLAWS") or 0))
+    except ValueError:
+        return 0
+
+
+def _stub_color(seed: int) -> tuple[int, int, int]:
+    """A disc colour from the seed, kept well away from magenta and its shadows (green stays high)."""
+    rng = random.Random(seed)
+    return rng.randint(0, 200), rng.randint(140, 255), rng.randint(0, 200)
+
+
+def _stub_picture(seed: int, fill: float, cloudy: bool = False):
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGB", (STUB_SIZE, STUB_SIZE), (255, 0, 255))
+    r = int(STUB_SIZE * 0.3 * max(0.05, min(fill, 1.0)))
+    c = STUB_SIZE // 2
+    ImageDraw.Draw(im).ellipse((c - r, c - r, c + r, c + r), fill=_stub_color(seed))
+    if cloudy:
+        import numpy as np
+
+        rgb = np.asarray(im, dtype=np.int16)
+        noise = np.random.default_rng(seed).integers(-60, 61, size=rgb.shape)
+        im = Image.fromarray(np.clip(rgb + noise, 0, 255).astype(np.uint8), "RGB")
+    return im
+
+
+def stub_still(prompt: str, seed: int = 1):
+    """FLAT2D_STILL=stub: a fake model for tests and the app without weights. It loads once,
+    takes FLAT2D_STUB_STEP seconds per step, fires the same hook calls as the real models,
+    and returns a magenta still with a disc coloured by the seed."""
+    global _STUB_LOADED, _STUB_FLAWS_LEFT
+    if not _STUB_LOADED:
+        if DRAW is not None:
+            DRAW.loading(True)
+        time.sleep(_env_float("FLAT2D_STUB_LOAD", 1.0))
+        _STUB_LOADED = True
+        loading = DRAW is not None
+    else:
+        loading = False
+    step_s = _env_float("FLAT2D_STUB_STEP", 0.4)
+    n = 8
+    for k in range(1, n + 1):
+        _check_cancel()
+        time.sleep(step_s)
+        if DRAW is not None:
+            if loading:
+                loading = False
+                DRAW.loading(False)
+            DRAW.step(k, n)
+            if k in (2, 4, 6) and previews_on() and getattr(DRAW, "wants_preview", True):
+                DRAW.preview(_stub_picture(seed, k / n))
+    cloudy = _STUB_FLAWS_LEFT > 0
+    if cloudy:
+        _STUB_FLAWS_LEFT -= 1
+    return _stub_picture(seed, 1.0, cloudy=cloudy)
+
+
+def model_loaded() -> bool:
+    """The picked still model is already in memory, so a draw skips the load."""
+    backend = still_backend()
+    if backend == "stub":
+        return _STUB_LOADED
+    if backend == "qwen-image":
+        return _QWEN_RELAY is not None and _QWEN_RELAY.warm
+    if backend == "z-image":
+        return _ZIMAGE_RELAY is not None and _ZIMAGE_RELAY.warm
+    return False
+
+
 def still_image(prompt: str, seed: int = 1):
     """The still from whichever local model still_backend() picked."""
     backend = still_backend()
+    if backend == "stub":
+        return stub_still(prompt, seed=seed)
     if backend == "qwen-image":
-        return qwen_still(prompt, seed=seed)
+        return on_model_thread(qwen_still, prompt, seed=seed)
     if backend == "z-image":
-        return zimage_still(prompt, seed=seed)
+        return on_model_thread(zimage_still, prompt, seed=seed)
     raise FlatUnavailable("No local image model. Install mflux.")
 
 
@@ -416,13 +630,15 @@ def speak(root: Path, stem: str, part: dict) -> dict:
     except ValueError as e:
         raise FlatUnavailable(str(e)) from e
     dest = flat_dir(root, stem) / "voices" / filename
-    try:
-        model = kokoro_model()
-        chunks = []
-        rate = 24000
-        for result in model.generate(line, voice=speaker, speed=1.0, lang_code="a"):
+    def run():
+        chunks, rate = [], 24000
+        for result in kokoro_model().generate(line, voice=speaker, speed=1.0, lang_code="a"):
             chunks.append(result.audio)
             rate = int(result.sample_rate)
+        return chunks, rate
+
+    try:
+        chunks, rate = on_model_thread(run)
     except FlatUnavailable:
         raise
     except Exception as e:

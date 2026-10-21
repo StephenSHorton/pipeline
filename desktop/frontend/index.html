@@ -47,10 +47,13 @@
       grid-row: 1;
       z-index: 40;
       display: grid;
-      place-items: center;
+      overflow: auto;
+      padding: 16px 0;
       background: rgba(10, 11, 9, 0.88);
       pointer-events: auto;
     }
+    #gen-overlay > .gen-overlay-card { margin: auto; }
+    #gen-overlay.is-solid { background: #0c0d0b; } /* a 2D draw: the 3D viewer behind it means nothing yet */
     #gen-overlay[hidden] { display: none !important; }
     .gen-overlay-card {
       width: min(520px, 86%);
@@ -89,6 +92,9 @@
       background: var(--accent);
       transition: width 0.45s ease;
     }
+    /* Loading with no time to go on: the bar breathes instead of sitting still. */
+    .gen-overlay-bar.is-waiting > i { animation: job-wait 1.6s ease-in-out infinite; }
+    @keyframes job-wait { 50% { opacity: 0.35; } }
     .gen-overlay-pct {
       font-family: "IBM Plex Mono", ui-monospace, monospace;
       font-size: 11px;
@@ -121,10 +127,19 @@
     .job-stages li.is-done::before { content: "✓"; color: var(--olive); }
     .job-stages li.is-now { color: var(--accent); }
     .job-stages li.is-now::before { content: "●"; animation: job-pulse 1.2s ease-in-out infinite; }
-    .job-stages li .sub { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; }
+    .job-stages li.is-stopped { color: var(--ink); }
+    .job-stages li.is-stopped::before { content: "■"; color: var(--mute); }
+    .job-stages li .sub { display: block; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; color: var(--mute); }
     @keyframes job-pulse { 50% { opacity: 0.35; } }
-    @media (prefers-reduced-motion: reduce) { .job-stages li.is-now::before { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { .job-stages li.is-now::before, .gen-overlay-bar.is-waiting > i { animation: none; } }
     .job-card .gen-overlay-pct { text-align: left; }
+    /* The 2D picture as it draws. The square is there from the start, so the card never jumps. */
+    .job-picture { position: relative; display: grid; place-items: center; width: min(240px, 100%, 28vh); aspect-ratio: 1; border-radius: 6px; margin-top: 12px; border: 1px dashed var(--line); color: var(--mute); font-size: 12px; overflow: hidden; }
+    .job-picture[hidden] { display: none; }
+    .job-picture > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+    .job-picture > img[hidden] { display: none; }
+    .job-picture.has-picture { background: #ff00ff; border-color: transparent; }
+    .job-picture.has-picture > span { display: none; }
     .job-log { margin-top: 12px; }
     .job-log summary { cursor: pointer; font: 11px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); }
     .job-log .gen-overlay-log { margin-top: 8px; }
@@ -530,9 +545,150 @@
       border: 1px solid var(--line);
     }
     .takes-note.is-stale { color: #d9774a; }
+    .takes-note.is-nowrap { flex: none; white-space: nowrap; }
+    .takes-select { align-self: center; font: 12px "IBM Plex Sans", sans-serif; background: rgba(16, 17, 15, 0.92); color: var(--ink); border: 1px solid var(--line); padding: 6px 8px; }
+    .takes > button.takes-act[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
     .takes-label { align-self: center; padding: 0 4px; font: 10px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); }
     .takes > button.takes-act { align-self: center; }
     .takes > button.takes-act.is-primary { background: var(--accent); color: #141510; border-color: var(--accent); font-weight: 600; }
+    /* Rig check (public/rig-inspect.js): a dock over the right of the mesh pane in the Rig stage. */
+    .rig-inspect {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      bottom: 110px;
+      z-index: 5;
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: rgba(16, 17, 15, 0.92);
+      border: 1px solid var(--line);
+      font-size: 12px;
+    }
+    .rig-inspect[hidden] { display: none; }
+    body.is-rig-inspect #mesh-pane > .tag,
+    body.is-rig-inspect #mesh-pane > .pane-stats { display: none; }
+    .rig-inspect-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 0 0 12px;
+      font: 10px "IBM Plex Mono", ui-monospace, monospace;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .rig-inspect-close { border: 0; background: transparent; color: var(--mute); width: 30px; padding: 8px 0; font-size: 14px; }
+    .rig-inspect-close:hover { color: var(--ink); }
+    .rig-inspect-body {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 0 12px 12px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(240, 234, 220, 0.35) transparent;
+    }
+    .rig-inspect-body > .rail-label { margin-top: 6px; }
+    .rig-inspect .dock-group button { padding: 5px 8px; font-size: 11px; }
+    .rig-inspect-checks { display: flex; flex-direction: column; gap: 4px; }
+    .rig-inspect-chip { padding: 5px 8px; border: 1px solid var(--line); line-height: 1.35; color: var(--mute); }
+    .rig-inspect-chip::before { content: "✓ "; color: var(--olive); }
+    .rig-inspect-chip.is-warn { color: var(--accent); border-color: rgba(212, 180, 58, 0.55); }
+    .rig-inspect-chip.is-warn::before { content: "! "; color: inherit; }
+    .rig-inspect-chip.is-fail { color: #e07a5a; border-color: rgba(224, 122, 90, 0.6); }
+    .rig-inspect-chip.is-fail::before { content: "× "; color: inherit; }
+    .rig-inspect .is-warn { color: var(--accent); }
+    .rig-inspect .is-fail, .rig-inspect-tip .is-fail { color: #e07a5a; }
+    .rig-inspect-tip .is-warn { color: var(--accent); }
+    .rig-inspect-legend b { color: var(--ink); font-weight: 500; }
+    .rig-inspect-ramp { height: 8px; margin-top: 4px; background: linear-gradient(90deg, hsl(240, 100%, 50%), hsl(180, 100%, 50%), hsl(120, 100%, 50%), hsl(60, 100%, 50%), hsl(0, 100%, 50%)); }
+    .rig-inspect-filter { width: 100%; background: #10110f; color: var(--ink); border: 1px solid var(--line); padding: 5px 8px; font: 12px "IBM Plex Sans", sans-serif; }
+    .rig-inspect-bones { display: flex; flex-direction: column; max-height: 220px; flex: none; overflow-y: auto; border: 1px solid var(--line); scrollbar-width: thin; }
+    .rig-inspect-bones button { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 3px 6px; text-align: left; font: 11px "IBM Plex Mono", ui-monospace, monospace; color: var(--ink); white-space: nowrap; }
+    .rig-inspect-bones button:hover { background: rgba(240, 234, 220, 0.06); }
+    .rig-inspect-bones button.is-picked { background: rgba(212, 180, 58, 0.16); color: var(--accent); }
+    .rig-inspect-bones i { margin-left: auto; font-style: normal; color: var(--mute); }
+    .rig-inspect-sw { flex: none; display: inline-block; width: 9px; height: 9px; margin-right: 2px; }
+    .rig-inspect table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    .rig-inspect td { padding: 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .rig-inspect td:first-child { width: 52%; color: var(--mute); padding-right: 8px; }
+    .rig-inspect-card { border: 1px solid var(--line); padding: 6px 8px; background: #141510; }
+    .rig-inspect-card-title { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; font: 12px "IBM Plex Mono", ui-monospace, monospace; color: var(--accent); }
+    .rig-inspect-mute { margin: 0; color: var(--mute); font-size: 11px; }
+    .rig-inspect-plan { display: flex; gap: 8px; align-items: flex-start; }
+    .rig-inspect-plan img { width: 64px; height: 64px; object-fit: contain; background: #1b1c18; border: 1px solid var(--line); }
+    .rig-inspect-notes { margin: 0; padding-left: 16px; color: var(--mute); font-size: 11px; line-height: 1.4; }
+    .rig-inspect-labels { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+    .rig-inspect-labels span { position: absolute; transform: translate(5px, -50%); font: 10px "IBM Plex Mono", ui-monospace, monospace; color: var(--ink); text-shadow: 0 0 3px #000, 0 0 3px #000; white-space: nowrap; }
+    .rig-inspect-labels span.is-picked { color: #ff6a55; font-size: 11px; }
+    .rig-inspect-tip { position: absolute; z-index: 7; min-width: 170px; pointer-events: none; padding: 6px 8px; background: rgba(16, 17, 15, 0.94); border: 1px solid var(--line); font-size: 11px; line-height: 1.5; }
+    .rig-inspect-tip[hidden] { display: none; }
+    .rig-inspect-tip-title { font: 10px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); }
+    .rig-inspect-row { display: flex; align-items: center; gap: 4px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    /* Rig check findings: one dot colour per level, in the stage bar, on versions and clips. */
+    .rig-dot { flex: none; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--olive); vertical-align: 1px; }
+    .rig-dot.is-warn { background: var(--accent); }
+    .rig-dot.is-fail { background: #e07a5a; }
+    .take { position: relative; }
+    .take .take-dot { position: absolute; top: 6px; right: 6px; margin: 0; box-shadow: 0 0 0 2px rgba(16, 17, 15, 0.9); }
+    .takes > button.rig-status.is-fail { color: #e07a5a; border-color: rgba(224, 122, 90, 0.6); }
+    .takes > button.rig-status.is-warn { color: var(--accent); border-color: rgba(212, 180, 58, 0.55); }
+    .takes > button.rig-status[aria-pressed="true"] { background: rgba(240, 234, 220, 0.08); }
+    .stage-rail button.has-problem::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #e07a5a;
+    }
+    body.is-rig .takes { width: max-content; flex-wrap: wrap; justify-content: center; align-items: center; row-gap: 6px; }
+    body.is-rig .takes > .take { align-self: flex-end; }
+    /* The Rig check docks on the right: the stage bar keeps to the space left of it. */
+    body.is-rig.is-rig-inspect .takes { left: calc((100% - 342px) / 2); max-width: calc(100% - 366px); }
+    .rig-step { display: flex; flex-direction: column; gap: 4px; }
+    .rig-step + .rig-step { margin-top: 4px; }
+    .rig-step-title { font-size: 11px; color: var(--ink); }
+    .rig-check { display: flex; flex-direction: column; }
+    .rig-check > .rig-inspect-chip { width: 100%; text-align: left; background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+    .rig-check > .rig-inspect-chip:hover { background: rgba(240, 234, 220, 0.05); }
+    .rig-check.is-open > .rig-inspect-chip { border-bottom-color: transparent; }
+    .rig-check-body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 6px 8px 8px; border: 1px solid var(--line); border-top: 0; line-height: 1.45; color: var(--mute); }
+    .rig-check.is-fail .rig-check-body { border-color: rgba(224, 122, 90, 0.6); }
+    .rig-check.is-warn .rig-check-body { border-color: rgba(212, 180, 58, 0.55); }
+    .rig-check-body p { margin: 0; }
+    .rig-check-body b { color: var(--ink); font-weight: 500; }
+    .rig-inspect button.takes-act { padding: 5px 10px; font-size: 11px; }
+    .rig-head { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; width: 100%; }
+    .rig-head-read { color: var(--ink); font: 12px "IBM Plex Mono", ui-monospace, monospace; }
+    .rig-inspect table.rig-motion th { padding: 3px 0; text-align: left; font: 10px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); font-weight: 400; border-bottom: 1px solid var(--line); }
+    .rig-inspect table.rig-motion td:first-child { width: 40%; }
+    .rig-inspect table.rig-motion td { padding: 0; }
+    .rig-inspect table.rig-motion td + td { padding: 3px 0; }
+    .rig-motion tbody tr { cursor: pointer; }
+    .rig-motion tbody tr:hover { background: rgba(240, 234, 220, 0.05); }
+    .rig-motion tbody tr.is-picked { background: rgba(212, 180, 58, 0.14); }
+    .rig-motion td button { border: 0; background: transparent; padding: 3px 0; font: inherit; color: var(--ink); text-align: left; width: 100%; }
+    .rig-motion tr.is-picked td button { color: var(--accent); }
+    .rig-inspect-paused { margin-top: 6px; color: var(--mute); font-size: 11px; }
+    .rig-inspect-link { border: 0; background: transparent; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
+    .rig-inspect .is-better { color: #7cc47f; }
+    .rig-motion-note { margin-top: 6px; line-height: 1.4; }
+    .rig-inspect-body > .rig-compare-more { align-self: flex-start; font-size: 11px; }
+    .rig-inspect-more > summary { cursor: pointer; list-style: none; }
+    .rig-inspect-more > summary::-webkit-details-marker { display: none; }
+    .rig-inspect-more > summary::before { content: "▸ "; }
+    .rig-inspect-more[open] > summary::before { content: "▾ "; }
+    .rig-inspect-more > table { margin-top: 4px; }
+    .rig-inspect .is-worse { color: var(--accent); }
+    .rig-inspect table.rig-compare td:first-child { width: 36%; }
+    .rig-inspect-body > .takes-act { align-self: flex-start; }
+    .rig-inspect-row b { margin-left: auto; padding-left: 12px; font-weight: 500; }
     /* One pane per stage when the asset doesn't need both (data-solo is set by renderFlow). */
     body[data-solo="mesh"] .workspace,
     body[data-solo="stack"] .workspace { grid-template-columns: minmax(0, 1fr); }
@@ -586,6 +742,10 @@
       color: var(--mute);
       font: 11px/1.3 "IBM Plex Mono", ui-monospace, monospace;
     }
+    .idea-slot.is-live { position: relative; overflow: hidden; border-style: solid; border-color: rgba(212, 180, 58, 0.55); color: var(--accent); }
+    .idea-slot.is-live img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #ff00ff; }
+    .idea-slot.is-live .idea-live-text { position: absolute; left: 6px; right: 6px; bottom: 6px; padding: 4px 6px; background: rgba(10, 11, 9, 0.82); }
+    .idea-slot.is-live button { position: absolute; top: 6px; right: 6px; padding: 3px 8px; font-size: 11px; }
     #export-stage { display: none; }
     body.is-export .workspace { display: block; height: 100%; overflow: hidden; }
     body.is-export #export-stage {
@@ -614,6 +774,7 @@
     .export-card.is-hero figcaption { font: 11px "IBM Plex Mono", ui-monospace, monospace; color: var(--mute); }
     .export-card.is-hero img { max-height: 220px; image-rendering: pixelated; }
     .export-card .hero-text { display: grid; gap: 6px; align-content: start; }
+    .export-card.is-hero.no-figure { grid-template-columns: minmax(0, 1fr); }
     .export-card .facts { margin: 0; font-size: 13px; color: var(--ink); }
     .export-card ol { margin: 4px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.55; color: var(--mute); }
     .export-card ol b, .export-card code { color: var(--ink); font-weight: 500; }
@@ -706,6 +867,7 @@
       border-color: var(--accent);
       font-weight: 600;
     }
+    #ideas-go:disabled { opacity: 0.45; cursor: wait; }
     .flat-clip {
       display: none;
       position: relative;
@@ -1588,6 +1750,7 @@
       <button type="button" data-stage="concept" aria-pressed="false">Concept</button>
       <button type="button" data-stage="flat" aria-pressed="false">2D</button>
       <button type="button" data-stage="mesh" aria-pressed="false">3D</button>
+      <button type="button" data-stage="rig" aria-pressed="false">Rig</button>
       <button type="button" data-stage="stack" aria-pressed="false">Stack</button>
       <button type="button" data-stage="export" aria-pressed="false">Export</button>
     </div>
@@ -2086,6 +2249,7 @@
         <div class="gen-overlay-kicker" id="gen-overlay-kicker">Factory</div>
         <h2 class="gen-overlay-title" id="gen-overlay-title">Generating</h2>
         <div class="gen-overlay-step" id="gen-overlay-step"></div>
+        <div id="job-picture-box" class="job-picture" hidden><img id="job-picture" alt="" hidden><span>The picture shows here</span></div>
         <ol class="job-stages" id="job-stages"></ol>
         <div class="gen-overlay-bar" aria-hidden="true"><i id="gen-overlay-fill"></i></div>
         <div class="gen-overlay-pct" id="gen-overlay-pct" aria-live="polite">0%</div>
@@ -2107,6 +2271,7 @@
     import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
     import { createStackLab } from "/stack-lab.js";
     import { createPixelLook, bindPixelLookUi } from "/pixel-look.js";
+    import { createRigInspect, rigChecks, worstCheck, worstFirst } from "/rig-inspect.js";
 
     const params = new URLSearchParams(location.search);
     let asset = params.get("asset") || "";
@@ -2254,6 +2419,30 @@
       updateRoute();
     }
 
+    // How long the last draw took, from /2d/status. No claim at all before the first one.
+    function roughSeconds(s) {
+      if (s >= 90) return `${Math.round(s / 60)} min`;
+      return `${Math.max(5, Math.round(s / 5) * 5)} s`;
+    }
+    // steps: the picked ones, counted in when each has run before; else only the picture is claimed.
+    function drawTimeNote(steps) {
+      const f = (typeof flatFlags !== "undefined" && flatFlags) || {};
+      const t = f.times || {};
+      const num = (v) => typeof v === "number" && v >= 0;
+      const cold = f.loaded === false;
+      const loadHint = cold ? " The first draw also loads the model." : "";
+      const est = f.estimate_s || {};
+      const picture = num(t.attempt) ? t.attempt + (num(t.ground) ? t.ground : 0) : est.draw;
+      if (!num(picture) || !(picture > 0)) return loadHint;
+      const extra = (steps || []).map((k) => t[k]);
+      const load = cold && num(t.load) ? t.load : 0;
+      if (extra.every(num)) {
+        const total = picture + extra.reduce((a, b) => a + b, 0) + load;
+        return ` About ${roughSeconds(total)} last time${load ? ", with loading the model" : ""}.${load ? "" : loadHint}`;
+      }
+      return ` The picture took about ${roughSeconds(picture)} last time.${loadHint}`;
+    }
+
     // One line under the form says exactly what Make will do, and the button says it too.
     function updateRoute() {
       const route = document.getElementById("gen-route");
@@ -2273,7 +2462,7 @@
         const steps = pickedGenSteps();
         const after = steps.length ? `, then <b>${steps.join(", ")}</b>` : "";
         if (photo) html = `Open <b>${esc(photo)}</b> as a 2D sprite${after}.`;
-        else if (typed) html = `Draw one picture from your prompt${after}. About a minute.`;
+        else if (typed) html = `Draw one picture from your prompt${after}.${drawTimeNote(steps)}`;
         else { html = "Add a picture, or describe one to draw."; state = "need"; }
         if (steps.includes("motion") && !document.getElementById("gen-clip").files.length) html += " Motion needs a clip.";
       } else if (photo) {
@@ -2286,7 +2475,7 @@
           html = `Build a 3D model from <b>${esc(photo)}</b>${more}, then slice it into a <b>sprite stack</b>. A few minutes.`;
         }
       } else if (typed) {
-        html = `Draw <b>3 concept pictures</b> from your prompt first. Pick one, and it becomes your ${o.name}.`;
+        html = `Draw <b>4 concept pictures</b> from your prompt first. Pick one, and it becomes your ${o.name}.`;
         label = "Draw concepts";
       } else {
         html = output === "ps1" ? "Add a photo of one object, side-on or facing the camera. Or describe it to draw one first." : "Add a picture of one object, or describe one to draw first.";
@@ -2380,6 +2569,7 @@
       concept: { workflow: "2d", mode: "picture", name: "concept" },
       flat: { workflow: "2d", mode: "pieces", name: "2D sheet" },
       mesh: { workflow: "3d", name: "3D mesh" },
+      rig: { workflow: "3d", name: "rig" },
       stack: { workflow: "3d", name: "sprite stack" },
       export: { name: "export" },
     };
@@ -2449,17 +2639,19 @@
 
     // The stages an output needs; other stages show only when they already hold something.
     const OUTPUT_STAGES = {
-      ps1: ["concept", "mesh", "export"],
-      model: ["concept", "mesh", "export"],
+      ps1: ["concept", "mesh", "rig", "export"],
+      model: ["concept", "mesh", "rig", "export"],
       stack: ["concept", "stack", "export"],
       sprite: ["concept", "flat", "export"],
     };
 
     function renderFlow() {
+      if (flowStage !== "rig" && rigInspect.isOpen()) closeRigInspect();
       const want = assetIntent && OUTPUT_STAGES[assetIntent.output];
       const liveStage = (stage) => !!(flowEntry(stage) || {}).live;
       let solo = "";
       if (asset && flowStage === "stack") solo = "stack";
+      else if (asset && flowStage === "rig") solo = "mesh";
       else if (asset && flowStage === "mesh" && ((assetIntent && assetIntent.output !== "stack") || !liveStage("stack"))) solo = "mesh";
       if (document.body.dataset.solo !== solo) {
         document.body.dataset.solo = solo;
@@ -2472,14 +2664,18 @@
         btn.setAttribute("aria-pressed", String(btn.dataset.stage === flowStage));
         btn.classList.toggle("has-files", !!(entry && entry.live));
         btn.classList.toggle("is-stale", !!(entry && entry.stale.length));
+        const sum = entry && entry.live && entry.summary;
+        btn.classList.toggle("has-problem", !!(sum && sum.level === "fail"));
         const n = entry ? entry.takes.length : 0;
         const versions = n ? ` · ${n} saved version${n === 1 ? "" : "s"}` : "";
+        const problem = sum && sum.line && (sum.level === "fail" || sum.level === "warn") ? ` · ${sum.line}` : "";
         btn.title = !entry || !entry.live
           ? "Nothing yet"
-          : entry.stale.length ? `Ready · built from an older ${entry.stale.join(" and ")}${versions}` : `Ready${versions}`;
+          : entry.stale.length ? `Ready · built from an older ${entry.stale.join(" and ")}${versions}${problem}` : `Ready${versions}${problem}`;
       });
       document.body.classList.toggle("is-ideas", !!asset && flowStage === "ideas");
       document.body.classList.toggle("is-export", !!asset && flowStage === "export");
+      document.body.classList.toggle("is-rig", !!asset && flowStage === "rig");
       if (!takesEl) return;
       takesEl.innerHTML = "";
       if (flowStage === "ideas") return;
@@ -2490,6 +2686,7 @@
         el.className = "takes-note" + (stale ? " is-stale" : "");
         el.textContent = text;
         takesEl.appendChild(el);
+        return el;
       };
       const act = (text, title, fn, primary) => {
         const btn = document.createElement("button");
@@ -2531,7 +2728,20 @@
         label.textContent = String(i + 1);
         btn.appendChild(label);
         const when = take.made ? new Date(take.made * 1000).toLocaleString() : "";
-        btn.title = [`Version ${i + 1}`, take.note, when].filter(Boolean).join(" · ");
+        if (flowStage === "rig") {
+          // Each rig version carries its checks' one-line summary; versions from before checks say so.
+          const sum = take.summary;
+          if (sum && sum.level) {
+            const dot = document.createElement("span");
+            dot.className = `rig-dot take-dot is-${sum.level}`;
+            btn.appendChild(dot);
+          }
+          const checked = (take.files || []).includes("rig/inspect.json");
+          btn.title = [`Version ${i + 1}`, sum && sum.line ? sum.line : checked ? "Checked before clips were measured" : "Made before rig checks", take.note, when].filter(Boolean).join(" · ");
+          btn.disabled = rigChecking;
+        } else {
+          btn.title = [`Version ${i + 1}`, take.note, when].filter(Boolean).join(" · ");
+        }
         btn.addEventListener("click", () => pickTake(flowStage, take.id));
         takesEl.appendChild(btn);
       });
@@ -2549,6 +2759,73 @@
         }
         if (entry.live && !exporting) act("Show in Finder", "Open the export folder.", openExport);
         renderExport();
+      } else if (flowStage === "rig") {
+        const mesh = flowEntry("mesh");
+        if (!mesh || !mesh.live) {
+          note("Make the model first, then rig it here.");
+        } else {
+          const rigged = entry.live;
+          const check = rigged && rigCheck && rigCheck.stem === asset ? rigCheck : null;
+          const doc = check && check.doc;
+          const motion = (doc && doc.motion && doc.motion.clips) || {};
+          if (rigged && Object.keys(actions).length) {
+            const label = document.createElement("span");
+            label.className = "takes-label";
+            label.textContent = "Clips";
+            takesEl.appendChild(label);
+            for (const name of Object.keys(actions)) {
+              const b = document.createElement("button");
+              b.type = "button";
+              b.className = "takes-act";
+              b.dataset.clip = name;
+              b.textContent = name.replace(/_/g, " ");
+              const m = motion[name];
+              const stretch = m ? (m.stretch_p99 != null ? `1% of edges stretch ${Number(m.stretch_p99).toFixed(1)}×` : `worst stretch ${Number(m.stretch_max).toFixed(1)}×`) : "";
+              if (m && m.tears) {
+                const dot = document.createElement("span");
+                dot.className = "rig-dot is-fail";
+                b.prepend(dot);
+                b.title = `${b.textContent} · tears at ${m.tears} points · ${stretch}`;
+              } else {
+                b.title = m ? `Play ${b.textContent} · no tears · ${stretch}` : `Play ${b.textContent}`;
+              }
+              b.setAttribute("aria-pressed", String(name === currentClip));
+              b.addEventListener("click", () => playClip(name));
+              takesEl.appendChild(b);
+            }
+          }
+          const st = doc && rigStatus(doc);
+          if (st) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = `takes-act rig-status is-${st.level}`;
+            b.id = "rig-inspect-toggle";
+            b.innerHTML = `<span class="rig-dot is-${st.level}"></span>`;
+            b.append(st.label);
+            b.title = st.level === "pass" ? "Every check passed. Click to see how it was rigged." : st.title;
+            b.setAttribute("aria-pressed", String(rigInspect.isOpen()));
+            b.addEventListener("click", () => toggleRigInspect(st.key));
+            takesEl.appendChild(b);
+          }
+          // No checks yet, or checks from before clips were measured: work them out again, in seconds.
+          if (check && (doc === null || !doc.motion || rigChecking)) {
+            if (rigChecking) note("Checking…").classList.add("is-nowrap");
+            else act("Check this version", doc ? "This version was checked before its clips were measured. Check it again and play every clip. Takes a few seconds."
+              : "Work out the rig checks for this version and measure its clips. Takes a few seconds.", recheckRig);
+          }
+          const pick = document.createElement("select");
+          pick.id = "rig-class";
+          pick.className = "takes-select";
+          pick.title = "The body plan decides which skeleton the model gets.";
+          pick.innerHTML = Object.entries(RIG_NAMES).map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+          pick.value = rigClassChoice;
+          pick.addEventListener("change", () => { rigClassChoice = pick.value; });
+          takesEl.appendChild(pick);
+          const tears = rigChecks(doc).some((c) => (c.key === "seam" || c.key === "motion") && c.level === "fail");
+          const kept = rigged && rigKeptHead();
+          act(rigged ? "Re-rig" : "Rig it", `Fit a skeleton to the model, learn its skin weights and bake library clips. About 1-2 minutes.${kept ? " Head kept as made." : ""}`,
+            () => rigAsset(pick.value), !rigged || tears);
+        }
       } else if (flowStage === "concept" && conceptStill()) {
         const still = conceptStill();
         const want = (assetIntent && assetIntent.output) || "";
@@ -2581,6 +2858,143 @@
       } else if (!entry.live && !entry.takes.length) {
         note(flowStage === "concept" ? "No picture yet." : "Use a step below to start the 2D sheet.");
       }
+    }
+
+    // Body plans the rigger has a skeleton for ("" lets the local planner decide from the picture).
+    const RIG_NAMES = { "": "Body plan: auto", humanoid: "Person", quadruped: "Four legs", multileg: "Many legs", avian: "Bird" };
+    let rigClassChoice = "";
+    // out/<stem>/rig/inspect.json for the rigged.glb on screen: { stem, doc }, doc null when that version has none.
+    let rigCheck = null;
+    // Orbit was on when the check opened; it stops so the hover card stays put, and comes back on close.
+    let rigInspectSpin = false;
+    // A check to open the Rig check on once it loads (the finish toast's Inspect).
+    let rigFocus = null;
+
+    async function loadRigCheck(stem) {
+      const get = (rel) => fetch(`/out/${encodeURIComponent(stem)}/${rel}?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const [doc, info] = await Promise.all([get("rig/inspect.json"), get("rig/rig.json")]);
+      if (stem !== asset || currentFile !== "rigged.glb") return;
+      const ok = doc && Array.isArray(doc.bones);
+      // rig.json is the source of truth for how the rig was made; inspect.json files from before v2 lack rest.
+      if (ok) doc.rig = { ...(info || {}), ...(doc.rig || {}), rest: (doc.rig && doc.rig.rest) || (info && info.rest) || null };
+      const original = ok ? await originalModel(stem, doc.rig) : null;
+      if (stem !== asset || currentFile !== "rigged.glb") return;
+      rigCheck = { stem, doc: ok ? doc : null, original };
+      renderFlow();
+      if (rigFocus !== null) {
+        const focus = rigFocus;
+        rigFocus = null;
+        if (rigCheck.doc && !rigInspect.isOpen()) toggleRigInspect(focus);
+      }
+    }
+
+    // The model the rig was made from: the picked mesh, or the mesh version this rig version came from.
+    const originalSeen = new Map();
+    async function originalModel(stem, info) {
+      if (!info || !info.source || !info.rest || !info.rest.measured) return null;
+      const take = rigTakePicked();
+      const meshPick = (flowEntry("mesh") || {}).pick;
+      const from = take && take.from && take.from.mesh;
+      const url = from && from !== meshPick
+        ? `/out/${encodeURIComponent(stem)}/takes/mesh/${encodeURIComponent(from)}/${info.source}`
+        : `/out/${encodeURIComponent(stem)}/${info.source}`;
+      if (!originalSeen.has(url)) originalSeen.set(url, fetch(url, { method: "HEAD" }).then((r) => r.ok).catch(() => false));
+      return (await originalSeen.get(url)) ? url : null;
+    }
+
+    function rigTakePicked() {
+      const entry = flowEntry("rig");
+      return entry && !entry.unsaved ? entry.takes.find((t) => t.id === entry.pick) || null : null;
+    }
+
+    // The rig version before the one on screen, to say what changed since.
+    function rigCompare() {
+      const entry = flowEntry("rig");
+      const take = rigTakePicked();
+      const i = take ? entry.takes.indexOf(take) : -1;
+      if (i < 1) return null;
+      const prev = entry.takes[i - 1];
+      return {
+        n: i,
+        id: prev.id,
+        summary: prev.summary || null,
+        current: take.summary || entry.summary || (rigCheck && rigCheck.doc && rigCheck.doc.summary) || null,
+        sameModel: ((prev.from || {}).mesh || "") === ((take.from || {}).mesh || ""),
+      };
+    }
+
+    // The Rig stage's one-line status: the worst finding, fail before warn, then step order.
+    function rigStatus(doc) {
+      const worst = worstCheck(doc);
+      if (!worst) return null;
+      const bad = worst.level !== "pass";
+      const problems = rigChecks(doc).filter((c) => c.level !== "pass").sort(worstFirst);
+      return {
+        level: bad ? worst.level : "pass",
+        key: bad ? worst.key : "",
+        label: bad ? worst.label : "Rig looks right",
+        title: [...problems.map((c) => c.label), "Click to see it on the model."].join("\n"),
+      };
+    }
+
+    function toggleRigInspect(focus) {
+      if (rigInspect.isOpen()) closeRigInspect();
+      else if (rigCheck && rigCheck.doc && rigInspect.open(rigCheck.doc, asset, { focus: typeof focus === "string" ? focus : "" })) {
+        rigInspectSpin = controls.autoRotate;
+        controls.autoRotate = false;
+        spinBtn.setAttribute("aria-pressed", "false");
+      }
+      renderFlow();
+    }
+
+    function closeRigInspect() {
+      if (!rigInspect.isOpen()) return;
+      rigInspect.close();
+      if (rigInspectSpin) {
+        controls.autoRotate = true;
+        spinBtn.setAttribute("aria-pressed", "true");
+      }
+      rigInspectSpin = false;
+      const btn = document.getElementById("rig-inspect-toggle");
+      if (btn) btn.setAttribute("aria-pressed", "false");
+    }
+
+    // Re-rig repeats how this version was made: a head kept as made stays as made unless asked otherwise.
+    function rigKeptHead() {
+      const rest = rigCheck && rigCheck.stem === asset && rigCheck.doc && rigCheck.doc.rig && rigCheck.doc.rig.rest;
+      return !!(rest && rest.measured && rest.measured.turned && !rest.straightened && !rest.before_straightening);
+    }
+
+    async function rigAsset(cls, opts) {
+      if (!asset) return;
+      const body = cls ? { class: cls } : {};
+      const straighten = opts && opts.straighten ? opts.straighten : rigKeptHead() ? "off" : "";
+      if (straighten) body.straighten = straighten;
+      await runJob(body, { title: `Rigging ${displayStem(asset)}`, path: `/rig/${encodeURIComponent(asset)}`, rig: true });
+    }
+
+    // Work out the checks (and measure the clips) for a version rigged before they existed. Seconds, on the CPU.
+    let rigChecking = false;
+    async function recheckRig() {
+      if (!asset || rigChecking) return;
+      const stem = asset;
+      const wasOpen = rigInspect.isOpen();
+      rigChecking = true;
+      renderFlow();
+      try {
+        await factoryJson(`/rig/${encodeURIComponent(stem)}/inspect`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      } catch (err) {
+        toast(err.message || String(err));
+      } finally {
+        rigChecking = false;
+      }
+      if (stem !== asset) return;
+      await refreshFlow();
+      if (wasOpen) {
+        closeRigInspect();
+        if (rigFocus === null) rigFocus = "";
+      }
+      await loadRigCheck(stem);
     }
 
     let stackingPicture = false;
@@ -2648,8 +3062,10 @@
       if (view.workflow === "2d") setFlatMode(view.mode);
       renderFlow();
       if (stage === "ideas") await loadIdeas();
-      // The mesh pane only loads while 3D is showing.
-      if (view.workflow === "3d" && was === "2d") await load({ preferLod: "lookdev" });
+      // The mesh pane only loads while 3D is showing. The Rig stage shows the rigged model with its clips.
+      const wasRig = currentLod === "rigged";
+      if (stage === "rig" && (flowEntry("rig") || {}).live) await load({ preferLod: "rigged" });
+      else if (view.workflow === "3d" && (was === "2d" || wasRig)) await load({ preferLod: "lookdev" });
     }
 
     // Export: one folder per asset a game can load (out/<stem>/export/, described by asset.json).
@@ -2766,6 +3182,30 @@
         if (lines.length) card(mesh.psx ? "Other 3D files" : "3D", lines);
       } else if (!want || want.includes("mesh")) card("3D", ["Not in this export"], "", true);
       if (mesh && mesh.psx) psxCard(mesh.psx, base, v);
+      if (mesh && mesh.rigged && mesh.rigged.fbx) rigCard(mesh.rigged);
+    }
+
+    // The rigged model: what it is and how its clips get into s&box.
+    function rigCard(r) {
+      const body = document.getElementById("export-body");
+      const el = document.createElement("div");
+      el.className = "export-card is-hero no-figure";
+      const fbx = r.fbx.split("/").pop();
+      el.innerHTML = `
+        <h3>Rigged model · ${esc(RIG_NAMES[r.class] || r.class || "")}</h3>
+        <div class="hero-text">
+          <p class="facts"><b>${esc(fbx)}</b>${r.fbx_texture ? ` + <b>${esc(r.fbx_texture.split("/").pop())}</b>` : ""} · ${Number(r.joints || 0)} bones · ${(r.clips || []).length} clips</p>
+          <p class="facts">${(r.clips || []).map((c) => esc(c.replace(/_/g, " "))).join(", ")}</p>
+          <div>
+            <strong>Into s&amp;box</strong>
+            <ol>
+              <li>Copy <code>3d/rig/</code> into your project's Assets folder.</li>
+              <li>Right-click <b>${esc(fbx)}</b> → <b>Create Model</b>. Its clips come in as animations; in ModelDoc use <b>Add Simple Animations</b> if any are missing.</li>
+              <li>Give it the same psx material as the static model. Each vertex has at most 4 bone weights, as s&amp;box requires.</li>
+            </ol>
+          </div>
+        </div>`;
+      body.prepend(el);
     }
 
     // The PS1 model: the files, the facts and how to bring it into s&box.
@@ -2804,7 +3244,7 @@
         });
         renderFlow();
         if (stage === "export") return loadExport();
-        await load({ preferLod: "lookdev" });
+        await load({ preferLod: stage === "rig" && flowStage === "rig" ? "rigged" : "lookdev" });
         if (workflow === "2d") setWorkflow("2d");
       } catch (err) {
         status.textContent = err.message || String(err);
@@ -2859,7 +3299,6 @@
 
     // Ideas: a grid of stills from one prompt. Keep the good ones, use one as the concept.
     let ideasData = null;
-    let ideasDrawing = 0;
     const ideasGrid = document.getElementById("ideas-grid");
     const ideasPrompt = document.getElementById("ideas-prompt");
 
@@ -2875,7 +3314,7 @@
       if (stem !== asset) return;
       ideasData = data;
       if (data && data.prompt && ideasPrompt && !ideasPrompt.value) ideasPrompt.value = data.prompt;
-      if (data && !data.still && !ideasDrawing) ideasSay("No local image model. Install mflux to draw ideas.");
+      if (data && !data.still && !ideasJobHere()) ideasSay("No local image model. Install mflux to draw ideas.");
       renderIdeas();
     }
 
@@ -2903,39 +3342,77 @@
         use.textContent = item.used ? "In use" : "Use";
         use.title = "Make this the concept. 2D, 3D and the stack start from it.";
         use.addEventListener("click", () => useIdea(item.file));
+        if (ideasJobHere()) { use.disabled = true; use.title = "Wait for the ideas to finish."; }
         acts.append(keep, use);
         card.append(img, acts);
         ideasGrid.appendChild(card);
       }
-      for (let i = 0; i < ideasDrawing; i++) {
+      const pending = ideasPending();
+      for (let i = 0; i < pending; i++) {
         const slot = document.createElement("div");
         slot.className = "idea-slot";
-        slot.textContent = i === 0 ? "Drawing…" : "Waiting…";
+        if (i === 0) {
+          slot.id = "idea-live";
+          slot.classList.add("is-live");
+          slot.innerHTML = `<img alt="" hidden><span class="idea-live-text"></span><button type="button">Stop</button>`;
+          slot.querySelector("button").addEventListener("click", cancelJob);
+        } else slot.textContent = "Waiting…";
         ideasGrid.appendChild(slot);
       }
-      if (!items.length && !ideasDrawing) ideasSay("No ideas yet. Describe the thing below.");
+      paintIdeaLive();
+      const go = document.getElementById("ideas-go");
+      if (go) go.disabled = !!(typeof job !== "undefined" && job && job.state === "running");
+      const clear = document.getElementById("ideas-clear");
+      if (clear) clear.disabled = ideasJobHere();
+      if (!items.length && !pending) ideasSay("No ideas yet. Describe the thing below.");
     }
 
+    // The running Ideas job, when it draws into the asset on screen.
+    function ideasJobHere() {
+      return !!(typeof job !== "undefined" && job && job.state === "running" && job.kind === "ideas" && job.stem === asset);
+    }
+
+    function ideasPending() {
+      if (!ideasJobHere()) return 0;
+      const total = job.count || ((job.progress && job.progress.stages) || []).filter((st) => /^idea\d+$/.test(st.key)).length || 1;
+      return Math.max(0, total - ((job.result && job.result.items) || []).length);
+    }
+
+    // The first waiting slot shows the picture as it draws, which one it is, and the step.
+    let ideaLiveUrl = "";
+    function paintIdeaLive() {
+      const slot = document.getElementById("idea-live");
+      if (!slot || !ideasJobHere()) return;
+      const total = job.count || ideasPending();
+      const k = ((job.result && job.result.items) || []).length + 1;
+      // The last step line, unless a redraw started after it ("Again, ground was cloudy · Step 3 of 8").
+      const last = (job.log || "").split("\n").reverse().find((l) => /Step \d+ of \d+|Drawing again/.test(l)) || "";
+      const m = last.match(/Step (\d+) of (\d+)/);
+      const why = (last.match(/^Again, (.+?) · Step/) || last.match(/^(.+?)\. Drawing again/) || [])[1] || "";
+      const again = why ? ` · again (${why.replace(/^ground (was|is|had) (a )?|^There is a /i, "").replace(/ on the ground$/i, "").toLowerCase()})` : "";
+      const loading = job.progress && job.progress.stage === "load";
+      const text = job.stopping ? "Stopping…"
+        : loading ? "Loading the model…"
+          : `Picture ${Math.min(k, total)} of ${total}${again}${m ? ` · step ${m[1]}/${m[2]}` : ""}`;
+      slot.querySelector(".idea-live-text").textContent = text;
+      const img = slot.querySelector("img");
+      if (job.preview_url) {
+        if (job.preview_url !== ideaLiveUrl || !img.getAttribute("src")) { ideaLiveUrl = job.preview_url; img.src = job.preview_url; }
+        img.hidden = false;
+      } else img.hidden = true;
+      const stop = slot.querySelector("button");
+      stop.disabled = !!job.stopping;
+      stop.title = loading ? "Stops after loading" : "";
+    }
+
+    // More pictures for the asset on screen: the chip and the grid follow the job, no overlay.
     async function drawIdeas(prompt, count) {
       const stem = asset;
       const text = (prompt || "").trim();
-      if (!stem || !text || ideasDrawing) return;
-      ideasDrawing = count;
-      ideasSay("Each picture can take a minute.");
-      renderIdeas();
-      try {
-        while (ideasDrawing > 0) {
-          await flatPost("/2d/idea", { stem, prompt: text });
-          ideasDrawing -= 1;
-          if (stem === asset) await loadIdeas();
-        }
-        if (stem === asset) ideasSay("");
-      } catch (err) {
-        if (stem === asset) ideasSay(err.message || String(err));
-      } finally {
-        ideasDrawing = 0;
-        if (stem === asset) renderIdeas();
-      }
+      if (!stem || !text) return;
+      if (job && job.state === "running") { ideasSay("The factory is busy with another job."); return; }
+      ideasSay("");
+      await runJob({ kind: "ideas", stem, prompt: text, count }, { path: "/2d/draw", kind: "ideas", title: "Drawing ideas", watch: false });
     }
 
     async function keepIdea(file, keep) {
@@ -2982,28 +3459,24 @@
       return stem;
     }
 
+    // A job started from Home: its overlay sits over the empty viewer, as a 3D Make does.
+    function showJobView(msg) {
+      showViewer();
+      hideAllCubbies();
+      clearStage(msg || "Drawing");
+    }
+
+    // A job is writing this asset: its 2D steps wait (the factory says 409 too).
+    function jobOwns(stem) {
+      return !!(typeof job !== "undefined" && job && job.state === "running" && job.stem === stem);
+    }
+
     // Home with a prompt and no picture: start a new asset on the Ideas grid.
     async function startIdeas(prompt, intent) {
       const stem = await freshStem(flatName(prompt, null));
-      const label = genGo.textContent;
-      genGo.disabled = true;
-      genGo.textContent = "Drawing…";
-      setGenStatus("Drawing the first idea. This can take a minute.", "running");
-      try {
-        await flatPost("/2d/idea", { stem, prompt });
-      } catch (err) {
-        setGenStatus(err.message || String(err), "error");
-        return;
-      } finally {
-        genGo.disabled = false;
-        genGo.textContent = label;
-      }
-      setGenStatus("", "ok");
-      await saveIntent(stem, intent);
       if (ideasPrompt) ideasPrompt.value = prompt;
-      await openAsset(stem);
-      await enterStage("ideas");
-      await drawIdeas(prompt, 3);
+      showJobView();
+      await runJob({ kind: "ideas", stem, prompt, count: 4, intent: intentBody(intent) }, { path: "/2d/draw", kind: "ideas", title: "Drawing ideas" });
     }
 
     function flatSay(text) {
@@ -3225,37 +3698,19 @@
       return { frames };
     }
 
-    async function runPickedSteps(stem, prompt) {
-      const bag = { notes: [], pieces: false, hear: "", center: "", ranPieces: false };
-      for (const step of pickedGenSteps()) {
-        setGenStatus(STEP_RUNNING[step] || "", "running");
-        const body = {
-          stem,
-          when: "home",
-          prompt,
-          steps: [step],
-          speaker: "af_heart",
-          part: "asset",
-        };
-        try {
-          if (step === "pieces") body.pieces = genStepText("gen-pieces");
-          else if (step === "motion") {
-            body.motion = genStepText("gen-motion");
-            const files = Array.from(document.getElementById("gen-clip").files || []);
-            if (files.length) Object.assign(body, await clipFields(files));
-          } else if (step === "say") body.say = genStepText("gen-say");
-          else if (step === "sound") body.sound = genStepText("gen-sound");
-          const data = await flatPost("/2d/steps", body);
-          for (const note of data.notes || []) bag.notes.push(note);
-          if (data.pieces) bag.pieces = true;
-          if (data.hear) bag.hear = data.hear;
-          if (typeof data.center === "string" && data.center) bag.center = data.center;
-          if (step === "pieces" && Array.isArray(data.ran) && data.ran.includes("pieces")) bag.ranPieces = true;
-        } catch (err) {
-          bag.notes.push(err.message || String(err));
-        }
+    // The picked steps and their texts, as /2d/draw takes them. A clip goes along only when motion is picked.
+    async function pickedStepFields() {
+      const steps = pickedGenSteps();
+      const body = { steps };
+      if (steps.includes("pieces")) body.pieces = genStepText("gen-pieces");
+      if (steps.includes("say")) body.say = genStepText("gen-say");
+      if (steps.includes("sound")) body.sound = genStepText("gen-sound");
+      if (steps.includes("motion")) {
+        body.motion = genStepText("gen-motion");
+        const files = Array.from(document.getElementById("gen-clip").files || []);
+        if (files.length) Object.assign(body, await clipFields(files));
       }
-      return bag;
+      return body;
     }
 
     async function startFlatJob() {
@@ -3275,53 +3730,41 @@
         setGenStatus("describe the thing or attach a picture", "error");
         return;
       }
-      const stem = await freshStem(flatName(prompt, file));
-      const label = genGo.textContent;
-      genGo.disabled = true;
-      genGo.dataset.busy = "1";
-      genGo.textContent = file ? "Opening…" : "Generating…";
+      holdGo(true);
       genPrompt.disabled = true;
-      setGenStatus(
-        file
-          ? (files.length > 1 ? "Using the first picture." : "Opening the picture.")
-          : "Drawing the still. This can take a minute.",
-        "running",
-      );
+      let spec;
       try {
+        const stem = await freshStem(flatName(prompt, file));
+        spec = { kind: "flat2d", stem, prompt, intent: intentBody(intent), ...(await pickedStepFields()) };
         if (file) {
+          setGenStatus(files.length > 1 ? "Using the first picture." : "Opening the picture.", "running");
           const buf = await file.arrayBuffer();
           await factoryJson("/2d/drop", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ stem, data: arrayBufferToBase64(buf) }),
           });
-        } else {
-          await factoryJson("/2d/generate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stem, prompt }),
-          });
+          if (!spec.steps.length) {
+            await saveIntent(stem, intent);
+            asset = stem;
+            await openAsset(stem);
+            setGenStatus("sheet ready", "ok");
+            holdGo(false);
+            return;
+          }
+          spec.source = "drop";
         }
-        const extra = await runPickedSteps(stem, prompt);
-        await saveIntent(stem, intent);
-        asset = stem;
-        await openAsset(stem);
-        if (typeof extra.center === "string" && extra.center) showStage(true, extra.center);
-        if (extra.pieces) setFlatMode("pieces");
-        if (extra.hear) flatHear(extra.hear);
-        const summaryNotes = extra.notes.slice();
-        if (!extra.ranPieces && flatParts.length) summaryNotes.push("Pieces still show the previous still.");
-        const summary = summaryNotes.join(" ");
-        flatSay(summary);
-        setGenStatus(summary || (file ? "sheet ready" : "generated"), "ok");
       } catch (err) {
         setGenStatus(err.message || String(err), "error");
+        holdGo(false);
+        return;
       } finally {
-        genGo.disabled = false;
-        genGo.dataset.busy = "";
-        genGo.textContent = label;
         genPrompt.disabled = false;
       }
+      const name = displayStem(spec.stem);
+      setGenStatus("", "");
+      showJobView();
+      await runJob(spec, { path: "/2d/draw", kind: "flat2d", title: file ? `Finishing ${name}` : `Drawing ${name}` });
     }
 
     const FLAT_MODES = {
@@ -3373,27 +3816,16 @@
       const btn = e.target.querySelector("button");
       if (mode === "picture") {
         if (!prompt) { flatSay("Describe the new picture first."); return; }
-        const hadParts = flatParts.length > 0;
+        if (job && job.state === "running") { flatSay("The factory is busy with another job."); return; }
         if (!(await askConfirm("Draw a new picture from this prompt? It replaces the current one.", "Redraw"))) return;
         btn.disabled = true;
-        btn.textContent = "Generating…";
-        flatSay("Drawing the still. This can take a minute.");
-        try {
-          await factoryJson("/2d/generate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stem: asset, prompt }),
-          });
-          showStage(true, "");
-          flatSay(hadParts ? "Pieces still show the previous still." : "");
-        } catch (err) {
-          flatSay(err.message || String(err));
-        } finally {
-          btn.disabled = false;
-          btn.textContent = "Generate";
-        }
+        btn.dataset.busy = "1";
+        btn.textContent = "Drawing…";
+        flatSay("");
+        await runJob({ kind: "flat2d", stem: asset, prompt, revise: true }, { path: "/2d/draw", kind: "flat2d", title: `Redrawing ${displayStem(asset)}` });
         return;
       }
+      if (jobOwns(asset)) { flatSay("Wait for the job on this asset to finish."); return; }
       btn.disabled = true;
       btn.textContent = "Generating…";
       flatSay(STEP_RUNNING[mode] || "");
@@ -3444,6 +3876,7 @@
 
     document.getElementById("audio-sound").addEventListener("click", async () => {
       if (!asset) { audioStatus("Open an asset."); return; }
+      if (jobOwns(asset)) { audioStatus("Wait for the job on this asset to finish."); return; }
       const effect = document.getElementById("audio-effect").value;
       const speaker = document.getElementById("audio-speaker").value || "af_heart";
       audioAsset.line = document.getElementById("audio-line").value;
@@ -3784,6 +4217,7 @@
     }
 
     function clearView(msg) {
+      closeRigInspect();
       while (root.children.length) root.remove(root.children[0]);
       if (typeof stackLab !== "undefined" && stackLab) stackLab.unload();
       status.dataset.ready = "false";
@@ -4044,6 +4478,23 @@
     const root = new THREE.Group();
     scene.add(root);
     const pixelLook = createPixelLook({ THREE, renderer, scene, camera, controls, subject: root, key, ground, blob });
+    const rigInspect = createRigInspect({
+      THREE, scene, root, camera, controls, renderer, pane: meshPane,
+      viewCamera: () => pixelLook.viewCamera(),
+      pixelScale: () => (pixelLook.state.on ? pixelLook.state.pixelSize : 1),
+      clip: () => currentClip,
+      playAt: (name, t) => pauseClipAt(name, t),
+      resume: resumeClip,
+      restPose() { if (mixer) { mixer.stopAllAction(); mixer.update(0); } },
+      loadGLB: async (url) => (await loadFirstGlb([url])).gltf,
+      originalUrl: () => (rigCheck && rigCheck.stem === asset ? rigCheck.original : null),
+      rerig: ({ straighten }) => rigAsset(rigClassChoice, { straighten }),
+      recheck: () => recheckRig(),
+      goToTake: (id) => pickTake("rig", id),
+      compare: () => rigCompare(),
+      obstacles: () => [takesEl],
+    });
+    rigInspect.onClose = closeRigInspect;
 
     const stackLab = createStackLab({
       THREE,
@@ -4242,7 +4693,7 @@
       if (!clips.length) return;
       mixer = new THREE.AnimationMixer(gltf.scene);
       let first = null;
-      const prefer = ["Idle_A", "idle", "Walk", "walk"];
+      const prefer = ["Idle_A", "Idle", "idle", "Walk", "walk"];
       for (const clip of clips) {
         const action = mixer.clipAction(clip);
         action.enabled = true;
@@ -4258,28 +4709,62 @@
         btn.textContent = clip.name;
         btn.dataset.clip = clip.name;
         btn.title = `Play the “${clip.name}” animation on the mesh.`;
-        btn.addEventListener("click", () => {
-          for (const [n, a] of Object.entries(actions)) {
-            if (n === clip.name) a.reset().fadeIn(0.2).play();
-            else a.fadeOut(0.2);
-          }
-          for (const b of clipsEl.querySelectorAll("button")) {
-            b.setAttribute("aria-pressed", String(b.dataset.clip === clip.name));
-          }
-        });
+        btn.addEventListener("click", () => playClip(clip.name));
         clipsEl.appendChild(btn);
       }
+      currentClip = "";
       if (first) {
         actions[first].play();
+        currentClip = first;
         for (const b of clipsEl.querySelectorAll("button")) {
           b.setAttribute("aria-pressed", String(b.dataset.clip === first));
         }
       }
     }
 
+    let currentClip = "";
+    // Hold one clip still at t seconds (the Rig check's "worst moment"); the others stop.
+    function pauseClipAt(name, t) {
+      const a = actions[name];
+      if (!a || !mixer) return;
+      for (const [n, x] of Object.entries(actions)) if (n !== name) x.stop();
+      a.reset().play();
+      a.setEffectiveWeight(1);
+      a.time = Math.min(t, a.getClip().duration);
+      a.paused = true;
+      mixer.update(0);
+      currentClip = name;
+      for (const b of document.querySelectorAll("#clips button, #takes [data-clip]")) {
+        b.setAttribute("aria-pressed", String(b.dataset.clip === name));
+      }
+    }
+
+    function resumeClip() {
+      const a = actions[currentClip];
+      if (!a) return;
+      a.paused = false;
+      a.setEffectiveWeight(1);
+      if (!a.isRunning()) a.reset().play();
+    }
+
+    function playClip(name) {
+      if (!actions[name]) return;
+      for (const [n, a] of Object.entries(actions)) {
+        if (n === name) a.reset().fadeIn(0.2).play();
+        else a.fadeOut(0.2);
+      }
+      currentClip = name;
+      for (const b of document.querySelectorAll("#clips button, #takes [data-clip]")) {
+        b.setAttribute("aria-pressed", String(b.dataset.clip === name));
+      }
+      rigInspect.clipChanged();
+    }
+
     async function loadFrom(urls, keepCamera) {
       const t0 = performance.now();
       const { url: glbUrl, gltf } = await loadFirstGlb(urls);
+      closeRigInspect();
+      rigCheck = null;
       texturedMats = [];
       clayMats = [];
       pieceHandles = [];
@@ -4332,7 +4817,7 @@
       const file = new URL(glbUrl, location.href).pathname.split("/").pop();
       currentFile = /\.glb$/.test(file) ? file : "";
       const tag = document.getElementById("mesh-tag");
-      if (tag) tag.textContent = /^psx/.test(file) ? "PS1 model" : file === "textured_photo.glb" ? "Photo bake" : "3D model";
+      if (tag) tag.textContent = file === "rigged.glb" ? "Rigged model" : /^psx/.test(file) ? "PS1 model" : file === "textured_photo.glb" ? "Photo bake" : "3D model";
       const ps1Btn = document.getElementById("game-240");
       if (ps1Btn) ps1Btn.hidden = !(/^psx/.test(file) || (assetIntent && assetIntent.output === "ps1"));
       const isPixel = String(currentLod).startsWith("pixel") || /pixel/i.test(file) || /^psx/.test(file) || currentLod === "psx";
@@ -4368,8 +4853,9 @@
         const box = new THREE.Box3().setFromObject(gltf.scene);
         const size = box.getSize(new THREE.Vector3());
         const center = box.getCenter(new THREE.Vector3());
-        const target = new THREE.Vector3(center.x, center.y + size.y * 0.08, center.z);
-        placeFittedCamera(target, fitDistance(size, camera));
+        // A bit further back than a still model, and sat above the stage bar along the bottom.
+        const target = new THREE.Vector3(center.x, center.y - size.y * 0.1, center.z);
+        placeFittedCamera(target, fitDistance(size, camera, 1.7));
       } else {
         frameObject(gltf.scene);
       }
@@ -4386,6 +4872,7 @@
       const verts = Math.round(vertCount).toLocaleString();
       const faces = Math.round(faceCount).toLocaleString();
       stats.innerHTML = `<b>${verts}</b> verts · <b>${faces}</b> faces<br>loaded in ${ms} ms · ${file}`;
+      if (currentFile === "rigged.glb") loadRigCheck(asset);
       status.dataset.ready = "true";
       status.textContent = "Ready — drag to orbit";
       for (const btn of lodsEl.querySelectorAll("button")) {
@@ -4446,6 +4933,7 @@
       lodsEl.innerHTML = "";
       const prefer = (opts && opts.preferLod) || startLod || "lookdev";
       let urls = meshUrls(asset, prefer);
+      const wantRigged = prefer === "rigged";
       if (manifest && Array.isArray(manifest.lods) && manifest.lods.length) {
         for (const item of manifest.lods) {
           const btn = document.createElement("button");
@@ -4468,11 +4956,15 @@
           || meshLods.find((l) => l.id === "pbr")
           || meshLods.find((l) => l.id === "hero")
           || meshLods[0];
-        if (pick) {
+        if (pick && !wantRigged) {
           currentLod = pick.id;
           urls = meshUrls(asset, pick.id);
           urls.unshift(`/out/${asset}/${pick.file}?t=${bust}`);
         }
+      }
+      if (wantRigged) {
+        currentLod = "rigged";
+        urls.unshift(`/out/${asset}/rigged.glb?t=${bust}`);
       }
       if (workflow !== "2d") {
         try {
@@ -4840,6 +5332,7 @@
     wireBtn.addEventListener("click", () => {
       const on = wireBtn.getAttribute("aria-pressed") !== "true";
       wireBtn.setAttribute("aria-pressed", String(on));
+      closeRigInspect(); // its colour material is shared; the wireframe belongs on the model's own
       root.traverse((obj) => {
         if (obj.isMesh) obj.material.wireframe = on;
       });
@@ -4861,6 +5354,7 @@
     });
     texBtn.addEventListener("click", () => {
       if (texBtn.disabled) return;
+      closeRigInspect();
       const on = texBtn.getAttribute("aria-pressed") !== "true";
       texBtn.setAttribute("aria-pressed", String(on));
       root.traverse((obj) => {
@@ -4903,6 +5397,7 @@
         stackLab.tick(null);
       }
       pixelLook.render();
+      rigInspect.tick();
     });
 
     window.__viewer = {
@@ -5240,36 +5735,136 @@
     function jobStageText(p) {
       if (!p || p.stage_index < 0) return "Starting";
       const st = p.stages[p.stage_index];
+      if (st && /^idea\d+$/.test(st.key)) return `${st.label} of ${p.stages.filter((x) => /^idea\d+$/.test(x.key)).length}`;
       return `${st ? st.label : p.stage} ${p.stage_index + 1}/${p.stage_count}`;
     }
 
+    // Seconds on a stage row: live for the running one, final for a done one. Times come from the factory clock.
+    function stageSeconds(times, key, nowS) {
+      const t = times && times[key];
+      if (!t || !t.started) return "";
+      const end = t.ended || nowS;
+      return `${Math.max(0, Math.round(end - t.started))} s`;
+    }
+
+    function factoryNow(timing) {
+      return Date.now() / 1000 + ((timing && timing.skew) || 0);
+    }
+
+    function stageSubText(progress, i, state, timing) {
+      const st = progress.stages[i];
+      const now = i === progress.stage_index && state !== "ok";
+      const parts = [];
+      if (now && progress.sub) parts.push(Math.round(progress.sub * 100) + "%");
+      if (timing && timing.stage_times && st) {
+        const done = i < progress.stage_index || state === "ok";
+        const t = timing.stage_times[st.key];
+        if (t && (done || now || t.ended)) {
+          const sec = stageSeconds(timing.stage_times, st.key, factoryNow(timing));
+          if (sec) parts.push(sec);
+        }
+      }
+      return parts.join(" · ");
+    }
+
+    // Seconds each planned stage took last time (stage_est), when the factory knows every one of them.
+    function stageWeights(progress, timing) {
+      const est = timing && timing.stage_est;
+      if (!est || !progress || !progress.stages || !progress.stages.length) return null;
+      if (progress.stages.some((st) => typeof est[st.key] !== "number")) return null;
+      return progress.stages.map((st) => est[st.key]);
+    }
+
+    // How far into the running stage: its step bar when it has one, else its time against last time's.
+    function stagePart(progress, timing, weights) {
+      const i = progress.stage_index;
+      if (progress.sub) return Math.min(1, progress.sub);
+      const st = progress.stages[i];
+      const t = st && timing && timing.stage_times && timing.stage_times[st.key];
+      if (!t || !t.started || !(weights[i] > 0)) return 0;
+      return Math.min(0.95, (factoryNow(timing) - t.started) / weights[i]);
+    }
+
+    // The bar, weighted by how long each stage took last time; else every stage counts the same.
+    function jobFraction(progress, timing) {
+      const w = stageWeights(progress, timing);
+      const total = w ? w.reduce((a, b) => a + b, 0) : 0;
+      if (!w || !(total > 0) || progress.stage_index < 0) return (progress && progress.fraction) || 0;
+      const done = w.slice(0, progress.stage_index).reduce((a, b) => a + b, 0);
+      return (done + w[progress.stage_index] * stagePart(progress, timing, w)) / total;
+    }
+
+    function secondsLeft(progress, timing) {
+      const w = stageWeights(progress, timing);
+      if (w && progress.stage_index >= 0) {
+        const i = progress.stage_index;
+        return w.slice(i + 1).reduce((a, b) => a + b, 0) + w[i] * (1 - stagePart(progress, timing, w));
+      }
+      if (timing && typeof timing.estimate_s === "number" && timing.started) return timing.estimate_s - (factoryNow(timing) - timing.started);
+      return null;
+    }
+
+    function overlayPctText(progress, state, pct, timing) {
+      if (!(state === "running" || !state)) return state === "ok" ? "Done" : state === "cancelled" ? "Cancelled" : "Stopped";
+      if (!progress) return "Starting…";
+      let text = `${jobStageText(progress)} · ${pct}%`;
+      // No claim when it runs past last time (a slow load, an extra try): the stages say where it is.
+      const left = secondsLeft(progress, timing);
+      if (typeof left === "number" && left >= 5) text += ` · about ${Math.round(left / 5) * 5} s left`;
+      return text;
+    }
+
+    function overlayPct(progress, state, timing) {
+      if (state === "ok") return 100;
+      if (!progress || !progress.stages) return 2;
+      return Math.max(2, Math.round(jobFraction(progress, timing) * 100));
+    }
+
+    // reserve: a 2D draw keeps the square from the start, so the card does not jump when the picture lands.
+    let jobPictureUrl = "";
+    function setJobPicture(url, reserve) {
+      const box = document.getElementById("job-picture-box");
+      const img = document.getElementById("job-picture");
+      if (!box || !img) return;
+      box.hidden = !url && !reserve;
+      box.classList.toggle("has-picture", !!url);
+      if (!url) { jobPictureUrl = ""; img.hidden = true; img.removeAttribute("src"); return; }
+      if (url !== jobPictureUrl) { jobPictureUrl = url; img.src = url; }
+      img.hidden = false;
+    }
+
     // Overlay for a running/finished job, or a plain message ({title, step, kicker}) before a job exists.
-    function showOverlay({ title, step, log, kicker, progress, state, actions }) {
+    // timing: {stage_times, stage_est, estimate_s, started, skew} from /status; picture: a live preview URL (2D only);
+    // drawing: a 2D draw, which keeps a square for the picture and hides the 3D viewer behind it.
+    let overlayView = null;
+    function showOverlay({ title, step, log, kicker, progress, state, actions, picture, timing, drawing }) {
       if (!genWatching) return;
       genOverlay.hidden = false;
+      genOverlay.classList.toggle("is-solid", !!drawing);
       const card = genOverlay.querySelector(".job-card");
       card.dataset.state = state || "running";
       document.getElementById("gen-overlay-kicker").textContent = kicker || "Factory";
       document.getElementById("gen-overlay-title").textContent = title || "Generating";
       document.getElementById("gen-overlay-step").textContent = step || "";
+      setJobPicture(picture, !!drawing && (state || "running") === "running");
       const list = document.getElementById("job-stages");
       list.innerHTML = "";
-      let pct = 2;
       if (progress && progress.stages) {
         progress.stages.forEach((st, i) => {
           const li = document.createElement("li");
           const done = i < progress.stage_index || state === "ok";
           const now = i === progress.stage_index && state !== "ok";
-          li.className = done ? "is-done" : now ? (state === "running" ? "is-now" : "") : "";
-          li.innerHTML = `<span>${esc(st.label)}</span><span class="sub">${now && progress.sub ? Math.round(progress.sub * 100) + "%" : ""}</span>`;
+          li.className = done ? "is-done" : now ? (state === "running" ? "is-now" : state ? "is-stopped" : "") : "";
+          li.innerHTML = `<span>${esc(st.label)}</span><span class="sub">${esc(stageSubText(progress, i, state, timing))}</span>`;
           list.appendChild(li);
         });
-        pct = state === "ok" ? 100 : Math.max(2, Math.round((progress.fraction || 0) * 100));
       }
+      const pct = overlayPct(progress, state, timing);
+      overlayView = { progress, state, pct, timing };
       genOverlayFill.style.width = pct + "%";
-      genOverlayPct.textContent = state === "running" || !state
-        ? (progress ? `${jobStageText(progress)} · ${pct}%` : "Starting…")
-        : state === "ok" ? "Done" : state === "cancelled" ? "Cancelled" : "Stopped";
+      const waiting = state === "running" && !!progress && progress.stage === "load" && !stageWeights(progress, timing);
+      genOverlayFill.parentElement.classList.toggle("is-waiting", waiting);
+      genOverlayPct.textContent = overlayPctText(progress, state, pct, timing);
       genOverlayLog.textContent = log || "";
       genOverlayLog.scrollTop = genOverlayLog.scrollHeight;
       const logBox = document.getElementById("job-log");
@@ -5281,10 +5876,26 @@
         b.type = "button";
         b.textContent = a.label;
         if (a.primary) b.className = "is-primary";
+        if (a.disabled) b.disabled = true;
         b.addEventListener("click", a.run);
         bar.appendChild(b);
       }
     }
+
+    // Between polls, only the seconds move: rewrite the stage subs, the bar and the pct line, never the buttons.
+    setInterval(() => {
+      if (!genWatching || genOverlay.hidden || !overlayView || overlayView.state !== "running") return;
+      const { progress, state, timing } = overlayView;
+      if (!timing || !timing.stage_times) return;
+      if (progress && progress.stages) {
+        const subs = document.querySelectorAll("#job-stages li .sub");
+        progress.stages.forEach((_, i) => { if (subs[i]) subs[i].textContent = stageSubText(progress, i, state, timing); });
+      }
+      const pct = Math.max(overlayView.pct, overlayPct(progress, state, timing));
+      overlayView.pct = pct;
+      genOverlayFill.style.width = pct + "%";
+      genOverlayPct.textContent = overlayPctText(progress, state, pct, timing);
+    }, 1000);
 
     function hideOverlay() {
       genOverlay.hidden = true;
@@ -5298,7 +5909,7 @@
         el.dataset.state = job.state;
         const name = displayStem(job.stem);
         el.textContent = job.state === "running"
-          ? `Making ${name} · ${jobStageText(job.progress)} · Show`
+          ? `${jobDoing(job)} · ${jobStageText(job.progress)} · Show`
           : job.state === "ok" ? `${name} is ready · Open`
             : job.state === "cancelled" ? `${name} cancelled · Dismiss` : `${name} failed · Details`;
       }
@@ -5307,6 +5918,9 @@
     function onJobChip() {
       if (!job) return;
       if (job.state === "running" || job.state === "error") {
+        // The overlay lives in the workspace, which Home and Settings hide: open the empty viewer under it.
+        const b = document.body.classList;
+        if (b.contains("is-home") || b.contains("is-settings")) showJobView(job.kind === "flat2d" || job.kind === "ideas" ? "Drawing" : "Generating");
         genWatching = true;
         drawJob();
         return;
@@ -5321,13 +5935,50 @@
     document.getElementById("home-job")?.addEventListener("click", onJobChip);
 
     async function cancelJob() {
-      if (!job || job.state !== "running") return;
+      if (!job || job.state !== "running" || job.stopping) return;
+      job.stopping = true;
+      drawJob();
+      if (job.kind === "ideas" && job.stem === asset) paintIdeaLive();
       try {
         await factoryJson(`/cancel/${job.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
         document.getElementById("gen-overlay-step").textContent = "Stopping…";
       } catch (err) {
+        if (job) job.stopping = false;
+        drawJob();
         document.getElementById("gen-overlay-step").textContent = err.message || String(err);
       }
+    }
+
+    function jobVerb(j) {
+      if (j.kind === "rig" || (j.opts && j.opts.rig)) return "rig";
+      if (j.kind === "ideas") return "draw ideas for";
+      if (j.kind === "flat2d") return "draw";
+      return "make";
+    }
+
+    // What the job is doing, for the chip and the overlay title: the same words in both.
+    function jobDoing(j) {
+      const name = displayStem(j.stem);
+      const spec = j.spec || {};
+      if (j.kind === "rig" || (j.opts && j.opts.rig)) return `Rigging ${name}`;
+      if (j.kind === "ideas") return `Drawing ideas for ${name}`;
+      if (j.kind === "flat2d") {
+        if (j.revise || spec.revise) return `Redrawing ${name}`;
+        if ((j.source || spec.source) === "drop") return `Finishing ${name}`;
+        return `Drawing ${name}`;
+      }
+      return `Making ${name}`;
+    }
+
+    // A 2D draw (not a dropped picture): the overlay keeps a square for the picture as it draws.
+    function jobDraws(j) {
+      if (!j) return false;
+      if (j.kind === "ideas") return true;
+      return j.kind === "flat2d" && (j.source || (j.spec && j.spec.source)) !== "drop";
+    }
+
+    function jobTiming(j) {
+      return { stage_times: j.stage_times, stage_est: j.stage_est, estimate_s: j.estimate_s, started: j.started, skew: j.skew };
     }
 
     function drawJob() {
@@ -5336,29 +5987,38 @@
       const tail = (job.log || "").trim();
       const lines = tail.split("\n").filter((l) => l && !/^STAGES? /.test(l));
       if (job.state === "running") {
+        const loading = job.progress && job.progress.stage === "load";
         showOverlay({
-          title: job.title || `Making ${name}`,
-          step: lines.pop() || "Queued on the factory…",
+          title: job.title || jobDoing(job),
+          step: job.stopping ? "Stopping…" : (lines.pop() || "Starting…").replace(/\s*\[\s*\d+%\]/, ""),
           log: lines.slice(-30).join("\n"),
           kicker: "Working",
           progress: job.progress,
           state: "running",
+          picture: job.preview_url,
+          drawing: jobDraws(job),
+          timing: jobTiming(job),
           actions: [
             { label: "Run in background", run: () => abandonGenerateWatch() },
-            { label: "Cancel", run: cancelJob },
+            job.stopping
+              ? { label: "Stopping…", disabled: true, run: () => {} }
+              : { label: loading ? "Stops after loading" : "Cancel", run: cancelJob },
           ],
         });
       } else if (job.state === "error" || job.state === "cancelled") {
         const failed = job.state === "error";
         showOverlay({
-          title: failed ? `Couldn't make ${name}` : `Stopped ${name}`,
+          title: failed ? `Couldn't ${jobVerb(job)} ${name}` : `Stopped ${name}`,
           step: failed ? (job.error || "The factory stopped.") : "Nothing after the last finished step was written.",
           log: lines.slice(-40).join("\n"),
           kicker: failed ? "Error" : "Cancelled",
           progress: job.progress,
           state: job.state,
+          picture: job.preview_url,
+          drawing: jobDraws(job),
+          timing: jobTiming(job),
           actions: [
-            ...(job.spec ? [{ label: "Try again", primary: true, run: () => runJob(job.spec, { title: job.title }) }] : []),
+            ...(job.spec ? [{ label: "Try again", primary: true, run: () => runJob(job.spec, job.opts || { title: job.title }) }] : []),
             { label: "Back to Home", run: () => { job = null; genWatching = false; hideOverlay(); renderJobChip(); clearView(); showHome(); refreshAssets(""); } },
             { label: "Close", run: () => { job = null; abandonGenerateWatch(); } },
           ],
@@ -5375,35 +6035,54 @@
       if (!busy) updateRoute();
     }
 
+    // opts: {path, title, kind, rig, watch}. watch:false follows on the chip only, with no overlay.
     async function runJob(spec, opts) {
-      genWatching = true;
+      const watch = !(opts && opts.watch === false);
+      if (watch) genWatching = true;
       holdGo(true);
       lastJobSpec = spec;
-      showOverlay({ title: (opts && opts.title) || "Starting", step: "Queued on the factory…", kicker: "Working", state: "running" });
+      showOverlay({ title: (opts && opts.title) || "Starting", step: "Starting…", kicker: "Working", state: "running", drawing: jobDraws({ kind: opts && opts.kind, spec }) });
       let started;
       try {
-        started = await startGenerateJob(spec);
+        started = opts && opts.path
+          ? await factoryJson(opts.path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spec) })
+          : await startGenerateJob(spec);
       } catch (err) {
         if (err.status === 409) {
           const h = await factoryJson("/health").catch(() => null);
-          if (h && h.job_id) return followJob(h.job_id, "", { watch: true });
+          if (h && h.busy && h.job_id) {
+            toast("The factory is busy with another job. Showing that one.");
+            return followJob(h.job_id, "", { watch });
+          }
         }
         holdGo(false);
-        job = { id: "", stem: spec.stem || "asset", state: "error", error: err.message || String(err), spec, title: opts && opts.title };
-        drawJob();
+        job = { id: "", stem: spec.stem || "asset", kind: opts && opts.kind, state: "error", error: err.message || String(err), spec, opts, title: opts && opts.title };
+        if (watch) drawJob();
+        else renderJobChip();
         setGenStatus(err.message || String(err), "error");
+        jobEnded();
         return;
       }
-      return followJob(started.job_id, started.stem || spec.stem || "asset", { watch: true, spec, title: opts && opts.title });
+      return followJob(started.job_id, started.stem || spec.stem || "asset", { watch, spec, title: opts && opts.title, jobOpts: opts, kind: started.kind || (opts && opts.kind) });
+    }
+
+    // Anything that waits on "no job running" refreshes here: Make's route line, Redraw, More ideas.
+    function jobEnded() {
+      refreshAudioFlags().then(updateRoute).catch(() => {});
+      if (job && job.kind === "ideas" && job.stem === asset && job.state !== "ok") { ideasSay(job.state === "cancelled" ? "Stopped." : job.error || ""); }
+      renderIdeas();
+      const revise = document.querySelector("#flat-revise button[type=submit]");
+      if (revise && revise.dataset.busy) { revise.dataset.busy = ""; revise.disabled = false; revise.textContent = "Generate"; }
     }
 
     async function followJob(jobId, stem, opts) {
-      job = { id: jobId, stem, state: "running", progress: null, log: "", spec: opts && opts.spec, title: opts && opts.title };
+      job = { id: jobId, stem, kind: (opts && opts.kind) || "", state: "running", progress: null, log: "", spec: opts && opts.spec, opts: opts && opts.jobOpts, title: opts && opts.title };
       if (opts && opts.watch) genWatching = true;
       if (stem) setTitleState(stem, { editable: false });
       drawJob();
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1200));
+      // Ask at once, then every 1.2 s: nothing is queued, so there is no reason to wait for the first answer.
+      for (let first = true; ; first = false) {
+        if (!first) await new Promise((r) => setTimeout(r, 1200));
         if (!job || job.id !== jobId) return;
         let st;
         try {
@@ -5413,24 +6092,127 @@
           job.error = `Lost the factory: ${err.message || err}`;
           holdGo(false);
           drawJob();
+          jobEnded();
           return;
         }
+        if (!job || job.id !== jobId) return;
         job.stem = st.stem || job.stem;
+        job.kind = st.kind || job.kind;
         job.progress = st.progress || job.progress;
         job.log = st.log_tail || "";
+        for (const k of ["preview_url", "stage_times", "stage_est", "estimate_s", "result", "started", "prompt", "count", "revise", "source"]) {
+          if (st[k] !== undefined) job[k] = st[k];
+        }
+        if (typeof st.now === "number") job.skew = st.now - Date.now() / 1000;
+        if (job.kind === "ideas") followIdeas();
         if (st.state === "running") {
-          setGenStatus(`Making ${displayStem(job.stem)} · ${jobStageText(job.progress)}`, "running");
+          // The chip on Home says what it is doing; the line under Make would only repeat it.
+          if (genStatus.dataset.state === "running") setGenStatus("", "");
           drawJob();
           continue;
         }
         holdGo(false);
-        if (st.state === "ok") return finishJob();
+        if (st.state === "ok") {
+          try { return await finishJob(); } finally { jobEnded(); }
+        }
         job.state = st.state === "cancelled" ? "cancelled" : "error";
         job.error = st.error || "";
         setGenStatus(job.state === "cancelled" ? "Cancelled." : (st.error || "Failed."), job.state === "cancelled" ? "" : "error");
         drawJob();
+        jobEnded();
+        // You pressed Stop and were not watching: nothing to come back to, so no chip.
+        if (job && job.state === "cancelled" && job.stopping && !genWatching) { job = null; renderJobChip(); }
         return;
       }
+    }
+
+    // An Ideas job: once its first picture lands, the grid takes over from the overlay.
+    function followIdeas() {
+      const n = ((job.result && job.result.items) || []).length;
+      if (n >= 1 && genWatching && !job.opened && asset !== job.stem) {
+        job.opened = true;
+        const stem = job.stem;
+        if (ideasPrompt && job.prompt) ideasPrompt.value = job.prompt;
+        genWatching = false;
+        hideOverlay();
+        openAsset(stem).then(() => (asset === stem && flowStage !== "ideas" ? enterStage("ideas") : null)).catch(console.error);
+        job.itemsSeen = n;
+        return;
+      }
+      if (job.stem !== asset) return;
+      if (n !== job.itemsSeen) { job.itemsSeen = n; loadIdeas().catch(() => {}); }
+      else paintIdeaLive();
+    }
+
+    // A 2D draw finished: open the sprite (or refresh it, for a redraw) and say what the picked steps did.
+    async function finishFlatJob() {
+      const stem = job.stem;
+      const result = job.result || {};
+      const name = displayStem(stem);
+      const here = stem === asset;
+      const apply = () => {
+        if (!result.revise && typeof result.center === "string" && result.center) showStage(true, result.center);
+        else showStage(true, "");
+        if (result.pieces) setFlatMode("pieces");
+        if (result.hear) flatHear(result.hear);
+        const summary = (result.notes || []).join(" ");
+        flatSay(summary);
+        setGenStatus(summary || "generated", "ok");
+      };
+      const text = result.revise ? `Redrawn: ${name}` : `Sprite ready: ${name}`;
+      if (genWatching || (here && result.revise)) {
+        showOverlay({ title: `Opening ${name}`, step: "Loading the sprite…", kicker: "Done", progress: job.progress, state: "ok", picture: job.preview_url, drawing: jobDraws(job), timing: jobTiming(job) });
+        try {
+          if (here && result.revise) await refreshFlow();
+          else await openAsset(stem, { keepOverlay: true });
+          apply();
+          job = null;
+          genWatching = false;
+          hideOverlay();
+          renderJobChip();
+          toast(text, "Export →", () => enterStage("export"));
+        } catch (err) {
+          if (!job) { toast(`${name} finished, but it did not open: ${err.message || err}`); return; }
+          job.state = "error";
+          job.error = `It finished, but it did not open: ${err.message || err}`;
+          drawJob();
+        }
+        return;
+      }
+      renderJobChip();
+      toast(text, "Open", () => { job = null; renderJobChip(); openAsset(stem).then(apply).catch(console.error); });
+      refreshAssets(asset).catch(() => {});
+    }
+
+    async function finishIdeasJob() {
+      const stem = job.stem;
+      const name = displayStem(stem);
+      if (genWatching && stem !== asset) {
+        if (ideasPrompt && job.prompt) ideasPrompt.value = job.prompt;
+        try {
+          await openAsset(stem);
+          if (asset === stem && flowStage !== "ideas") await enterStage("ideas");
+        } catch (err) {
+          toast(`${name}: ${err.message || err}`);
+        }
+      }
+      genWatching = false;
+      hideOverlay();
+      if (stem === asset) {
+        job = null;
+        renderJobChip();
+        ideasSay("");
+        await loadIdeas();
+        return;
+      }
+      renderJobChip();
+      toast(`Ideas ready: ${name}`, "Open", async () => {
+        job = null;
+        renderJobChip();
+        await openAsset(stem);
+        if (asset === stem && flowStage !== "ideas") await enterStage("ideas");
+      });
+      refreshAssets(asset).catch(() => {});
     }
 
     // Done: open the asset if you were watching, and say what was made and what is next.
@@ -5438,23 +6220,36 @@
       const stem = job.stem;
       job.state = "ok";
       setGenStatus("", "ok");
+      if (job.kind === "flat2d") return finishFlatJob();
+      if (job.kind === "ideas") return finishIdeasJob();
       const intent = await fetch(`/out/${encodeURIComponent(stem)}/intent.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
       let facts = "";
       if (intent && intent.output === "ps1") {
         const psx = await fetch(`/out/${encodeURIComponent(stem)}/psx/psx.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
         if (psx) facts = ` · ${Number(psx.triangles).toLocaleString()} triangles, ${psx.atlas} px texture`;
       }
-      const what = intent && OUTPUTS[intent.output] ? OUTPUTS[intent.output].name : "asset";
+      const rigJob = job.kind === "rig" || !!(job.opts && job.opts.rig);
+      let rigSummary = null;
+      let what = intent && OUTPUTS[intent.output] ? OUTPUTS[intent.output].name : "asset";
+      if (rigJob) {
+        const r = await fetch(`/out/${encodeURIComponent(stem)}/rig/rig.json?t=${Date.now()}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+        what = "rig";
+        if (r) facts = ` · ${RIG_NAMES[r.class] || r.class}, ${r.clips.length} clips${r.fbx ? ", FBX for s&box" : ""}`;
+        rigSummary = await fetch(`/out/${encodeURIComponent(stem)}/rig/summary.json?t=${Date.now()}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+        if (rigSummary && rigSummary.line) facts += ` · ${rigSummary.line}`;
+      }
       const text = `${what[0].toUpperCase()}${what.slice(1)} ready: ${displayStem(stem)}${facts}`;
       if (genWatching) {
         showOverlay({ title: `Opening ${displayStem(stem)}`, step: "Loading the model…", kicker: "Done", progress: job.progress, state: "ok" });
         try {
           await openAsset(stem, { keepOverlay: true });
+          if (rigJob) await enterStage("rig");
           job = null;
           genWatching = false;
           hideOverlay();
           renderJobChip();
-          toast(text, "Export →", () => enterStage("export"));
+          if (rigSummary && rigSummary.level === "fail") toast(text, "Inspect", () => inspectRig(stem, ([...(rigSummary.problems || [])].sort(worstFirst)[0] || {}).key || ""));
+          else toast(text, "Export →", () => enterStage("export"));
         } catch (err) {
           if (!job) { toast(`${displayStem(stem)} finished, but the model did not load: ${err.message || err}`); return; }
           job.state = "error";
@@ -5466,6 +6261,15 @@
       renderJobChip();
       toast(text, "Open", () => { job = null; renderJobChip(); openAsset(stem).catch(console.error); });
       refreshAssets(asset).catch(() => {});
+    }
+
+    // Open the Rig check on one finding, once the rigged model and its checks have loaded.
+    async function inspectRig(stem, key) {
+      if (stem !== asset) return;
+      if (rigInspect.isOpen()) closeRigInspect();
+      if (rigCheck && rigCheck.stem === stem && rigCheck.doc && flowStage === "rig" && currentFile === "rigged.glb") return toggleRigInspect(key);
+      rigFocus = key;
+      if (flowStage !== "rig") await enterStage("rig");
     }
 
     let toastTimer = 0;
@@ -5692,7 +6496,7 @@
 
     void checkForUpdates(false);
 
-    refreshAudioFlags();
+    refreshAudioFlags().then(updateRoute).catch(() => {});
 
     (async () => {
       try {

@@ -1030,6 +1030,34 @@ class Flat2DTests(unittest.TestCase):
             with self.assertRaises(FlatUnavailable):
                 still_image("a tank")
 
+    def test_models_run_on_one_thread_whichever_job_calls(self) -> None:
+        # MLX streams are per thread: a model built in one job's thread failed in the next job's.
+        import threading
+        from unittest.mock import patch
+
+        from flat2d.optional import DrawCancelled, still_image
+
+        seen = []
+
+        def qwen(prompt, seed=1):
+            seen.append(threading.get_ident())
+            if prompt == "stop":
+                raise DrawCancelled("Cancelled")
+            return "q"
+
+        with patch("flat2d.optional.still_backend", return_value="qwen-image"), patch(
+            "flat2d.optional.qwen_still", side_effect=qwen
+        ):
+            for _ in range(2):
+                t = threading.Thread(target=still_image, args=("a tank",))
+                t.start()
+                t.join()
+            with self.assertRaises(DrawCancelled):
+                still_image("stop")
+        self.assertEqual(len(seen), 3)
+        self.assertEqual(len(set(seen)), 1)
+        self.assertNotEqual(seen[0], threading.get_ident())
+
     def test_turbo_grid_reads_model_index_and_rejects_bad_values(self) -> None:
         self.assertEqual(read_grid({"sample_sigmas": [1.0, 0.8, 0.3]}), (1.0, 0.8, 0.3))
         self.assertEqual(read_grid({}), TURBO_SIGMAS)

@@ -78,6 +78,38 @@ class IdeasTest(unittest.TestCase):
         assets = self.factory.list_assets()["assets"]
         self.assertTrue(assets[0]["has_ideas"])
 
+    def test_keep_and_clear_during_a_draw_are_not_lost(self) -> None:
+        import threading
+
+        self.post("idea", {"prompt": "brass lamp", "seed": 11})
+        self.post("idea", {"prompt": "brass lamp", "seed": 22})
+        started, release = threading.Event(), threading.Event()
+
+        def slow_still(prompt: str, seed: int = 1) -> Image.Image:
+            started.set()
+            release.wait(5)
+            return fake_still(prompt, seed)
+
+        out: dict = {}
+        with mock.patch.object(optional, "still_image", side_effect=slow_still):
+            t = threading.Thread(target=lambda: out.update(ideas.draw_idea(self.root, "lamp", "brass lamp", 33)))
+            t.start()
+            self.assertTrue(started.wait(5))
+            self.post("keep", {"file": "idea-01.png", "keep": True})
+            self.post("clear", {})  # idea-02 goes
+            release.set()
+            t.join(5)
+        listed = ideas.read_ideas(self.root, "lamp")["items"]
+        self.assertEqual([(i["file"], i["seed"], i["keep"]) for i in listed],
+                         [("idea-01.png", 11, True), ("idea-02.png", 33, False)])
+        self.assertTrue((self.root / "out" / "lamp" / "ideas" / "idea-02.png").is_file())
+
+    def test_an_idea_whose_file_is_gone_is_dropped(self) -> None:
+        self.post("idea", {"prompt": "brass lamp", "seed": 11})
+        self.post("idea", {"prompt": "brass lamp", "seed": 22})
+        (self.root / "out" / "lamp" / "ideas" / "idea-01.png").unlink()
+        self.assertEqual([i["file"] for i in ideas.read_ideas(self.root, "lamp")["items"]], ["idea-02.png"])
+
     def test_cloudy_ground_is_redrawn_on_a_new_seed(self) -> None:
         import random
 

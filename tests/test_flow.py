@@ -77,7 +77,8 @@ class FlowTest(unittest.TestCase):
         status, body, _ = flow.handle(self.root, "POST", "/flow/radio/snapshot", b'{"stage": "stack"}')
         self.assertEqual(status, 200, body)
         status, body, _ = flow.handle(self.root, "GET", "/flow/radio", b"")
-        self.assertEqual(json.loads(body)["stages"][4]["pick"], "t1")
+        stack = next(e for e in json.loads(body)["stages"] if e["stage"] == "stack")
+        self.assertEqual(stack["pick"], "t1")
         status, _, _ = flow.handle(self.root, "POST", "/flow/radio/pick", b'{"stage": "nope", "take": "t1"}')
         self.assertEqual(status, 400)
         status, _, _ = flow.handle(self.root, "GET", "/flow/missing", b"")
@@ -126,6 +127,53 @@ class FlowTest(unittest.TestCase):
         flow.write_manifest(self.asset, data)
         self.assertFalse(self.stage("concept")["unsaved"])
         self.assertFalse(flow.snapshot(self.root, "radio", "concept")["created"])
+
+    def rig_files(self) -> None:
+        write(self.asset / "rigged.glb", "rig one")
+        write(self.asset / "rig" / "rig.json", "{}")
+        write(self.asset / "rig" / "rig.log", "rig: log")
+
+    def test_checking_a_rig_again_keeps_its_version(self) -> None:
+        self.rig_files()
+        flow.snapshot(self.root, "radio", "rig")
+        write(self.asset / "rig" / "inspect.json", '{"version": 2, "longer": true}')
+        write(self.asset / "rig" / "summary.json", '{"line": "No tears"}')
+        rig = self.stage("rig")
+        self.assertFalse(rig["unsaved"])
+        self.assertEqual(rig["summary"], {"line": "No tears"})
+        self.assertIsNone(rig["takes"][0]["summary"])  # the saved copy has no summary until it is refreshed
+        flow.resave(self.root, "radio", "rig", "t1")
+        rig = self.stage("rig")
+        self.assertEqual([t["id"] for t in rig["takes"]], ["t1"])
+        self.assertEqual(rig["takes"][0]["summary"], {"line": "No tears"})
+        self.assertIn("rig/summary.json", rig["takes"][0]["files"])
+        self.assertFalse(rig["unsaved"])
+        self.assertNotIn("summary", flow.read_manifest(self.asset)["stages"]["rig"]["takes"][0])
+        write(self.asset / "rigged.glb", "rig two, longer")
+        self.assertTrue(self.stage("rig")["unsaved"])
+
+    def test_resave_drops_files_that_are_gone(self) -> None:
+        self.rig_files()
+        write(self.asset / "rig" / "old.fbx", "fbx")
+        flow.snapshot(self.root, "radio", "rig")
+        (self.asset / "rig" / "old.fbx").unlink()
+        take = flow.resave(self.root, "radio", "rig", "t1")
+        self.assertNotIn("rig/old.fbx", take["files"])
+        self.assertFalse((self.asset / "takes" / "rig" / "t1" / "rig" / "old.fbx").exists())
+        with self.assertRaises(flow.FlowError):
+            flow.resave(self.root, "radio", "rig", "t9")
+
+    def test_rig_takes_saved_before_still_match(self) -> None:
+        self.rig_files()
+        write(self.asset / "rig" / "inspect.json", "{}")
+        flow.snapshot(self.root, "radio", "rig")
+        data = flow.read_manifest(self.asset)
+        data["stages"]["rig"]["takes"][0]["print"] = flow.fingerprint(self.asset, flow.stage_files(self.asset, "rig"))
+        flow.write_manifest(self.asset, data)
+        self.assertFalse(self.stage("rig")["unsaved"])
+        self.assertFalse(flow.snapshot(self.root, "radio", "rig")["created"])
+        self.assertIsNone(self.stage("mesh").get("summary"))
+        self.assertNotIn("summary", self.stage("mesh"))
 
 
 class FactoryAutosaveTest(unittest.TestCase):

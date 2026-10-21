@@ -185,7 +185,10 @@ def qwen_repo() -> str:
 
 def still_backend() -> str:
     """Qwen-Image 2.1 Turbo on Apple MLX, or Z-Image Turbo when FLAT2D_STILL=z-image
-    or mflux predates Qwen-Image 2.1. Empty when mflux is not installed."""
+    or mflux predates Qwen-Image 2.1. Empty when mflux is not installed.
+    FLAT2D_STILL=stub is a fake model for tests (flat2d/optional.py stub_still), mflux or not."""
+    if still_choice() == "stub":
+        return "stub"
     if not mflux_ready():
         return ""
     if still_choice() != "z-image" and qwen_ready():

@@ -42,7 +42,25 @@ def handle(root: Path, method: str, path: str, body: bytes) -> tuple[int, bytes,
         return None
 
     if method == "GET" and path == "/2d/status":
-        return _json({"ok": True, **backends()})
+        from flat2d.drawjob import estimate, read_times
+        from flat2d.optional import model_loaded
+
+        info = backends()
+        still = info["still"]
+        row = read_times(root).get(still) if still else None
+        return _json(
+            {
+                "ok": True,
+                **info,
+                "loaded": model_loaded(),
+                "times": {k: v for k, v in row.items() if isinstance(v, (int, float))} if isinstance(row, dict) else {},
+                "estimate_s": {
+                    "draw": estimate(root, still, ["draw", "ground"]),
+                    "draw_first": estimate(root, still, ["load", "draw", "ground"]),
+                    "idea": estimate(root, still, ["idea1"]),
+                },
+            }
+        )
 
     if len(parts) == 2 and method == "GET":
         try:

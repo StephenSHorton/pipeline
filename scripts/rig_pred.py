@@ -1,0 +1,870 @@
+#!/usr/bin/env python3
+"""A learned skeleton as the fitting target for the template (used by rig.py's posed_template when RIG_PRED is on).
+
+1. Predict: skin-tokens' own `rig` mode (vendor/skin-tokens.cpp) predicts a skeleton + weights for the mesh
+   (bones named bone_N, no clips). Cached in rig/pred_rig.glb by the source's size and time.
+2. Label: its limb chains (between branch joints) are labelled leg / head / tail from geometry; which end is the
+   head comes from the template facing rig_fit already chose (the chain that reaches farthest that way), and an
+   independent label (a compact red patch, else the top of the mesh) is kept to cross-check it.
+3. Register (template frame): hips onto the predicted root; the template's trunk+neck+head, tail and each leg are
+   laid along the matching predicted chain by arc length (length clamped 0.7-1.6x). Head and tail lines run on to
+   the mesh surface; a leg line runs on down to the floor (onto the floor cluster) when its tip stops > 0.03H up.
+   Template chains with no predicted counterpart (a chicken's wings) are folded onto the body sides and flagged
+   unsupported; their clips are not shipped.
+4. Binder "pred": the predicted weights moved onto the template bones (each influence goes to the template bone
+   of the same chain nearest its point on the predicted bone), instead of running skin-tokens' `skin` again.
+5. Floor pass on the baked clips: the body is grounded the way the template is (when the template touches its
+   floor, ours touches ours; otherwise it keeps the template's clearance, scaled); each leg is bent / stretched
+   (two-bone IK, foot kept level) so its foot keeps the template foot's lift; a head that still goes through the
+   floor is lifted at the neck.
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import time
+from pathlib import Path
+
+import numpy as np
+from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation as R
+
+import rig
+import rig_fit
+
+LEN_CLAMP = (0.7, 1.6)
+LEG_CLAMP = (0.35, 1.6)  # a chicken's legs are 0.41x the bird template's (after proportioning): 0.7 put the feet under the floor
+
+# Template paths per class (template joint names, root first). "body": hips -> spine -> neck -> head tip;
+# "tail": hips -> tail tip; legs from the hip/shoulder joint down to the floor joint (the key; its toes ride along).
+PATHS = {
+    "avian": {
+        "body": ["hips", "spine_0", "spine_1", "spine_2", "spine_3", "head", "mouth_upper", "mouth_upper_tip"],
+        "tail": ["hips", "tail_1", "tail_2", "tail_3", "tail_tip"],
+        "legs": [["UpperLeg_L", "LowerLeg_L", "AnkleLeg_L", "Foot_L"], ["UpperLeg_R", "LowerLeg_R", "AnkleLeg_R", "Foot_R"]],
+        "groups": {"wings": ["wing_1_L", "wing_1_R"]},
+        "needs": {"wings": ["Flap", "Glide"]},  # clips that need a chain: not shipped when it is unsupported
+        "neck_lift": "spine_2",
+    },
+    "quadruped": {
+        "body": ["hips", "spine_1", "spine_2", "spine_3", "spine_4", "spine_5", "spine_6", "head", "nose", "head_leaf"],
+        "tail": ["hips", "tail_1", "tail_2", "tail_3", "tail_4", "tail_leaf"],
+        "legs": [["front_humerus_l", "front_leg_upper_l", "front_leg_lower_l", "front_leg_ankle_l", "front_leg_foot_l"],
+                 ["front_humerus_r", "front_leg_upper_r", "front_leg_lower_r", "front_leg_ankle_r", "front_leg_foot_r"],
+                 ["back_leg_upper_l", "back_leg_lower_l", "back_leg_ankle_l", "back_leg_foot_l"],
+                 ["back_leg_upper_r", "back_leg_lower_r", "back_leg_ankle_r", "back_leg_foot_r"]],
+        "groups": {},
+        "needs": {},
+        "neck_lift": "spine_5",
+    },
+}
+LYING = {"Sleep", "Death", "lay_to_idle"}
+
+
+# ---------------------------------------------------------------- predict
+
+def predict(source: Path, work: Path) -> tuple[Path, float, bool]:
+    """skin-tokens `rig` on the source mesh -> rig/pred_rig.glb (cached by the source's content)."""
+    out = work / "pred_rig.glb"
+    key_f = work / "pred_rig.json"
+    import hashlib
+    key = hashlib.md5(source.read_bytes()).hexdigest()  # a straightened copy is rewritten every run: key on content
+    if out.is_file() and key_f.is_file():
+        got = json.loads(key_f.read_text())
+        if got.get("key") == key:
+            return out, float(got.get("seconds", 0)), True
+    cli = rig.SKIN / "build" / "release" / "bin" / "skintokens-cli"
+    model = rig.SKIN / "models" / "SkinTokens-GGUF" / "F16"
+    t = time.time()
+    proc = subprocess.run([str(cli), "rig", str(model), str(source), str(out), "--device", "auto"], capture_output=True, text=True)
+    if proc.returncode != 0 or not out.is_file():
+        raise RuntimeError("skin-tokens rig failed: " + (proc.stderr or proc.stdout)[-600:])
+    secs = time.time() - t
+    key_f.write_text(json.dumps({"key": key, "seconds": round(secs, 1)}))
+    return out, secs, False
+
+
+# ---------------------------------------------------------------- the predicted skeleton
+
+class Pred:
+    def __init__(self, glb: Path) -> None:
+        self.doc, self.b = rig.read_glb(glb)
+        pr = self.doc["meshes"][0]["primitives"][0]
+        a = pr["attributes"]
+        self.P = rig.accessor(self.doc, self.b, a["POSITION"]).astype(float)
+        self.J = rig.accessor(self.doc, self.b, a["JOINTS_0"]).astype(int)
+        W = rig.accessor(self.doc, self.b, a["WEIGHTS_0"]).astype(float)
+        if W.max() > 1.5:
+            W = W / 255.0
+        self.W = W / np.maximum(W.sum(1, keepdims=True), 1e-9)
+        sk = rig.Skeleton(self.doc)
+        self.joints = self.doc["skins"][0]["joints"]
+        k_of = {j: k for k, j in enumerate(self.joints)}
+        self.names = [self.doc["nodes"][j].get("name", f"n{j}") for j in self.joints]
+        w = sk.world({})
+        self.jp = np.array([w[j][0] for j in self.joints])
+        self.par = np.array([k_of.get(sk.parent.get(j), -1) for j in self.joints])
+        self.kids = {k: [c for c in range(len(self.joints)) if self.par[c] == k] for k in range(len(self.joints))}
+        self.root = [k for k in range(len(self.joints)) if self.par[k] < 0]
+        self.lo, self.hi = self.P.min(0), self.P.max(0)
+        self.H = float(self.hi[1] - self.lo[1])
+
+    def subtree(self, k: int) -> list[int]:
+        out, st = [], [k]
+        while st:
+            x = st.pop()
+            out.append(x)
+            st += self.kids[x]
+        return out
+
+    def path_to(self, k: int) -> list[int]:
+        """Joints from the root down to k (inclusive)."""
+        out = [k]
+        while self.par[out[-1]] >= 0:
+            out.append(int(self.par[out[-1]]))
+        return out[::-1]
+
+    def minor(self, c: int) -> bool:
+        """A branch is minor (ear, toe, jaw) when its whole subtree stays within 0.15H of its branch joint."""
+        return float(np.linalg.norm(self.jp[self.subtree(c)] - self.jp[self.par[c]], axis=1).max()) < 0.15 * self.H
+
+    def chains(self) -> list[list[int]]:
+        """Limb chains: from each non-minor child of a branch joint (>= 2 non-minor children) to a leaf, following the
+        farthest-reaching child; chains that end at the next branch joint are trunk."""
+        def major(k: int) -> bool:
+            return sum(not self.minor(c) for c in self.kids[k]) >= 2
+        starts = []
+        for r in self.root:
+            starts += [c for c in self.kids[r] if not self.minor(c)] if major(r) else [r]
+        out, seen = [], set()
+        while starts:
+            c = starts.pop(0)
+            if c in seen:
+                continue
+            ch = [c]
+            while True:
+                x = ch[-1]
+                seen.add(x)
+                if major(x):
+                    starts += list(self.kids[x])
+                    ch = None
+                    break
+                main = [y for y in self.kids[x] if not self.minor(y)]
+                rest = [y for y in self.kids[x] if self.minor(y)]
+                if not main and rest:
+                    main = [max(rest, key=lambda y: float(np.linalg.norm(self.jp[self.subtree(y)] - self.jp[x], axis=1).max()))]
+                if not main:
+                    break
+                ch.append(main[0])
+            if ch is not None:
+                out.append(ch)
+        return out
+
+
+def _red(doc: dict, b: bytes) -> np.ndarray | None:
+    c = rig_fit._texel_colours(doc, b)
+    if c is None:
+        return None
+    return (c[:, 0] > 150) & (c[:, 1] < 90) & (c[:, 2] < 90)
+
+
+def label(p: Pred, forward: np.ndarray | None, red: np.ndarray | None = None) -> dict:
+    """Chains labelled leg / head / tail / other. forward: unit vector the head is toward (from the template facing);
+    None: an independent guess (a compact red patch's side, else the top 10% of the mesh). Returns the labels and
+    the facing they imply."""
+    H, lo = p.H, p.lo[1]
+    info = []
+    for c in p.chains():
+        anchor = p.jp[p.par[c[0]]] if p.par[c[0]] >= 0 else p.jp[c[0]]
+        tip = p.jp[c[-1]]
+        drop = float((max(anchor[1], p.jp[c[0]][1]) - tip[1]) / H)
+        tip_gap = float((tip[1] - lo) / H)
+        info.append({"joints": c, "names": [p.names[k] for k in c], "tip_gap_H": round(tip_gap, 3), "drop_H": round(drop, 3),
+                     "label": "leg" if tip_gap < 0.30 and drop > 0.15 else None})
+    cen = p.P.mean(0)
+    how = "template facing"
+    if forward is None:
+        hp = None
+        if red is not None and red.sum() >= 20 and red.mean() < 0.05:
+            hp, how = p.P[red].mean(0), "red patch"
+        if hp is None:
+            hp, how = p.P[p.P[:, 1] > lo + 0.9 * H].mean(0), "top of the mesh"
+        d = hp - cen
+        d[1] = 0
+        ax = int(np.argmax(np.abs(d[[0, 2]]))) * 2
+        forward = np.zeros(3)
+        forward[ax] = np.sign(d[ax]) or 1.0
+    f = forward / np.linalg.norm(forward)
+    # a leg is off the mid-plane (a hanging cow's tail drops to the floor down the middle)
+    lat = np.cross([0.0, 1.0, 0.0], f)
+    mid = float(p.jp[p.root[0]] @ lat)
+    for d in info:
+        if d["label"] == "leg" and abs(float(p.jp[d["joints"][0]] @ lat) - mid) < 0.04 * H and abs(float(p.jp[d["joints"][-1]] @ lat) - mid) < 0.04 * H:
+            d["label"] = None
+            d["mid_plane"] = True
+    nonleg = [d for d in info if d["label"] is None]
+    if nonleg:
+        # the head chain reaches farthest toward the facing; the tail is the one reaching farthest the other way
+        head = max(nonleg, key=lambda d: float(((p.jp[d["joints"]] - cen) @ f).max()))
+        head["label"] = "head"
+        rest = [d for d in nonleg if d is not head]
+        if rest:
+            t = min(rest, key=lambda d: float(((p.jp[d["joints"]] - cen) @ f).min()))
+            if float(((p.jp[t["joints"]] - cen) @ f).min()) < -0.15 * float(np.ptp(p.P @ f)):
+                t["label"] = "tail"
+    for d in info:
+        d["label"] = d["label"] or "other"
+    yaw = float(np.degrees(np.arctan2(f[0], f[2]))) % 360
+    return {"chains": info, "forward": f.round(3).tolist(), "yaw": round(yaw), "how": how,
+            "legs": sum(d["label"] == "leg" for d in info)}
+
+
+def head_chain_yaw(p: Pred, lab: dict) -> int | None:
+    """The yaw (0/90/180/270) the labelled head chain points along: its tip relative to the root, in XZ."""
+    head = next((d for d in lab["chains"] if d["label"] == "head"), None)
+    if head is None:
+        return None
+    v = p.jp[head["joints"][-1]] - p.jp[p.root[0]]
+    return int(round(np.degrees(np.arctan2(v[0], v[2])) / 90.0) * 90) % 360
+
+
+# ---------------------------------------------------------------- target lines (world frame)
+
+def _surface_ext(mesh, tip: np.ndarray, d: np.ndarray, H: float) -> np.ndarray | None:
+    """Where a ray from `tip` along `d` leaves the mesh (within 0.4H)."""
+    d = d / max(np.linalg.norm(d), 1e-12)
+    try:
+        locs, _, _ = mesh.ray.intersects_location([tip], [d], multiple_hits=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if len(locs) == 0:
+        return None
+    t = (locs - tip) @ d
+    ok = t > 1e-4
+    if not ok.any():
+        return None
+    k = int(np.argmin(np.where(ok, t, np.inf)))
+    return locs[k] if t[k] < 0.4 * H else None
+
+
+def target_lines(p: Pred, lab: dict, mesh, floor: float) -> dict:
+    """World-frame polylines: body (root .. head tip .. surface), tail (root .. tail tip .. surface), legs (each
+    leg chain .. floor). Leg lines whose tip stops > 0.03H above the floor go on down onto the floor cluster."""
+    H = p.H
+    root = p.root[0]
+    out = {"legs": []}
+    for kind in ("head", "tail"):
+        d = next((c for c in lab["chains"] if c["label"] == kind), None)
+        if d is None:
+            continue
+        ks = p.path_to(d["joints"][-1])
+        line = [p.jp[k] for k in ks]
+        ext = _surface_ext(mesh, line[-1], line[-1] - line[-2], H) if len(line) > 1 else None
+        if ext is not None:
+            line.append(ext)
+        out["body" if kind == "head" else "tail"] = {"line": np.array(line), "pred": [p.names[k] for k in ks],
+                                                       "surface_ext": ext is not None}
+    legs = [c for c in lab["chains"] if c["label"] == "leg"]
+    if legs:
+        low = p.P[p.P[:, 1] <= floor + 0.04 * H]
+        tips = np.array([p.jp[c["joints"][-1]] for c in legs])
+        for c, tip in zip(legs, tips):
+            line = [p.jp[k] for k in c["joints"]]
+            gap = float(tip[1] - floor)
+            ext = None
+            if gap > 0.03 * H:
+                # the floor points nearer this tip than any other tip; their centre is the foot's floor point
+                if len(low):
+                    own = np.linalg.norm(low[:, None, [0, 2]] - tips[None, :, [0, 2]], axis=2).argmin(1) == list(map(tuple, tips)).index(tuple(tip))
+                    near = low[own & (np.linalg.norm(low[:, [0, 2]] - tip[[0, 2]], axis=1) < 0.2 * H)]
+                else:
+                    near = low
+                xz = near[:, [0, 2]].mean(0) if len(near) >= 3 else tip[[0, 2]]
+                ext = np.array([xz[0], floor, xz[1]])
+                line.append(ext)
+            out["legs"].append({"line": np.array(line), "pred": [p.names[k] for k in c["joints"]], "tip_gap_H": round(gap / H, 3),
+                                "floor_ext": ext is not None})
+    return out
+
+
+# ---------------------------------------------------------------- registration (template frame)
+
+def _at(poly: np.ndarray, s: float) -> np.ndarray:
+    return rig._at_arclen(poly, s)
+
+
+def _shift_subtree(P: dict, children: dict, name: str, delta: np.ndarray) -> None:
+    for n in [name] + rig_fit._descendants(children, name):
+        P[n] = P[n] + delta
+
+
+def _move_chain(P: dict, children: dict, chain: list[str], new: dict) -> None:
+    """rig_fit._move_chain, except the chain's first joint (hips, shared by several paths) doesn't swing its other
+    branches: only joints hanging off chain[1:] follow their chain joint's bone."""
+    old = {n: P[n].copy() for n in P}
+    inchain = set(chain)
+    for n in chain:
+        if n in new:
+            P[n] = new[n]
+    for k, n in enumerate(chain):
+        if k == 0:
+            continue
+        nxt = chain[k + 1] if k + 1 < len(chain) else None
+        u, v = (old[nxt] - old[n], P[nxt] - P[n]) if nxt is not None else (old[n] - old[chain[k - 1]], P[n] - P[chain[k - 1]])
+        Rm, _ = rig_fit._rot_between(u, v, None)
+        s = np.linalg.norm(v) / max(np.linalg.norm(u), 1e-12)
+        for d in rig_fit._descendants(children, n):
+            if d not in inchain:
+                P[d] = P[n] + s * (Rm @ (old[d] - old[n]))
+
+
+def lay(P: dict, children: dict, chain: list[str], line: np.ndarray, keep_tail_rigid: bool = False,
+        clamp: tuple[float, float] = LEN_CLAMP) -> dict:
+    """Lay `chain` along `line` by arc length: the chain's length scaled to the line's (clamped 0.7-1.6x), each joint
+    at its scaled arc length (no bend cap: the line is a skeleton that sits in the mesh). Joints off the chain follow
+    their chain ancestor (rig_fit._move_chain). keep_tail_rigid: the last joint's own subtree (toes) only shifts."""
+    seg = [float(np.linalg.norm(P[chain[k + 1]] - P[chain[k]])) for k in range(len(chain) - 1)]
+    tl = sum(seg)
+    line = np.asarray(line, float).copy()
+    line[0] = P[chain[0]]
+    ml = float(np.linalg.norm(np.diff(line, axis=0), axis=1).sum())
+    ratio = ml / max(tl, 1e-12)
+    s = float(np.clip(ratio, *clamp))
+    tail = {d: P[d] - P[chain[-1]] for d in rig_fit._descendants(children, chain[-1])} if keep_tail_rigid else {}
+    new = {chain[0]: P[chain[0]].copy()}
+    acc, turns = 0.0, []
+    for k in range(len(chain) - 1):
+        acc += seg[k] * s
+        new[chain[k + 1]] = _at(line, acc)
+        u = P[chain[k + 1]] - P[chain[k]]
+        v = new[chain[k + 1]] - new[chain[k]]
+        turns.append(float(np.degrees(np.arccos(np.clip(u @ v / max(np.linalg.norm(u) * np.linalg.norm(v), 1e-12), -1, 1)))))
+    _move_chain(P, children, chain, new)
+    for d, off in tail.items():
+        P[d] = P[chain[-1]] + off
+    return {"length_ratio": round(ratio, 3), "length_clamped": bool(ratio != s), "max_turn_deg": round(max(turns, default=0.0), 1),
+            "tip_residual": round(float(np.linalg.norm(P[chain[-1]] - line[-1])), 4)}
+
+
+def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarray, tV: np.ndarray, tF: np.ndarray,
+             H_t: float) -> dict:
+    """Template joints (name -> template-frame position, changed in place) onto the predicted lines (template frame)."""
+    spec = PATHS[cls]
+    rep = {"paths": [], "unsupported": []}
+    root_t = (lines_t.get("body") or lines_t.get("tail") or {}).get("line")
+    if root_t is not None and "hips" in P:
+        delta = root_t[0] - P["hips"]
+        for n in P:
+            P[n] = P[n] + delta
+        if "root" in P:  # the root joint stays on the floor under the hips (its weight is folded away anyway)
+            P["root"] = np.array([P["hips"][0], float(mesh_t[:, 1].min()), P["hips"][2]])
+        rep["hips_moved"] = round(float(np.linalg.norm(delta)), 4)
+    tree = cKDTree(mesh_t)
+    for kind in ("body", "tail"):
+        tgt = lines_t.get(kind)
+        chain = [n for n in spec[kind] if n in P]
+        if tgt is None or len(chain) < 2:
+            rep["paths"].append({"kind": kind, "skipped": "no predicted chain"})
+            if kind == "tail" and tgt is None:
+                rep["unsupported"].append("tail")
+            continue
+        before = {n: P[n].copy() for n in P}
+        s0 = rig_fit.outside_score(P, chain, tV, tF, tree, H_t)
+        r = lay(P, children, chain, tgt["line"])
+        s1 = rig_fit.outside_score(P, chain, tV, tF, tree, H_t)
+        kept = s1 <= s0 + 0.01
+        if not kept:
+            P.update(before)
+        rep["paths"].append({"kind": kind, "pred": tgt["pred"], **r, "outside_before": round(s0, 4), "outside_after": round(s1, 4),
+                             "kept": bool(kept), "surface_ext": tgt["surface_ext"]})
+    # legs: match predicted legs to template legs by side (template +X is left) and front/back (template +Z)
+    tlegs = [c for c in spec["legs"] if all(n in P for n in c)]
+    plegs = lines_t.get("legs", [])
+    cx = float(np.median(mesh_t[:, 0]))
+    used = set()
+    for c in tlegs:
+        side = np.sign(P[c[0]][0] - cx)
+        cand = [i for i, q in enumerate(plegs) if i not in used and np.sign(q["line"][0][0] - cx) == side]
+        if not cand:
+            rep["paths"].append({"kind": "leg", "chain": c[0], "skipped": "no predicted leg on that side"})
+            continue
+        i = min(cand, key=lambda i: abs(plegs[i]["line"][0][2] - P[c[0]][2]))
+        used.add(i)
+        q = plegs[i]
+        _shift_subtree(P, children, c[0], q["line"][0] - P[c[0]])
+        # the key joint sits above the floor as much as the template's does: lift the floor point by that
+        line = q["line"].copy()
+        low = min(P[n][1] for n in [c[-1]] + rig_fit._descendants(children, c[-1]))
+        key_y = float(mesh_t[:, 1].min()) + (P[c[-1]][1] - low)  # its toes reach the floor, not below it
+        if q["floor_ext"] or line[-1, 1] < key_y:
+            line[-1, 1] = key_y
+        r = lay(P, children, c, line, keep_tail_rigid=True, clamp=LEG_CLAMP)
+        rep["paths"].append({"kind": "leg", "chain": c[0], "pred": q["pred"], **r, "pred_tip_gap_H": q["tip_gap_H"],
+                             "floor_ext": q["floor_ext"]})
+    # chains with no predicted counterpart: folded onto the body sides (rig_fit's wings), unsupported
+    for g in spec["groups"]:
+        rep["unsupported"].append(g)
+    if "wings" in spec["groups"]:
+        wings = [c for c in rig_fit.CHAINS[cls]["wings"] if all(n in P for n in c)]
+        S0 = mesh_t
+        for c in wings:
+            side = 1.0 if P[c[-1]][0] > cx else -1.0
+            S = S0[side * (S0[:, 0] - cx) > 0]
+            tr = cKDTree(S[:, 1:])
+            new = {}
+            for n in c:
+                p_ = P[n].copy()
+                d, k = tr.query(p_[1:])
+                if d > 0.03 * H_t:
+                    p_[1:] = S[k, 1:]
+                near = S[np.linalg.norm(S[:, 1:] - p_[1:], axis=1) < 0.06 * H_t]
+                if len(near):
+                    p_[0] = cx + side * 0.85 * float((side * (near[:, 0] - cx)).max())
+                new[n] = p_
+            rig_fit._move_chain(P, children, c, new)
+    return rep
+
+
+def cd_j2b(A: np.ndarray, segs_B: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+    """Each point of A to its nearest segment of B."""
+    out = np.full(len(A), np.inf)
+    for a, b in segs_B:
+        ab = b - a
+        t = np.clip(((A - a) @ ab) / max(ab @ ab, 1e-12), 0, 1) if ab @ ab > 1e-12 else np.zeros(len(A))
+        out = np.minimum(out, np.linalg.norm(A - (a + t[:, None] * ab), axis=1))
+    return out
+
+
+# ---------------------------------------------------------------- binder "pred": predicted weights onto the template
+
+def ours_from_posed(posed: Path) -> tuple[dict, bytes]:
+    """A skeleton doc like skin-tokens' output from the posed template: the same joints, identity rotations, plain
+    translations, one SkinnedMesh node, inverse binds of the rest positions."""
+    pdoc, _ = rig.read_glb(posed)
+    sk = rig.Skeleton(pdoc)
+    w = sk.world({})
+    joints = pdoc["skins"][0]["joints"]
+    order = [i for i in sk.order if i in joints]
+    new_of = {i: k for k, i in enumerate(order)}
+    nodes = []
+    for i in order:
+        p = sk.parent.get(i)
+        t = w[i][0] - (w[p][0] if p in joints else 0)
+        nd = {"name": pdoc["nodes"][i]["name"], "translation": np.asarray(t, float).tolist()}
+        kids = [new_of[c] for c in pdoc["nodes"][i].get("children", []) if c in new_of]
+        if kids:
+            nd["children"] = kids
+        nodes.append(nd)
+    nodes.append({"name": "SkinnedMesh", "mesh": 0, "skin": 0})
+    roots = [new_of[i] for i in order if sk.parent.get(i) not in joints]
+    g = rig.GlbWriter()
+    ibm = []
+    for i in order:
+        M = np.eye(4)
+        M[:3, 3] = w[i][0]
+        ibm.append(np.linalg.inv(M).T.reshape(-1))
+    acc = g.array(np.array(ibm, "<f4"), "MAT4")
+    g.doc.update(nodes=nodes, scenes=[{"nodes": roots + [len(nodes) - 1]}], scene=0,
+                 skins=[{"joints": list(range(len(order))), "inverseBindMatrices": acc}], meshes=[{"primitives": []}])
+    body = b"".join(g.chunks)
+    return g.doc, body
+
+
+def transfer(p: Pred, lab: dict, P_mesh: np.ndarray, ours: dict, cls: str, unsupported: list[str]) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Per vertex and predicted influence: the point on the predicted bone nearest the vertex goes to the nearest
+    template bone of the same chain group (leg / body+head / tail); unsupported groups get nothing."""
+    sk = rig.Skeleton(ours)
+    joints = ours["skins"][0]["joints"]
+    names = [ours["nodes"][j]["name"] for j in joints]
+    w = sk.world({})
+    jp = np.array([w[j][0] for j in joints])
+    kid = {k: [joints.index(c) for c in ours["nodes"][j].get("children", []) if c in joints] for k, j in enumerate(joints)}
+    spec = PATHS[cls]
+    idx = {n: k for k, n in enumerate(names)}
+
+    def desc(k: int) -> list[int]:
+        out, st = [], [k]
+        while st:
+            x = st.pop()
+            out.append(x)
+            st += kid[x]
+        return out
+    group_t = {}
+    banned = set()
+    for g, roots in spec["groups"].items():
+        if g in unsupported:
+            for r_ in roots:
+                if r_ in idx:
+                    banned |= set(desc(idx[r_]))
+    for k in range(len(names)):
+        group_t[k] = "body"
+    if "tail_1" in idx:
+        for k in desc(idx["tail_1"]):
+            group_t[k] = "tail"
+    for li, c in enumerate(spec["legs"]):
+        if c[0] in idx:
+            for k in desc(idx[c[0]]):
+                group_t[k] = f"leg{li}"
+    # predicted joint -> group: legs matched to template legs by nearest leg root
+    gp = {k: "body" for k in range(len(p.names))}
+    leg_roots = {li: jp[idx[c[0]]] for li, c in enumerate(spec["legs"]) if c[0] in idx}
+    for d in lab["chains"]:
+        if d["label"] == "tail":
+            for k in d["joints"]:
+                gp[k] = "tail"
+        elif d["label"] == "leg" and leg_roots:
+            li = min(leg_roots, key=lambda i: float(np.linalg.norm(leg_roots[i] - p.jp[d["joints"][0]])))
+            for k in d["joints"]:
+                gp[k] = f"leg{li}"
+    # template bone segments (joint k -> each child); a leaf bone is its point
+    segs = {k: [(jp[k], jp[c]) for c in kid[k]] or [(jp[k], jp[k])] for k in range(len(names))}
+    cand = {g: [k for k in range(len(names)) if group_t[k] == g and k not in banned and names[k] != "root"] for g in set(group_t.values())}
+    pkid = p.kids
+    M = np.zeros((len(P_mesh), len(names)))
+    for slot in range(p.J.shape[1]):
+        wv = p.W[:, slot]
+        jv = p.J[:, slot]
+        for k in np.unique(jv[wv > 0]):
+            sel = (jv == k) & (wv > 0)
+            X = P_mesh[sel]
+            a = p.jp[k]
+            best = np.full(len(X), np.inf)
+            q = np.repeat(a[None], len(X), 0)
+            for c in pkid[k] or [k]:
+                ab = p.jp[c] - a
+                t = np.clip(((X - a) @ ab) / max(ab @ ab, 1e-12), 0, 1) if ab @ ab > 1e-12 else np.zeros(len(X))
+                y = a + t[:, None] * ab
+                dd = np.linalg.norm(X - y, axis=1)
+                better = dd < best
+                q[better], best[better] = y[better], dd[better]
+            ks = cand.get(gp[k]) or cand["body"]
+            D = np.stack([np.min([np.linalg.norm(q - (s0 + np.clip(((q - s0) @ (s1 - s0)) / max((s1 - s0) @ (s1 - s0), 1e-12), 0, 1)[:, None] * (s1 - s0)), axis=1)
+                                  for s0, s1 in segs[t_]], axis=0) for t_ in ks], 1)
+            tgt = np.array(ks)[D.argmin(1)]
+            np.add.at(M, (np.where(sel)[0], tgt), wv[sel])
+    J, W = rig.to_top4(M)
+    info = {"vertices_on_banned": int((M[:, sorted(banned)].sum(1) > 0).sum()) if banned else 0,
+            "bones_used": int((M.sum(0) > 0).sum())}
+    return J, W, info
+
+
+# ---------------------------------------------------------------- floor pass
+
+class FK:
+    """Forward kinematics of our skeleton (identity rest rotations; node translations) with per-node local quats."""
+
+    def __init__(self, ours: dict) -> None:
+        self.nodes = ours["nodes"]
+        self.joints = ours["skins"][0]["joints"]
+        sk = rig.Skeleton(ours)
+        self.parent = sk.parent
+        self.order = [i for i in sk.order if i in self.joints]
+        self.t0 = {i: np.array(self.nodes[i].get("translation", [0, 0, 0]), float) for i in self.order}
+        w = sk.world({})
+        self.rest = {i: w[i][0] for i in self.order}
+
+    def world(self, quats: dict[int, np.ndarray], trans: dict[int, np.ndarray]) -> tuple[dict, dict]:
+        pos, rot = {}, {}
+        for i in self.order:
+            q = R.from_quat(quats[i]) if i in quats else R.identity()
+            t = trans.get(i, self.t0[i])
+            p = self.parent.get(i)
+            if p in pos:
+                pos[i] = pos[p] + rot[p].apply(t)
+                rot[i] = rot[p] * q
+            else:
+                pos[i], rot[i] = t.copy(), q
+        return pos, rot
+
+
+def _skin(P: np.ndarray, J: np.ndarray, W: np.ndarray, fk: FK, pos: dict, rot: dict) -> np.ndarray:
+    js = fk.joints
+    out = np.zeros_like(P)
+    for slot in range(J.shape[1]):
+        for k in np.unique(J[:, slot]):
+            sel = J[:, slot] == k
+            j = js[k]
+            out[sel] += W[sel, slot][:, None] * (rot[j].apply(P[sel] - fk.rest[j]) + pos[j])
+    return out
+
+
+def template_floor_track(template: dict, names: list[str], legs_keys: list[str], times: dict) -> dict:
+    """The template's own body per frame (template units): its lowest point above its reference floor ("low"), and
+    for each leg key joint the lowest point of that foot above the body's lowest point ("foot": ground-relative
+    clearance, 0 in stance); plus the template's height at the reference frame."""
+    import rig_motion
+    doc, b = rig.read_glb(rig.M2M / template["clips"][0])
+    nodes = doc["nodes"]
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    mi = next(i for i, n in enumerate(nodes) if "mesh" in n and "skin" in n)
+    pr = doc["meshes"][nodes[mi]["mesh"]]["primitives"][0]
+    a = pr["attributes"]
+    P = rig.accessor(doc, b, a["POSITION"]).astype(float)
+    J = rig.accessor(doc, b, a["JOINTS_0"]).astype(int)
+    W = rig.accessor(doc, b, a["WEIGHTS_0"]).astype(float)
+    skn = doc["skins"][nodes[mi]["skin"]]
+    IBM = rig.accessor(doc, b, skn["inverseBindMatrices"]).reshape(-1, 4, 4).transpose(0, 2, 1)
+    Ph = np.c_[P, np.ones(len(P))]
+    ni = {n.get("name"): i for i, n in enumerate(nodes)}
+    top_node = np.array(skn["joints"])[J[np.arange(len(J)), W.argmax(1)]]
+
+    def sub(i: int) -> set[int]:
+        out, st = set(), [i]
+        while st:
+            x = st.pop()
+            out.add(x)
+            st += nodes[x].get("children", [])
+        return out
+    feet = {k: np.isin(top_node, sorted(sub(ni[k]) | {parent[ni[k]]})) for k in legs_keys if k in ni}
+    chans = {}
+    for f in template["clips"]:
+        d, bb = (doc, b) if f == template["clips"][0] else rig.read_glb(rig.M2M / f)
+        for an in d.get("animations", []):
+            _, ch = rig_motion.channels(d, bb, an)
+            if d is not doc:  # another clip file: map its channels onto this file's nodes by name
+                ch = [(ni[d["nodes"][x[0]].get("name")],) + tuple(x[1:]) for x in ch if d["nodes"][x[0]].get("name") in ni]
+            chans[an["name"]] = ch
+
+    def at(name: str | None, t: float) -> np.ndarray:
+        local = rig_motion.sample(nodes, chans[name], t) if name else {}
+        wm = rig_motion.world_mats(nodes, parent, local)
+        M = np.stack([wm[j] @ IBM[k] for k, j in enumerate(skn["joints"])])
+        return rig_motion.skin(Ph, J, W, M)
+    ref = template["ref"] if isinstance(template["ref"], str) else None
+    V0 = at(ref, 0.0)
+    fl0 = float(V0[:, 1].min())
+    out = {}
+    for nm in names:
+        if nm not in chans:
+            continue
+        lows, fts = [], {k: [] for k in feet}
+        for t in times[nm]:
+            V = at(nm, float(t))
+            lo = float(V[:, 1].min())
+            lows.append(lo - fl0)
+            for k, m in feet.items():
+                fts[k].append(float(V[m, 1].min()) - lo if m.any() else 0.0)
+        out[nm] = {"low": np.array(lows), "foot": {k: np.array(v) for k, v in fts.items()}}
+    return {"clips": out, "H": float(np.ptp(V0[:, 1]))}
+
+
+def _two_bone(pos: dict, rot: dict, A: int, B: int, K: int, target: np.ndarray, lateral: np.ndarray) -> tuple[R, R]:
+    """World rotations at B (bend) then at A (aim) that put K at target (as near as the leg reaches)."""
+    a, b, k = pos[A], pos[B], pos[K]
+    la, lb = np.linalg.norm(b - a), np.linalg.norm(k - b)
+    d0 = np.linalg.norm(k - a)
+    d1 = float(np.clip(np.linalg.norm(target - a), abs(la - lb) + 1e-6, la + lb - 1e-6))
+    n = np.cross(b - a, k - b)
+    if np.linalg.norm(n) < 1e-9:
+        n = lateral.copy()
+    n /= np.linalg.norm(n)
+
+    def ang(d: float) -> float:  # interior angle at B for a given A-K distance
+        return float(np.arccos(np.clip((la * la + lb * lb - d * d) / (2 * la * lb), -1, 1)))
+    qB = R.from_rotvec(n * (ang(d0) - ang(d1)))
+    k2 = b + qB.apply(k - b)
+    u, v = k2 - a, target - a
+    ax = np.cross(u, v)
+    if np.linalg.norm(ax) < 1e-12:
+        return qB, R.identity()
+    th = float(np.arctan2(np.linalg.norm(ax), u @ v))
+    return qB, R.from_rotvec(ax / np.linalg.norm(ax) * th)
+
+
+def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: np.ndarray, template: dict, cls: str,
+               scale_y: float, lateral: np.ndarray) -> dict:
+    """Changes the baked clips in place (local quats of leg / neck joints, root translation), per frame:
+    1. the body (all but the head) is grounded like the template's: its lowest point at the template's clearance
+       above its floor, scaled (0 whenever the template touches);
+    2. each foot is bent / stretched (two-bone IK at hip and knee, the foot kept level) to the template foot's
+       clearance above the template body's lowest point, scaled (0 in stance), then 1. again (three rounds);
+    3. a head that still goes through the floor is lifted at the neck (about the lateral axis, up to 45 degrees).
+    Returns per clip, before and after: lowest point vs the floor and floating in the template's contact frames (/H)."""
+    fk = FK(ours)
+    names = [ours["nodes"][j]["name"] for j in fk.joints]
+    node_of = {n: j for n, j in zip(names, fk.joints)}
+    floor, H = float(P[:, 1].min()), float(np.ptp(P[:, 1]))
+    if len(P) > 12000:  # a dense mesh (a 52k-vertex person): every k-th vertex, plus the lowest ones, is plenty for a floor
+        keep = np.unique(np.r_[np.arange(0, len(P), len(P) // 8000), np.argsort(P[:, 1])[:500]])
+        P, J, W = P[keep], J[keep], W[keep]
+    spec = PATHS.get(cls)
+    fix = spec is not None  # a class without leg paths here (people) is only grounded (step 1), no IK
+    spec = spec or {"legs": [], "neck_lift": None}
+    if not clips:
+        return {}
+    legs = [c for c in spec["legs"] if all(n in node_of for n in c)]
+    J_top = np.array(fk.joints)[J[np.arange(len(J)), W.argmax(1)]]
+
+    def sub(n: str) -> set[int]:
+        out, st = set(), [node_of[n]]
+        while st:
+            x = st.pop()
+            out.add(x)
+            st += [c for c in ours["nodes"][x].get("children", []) if c in fk.order]
+        return out
+    foot_v = [np.isin(J_top, sorted(sub(c[-1]) | {node_of[c[-2]]})) for c in legs]
+    neck = spec.get("neck_lift")
+    head_v = np.isin(J_top, sorted(sub(neck))) if neck in node_of else np.zeros(len(P), bool)
+    body_v = ~head_v
+    times = {c["name"]: c["times"] for c in clips}
+    track = template_floor_track(template, list(times), [c[-1] for c in legs], times)
+    k_scale = H / max(track["H"], 1e-9)
+    rootn = clips[0]["root"]
+    out = {}
+    for c in clips:
+        tr = track["clips"].get(c["name"])
+        if tr is None:
+            continue
+        before, after, flo_b, flo_a, neck_deg = [], [], [], [], []
+        contact = tr["low"] / track["H"] < 0.02
+        for f in range(len(c["times"])):
+            quats = {j: c["rot"][j][f].astype(float) for j in c["rot"]}
+            trans = {rootn: c["root_t"][f].astype(float)}
+            pos, rot = fk.world(quats, trans)
+            V = _skin(P, J, W, fk, pos, rot)
+            before.append((V[:, 1].min() - floor) / H)
+            if contact[f]:
+                flo_b.append((V[:, 1].min() - floor) / H)
+            want = floor + max(0.0, float(tr["low"][f])) * k_scale
+
+            def ground(V: np.ndarray) -> None:
+                trans[rootn] = trans[rootn] + np.array([0, want - float(V[body_v, 1].min()), 0])
+            for _ in range(3 if fix else 0):
+                ground(V)
+                pos, rot = fk.world(quats, trans)
+                for li, cch in enumerate(legs):
+                    if not foot_v[li].any():
+                        continue
+                    A, B, K = node_of[cch[0]], node_of[cch[1]], node_of[cch[-1]]
+                    Vf = _skin(P[foot_v[li]], J[foot_v[li]], W[foot_v[li]], fk, pos, rot)
+                    need = (want + max(0.0, float(tr["foot"][cch[-1]][f])) * k_scale) - float(Vf[:, 1].min())
+                    if abs(need) < 0.002 * H:
+                        continue
+                    qB, qA = _two_bone(pos, rot, A, B, K, pos[K] + np.array([0, need, 0]), lateral)
+                    oldK = rot[K]
+                    quats[B] = (rot[fk.parent[B]].inv() * qB * rot[B]).as_quat()
+                    pA = fk.parent.get(A)
+                    quats[A] = ((rot[pA] if pA in rot else R.identity()).inv() * qA * rot[A]).as_quat()
+                    pos, rot = fk.world(quats, trans)
+                    quats[K] = (rot[fk.parent[K]].inv() * oldK).as_quat()
+                    pos, rot = fk.world(quats, trans)
+                V = _skin(P, J, W, fk, pos, rot)
+            ground(V)
+            pos, rot = fk.world(quats, trans)
+            V = _skin(P, J, W, fk, pos, rot)
+            lifted = 0.0
+            if fix and head_v.any() and floor - float(V[head_v, 1].min()) > 0.005 * H:
+                nj = node_of[neck]
+                pn = fk.parent[nj]
+                for ang in np.radians(np.arange(2, 46, 2)):
+                    done = False
+                    for sgn in (1, -1):
+                        q2 = dict(quats)
+                        q2[nj] = (rot[pn].inv() * R.from_rotvec(lateral * sgn * ang) * rot[nj]).as_quat()
+                        p2, r2 = fk.world(q2, trans)
+                        if _skin(P[head_v], J[head_v], W[head_v], fk, p2, r2)[:, 1].min() >= floor - 0.005 * H:
+                            quats, done, lifted = q2, True, float(np.degrees(ang))
+                            break
+                    if done:
+                        break
+                pos, rot = fk.world(quats, trans)
+                V = _skin(P, J, W, fk, pos, rot)
+            neck_deg.append(lifted)
+            after.append((V[:, 1].min() - floor) / H)
+            if contact[f]:
+                flo_a.append((V[:, 1].min() - floor) / H)
+            for j in c["rot"]:
+                c["rot"][j][f] = np.asarray(quats[j], np.float32)
+            c["root_t"][f] = np.asarray(trans[rootn], np.float32)
+        out[c["name"]] = {"low_min_before": round(float(min(before)), 3), "low_min_after": round(float(min(after)), 3),
+                          "float_max_before": round(float(max(flo_b)), 3) if flo_b else None,
+                          "float_max_after": round(float(max(flo_a)), 3) if flo_a else None,
+                          "contact_frames": int(contact.sum()), "frames": len(c["times"]),
+                          "neck_lift_max_deg": round(max(neck_deg), 1), "fixed": fix}
+    return out
+
+
+# ---------------------------------------------------------------- fallback: the predicted rig itself, with mapped clips
+
+def _arc(pts: np.ndarray) -> np.ndarray:
+    s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]
+    return s / max(s[-1], 1e-9)
+
+
+def fallback_clips(p: Pred, lab: dict, template: dict, cls: str, names: list[str], yaw: float) -> tuple[list[dict], dict]:
+    """Template clips on the predicted skeleton, chain by chain: each predicted joint takes the world rotation change
+    of the template joint at the same arc-length fraction of the matching chain (turned by the facing yaw); joints on
+    no chain follow their parent. For when the template can't be fitted (the pose gate failed)."""
+    tdoc, _ = rig.read_glb(rig.M2M / template["rig"])
+    tsk = rig.Skeleton(tdoc)
+    ref_w = tsk.world(rig.ref_local(template, tsk))
+    tpos = {n: ref_w[i][0] for n, i in tsk.index.items()}
+    spec = PATHS[cls]
+    Ry = R.from_euler("y", yaw, degrees=True)
+    plan: dict[int, str] = {}
+    neck_from = {"avian": "spine_2", "quadruped": "spine_4"}[cls]
+    head_t = spec["body"][spec["body"].index(neck_from):]
+    legs_t = [c for c in spec["legs"] if all(n in tpos for n in c)]
+    legs_p = [d for d in lab["chains"] if d["label"] == "leg"]
+    cen_p = np.mean([p.jp[d["joints"][0]] for d in legs_p], 0) if legs_p else p.jp[p.root[0]]
+    cen_t = np.mean([tpos[c[0]] for c in legs_t], 0)
+    span_t = max(float(np.ptp([tpos[c[0]][2] for c in legs_t])), 1e-6)
+    span_p = max(float(np.ptp([Ry.inv().apply(p.jp[d["joints"][0]] - cen_p)[2] for d in legs_p])) if legs_p else 0.0, 1e-6)
+    for d in lab["chains"]:
+        if d["label"] == "head":
+            tn = head_t
+        elif d["label"] == "tail":
+            tn = spec["tail"][1:]
+        elif d["label"] == "leg":
+            v = Ry.inv().apply(p.jp[d["joints"][0]] - cen_p)  # into the template frame (+X left, +Z forward)
+            tn = min(legs_t, key=lambda c: 10.0 * (np.sign(v[0]) != np.sign(tpos[c[0]][0] - cen_t[0]))
+                     + abs(v[2] / span_p - (tpos[c[0]][2] - cen_t[2]) / span_t))
+        else:
+            continue
+        tn = [n for n in tn if n in tpos]
+        ts = _arc(np.array([tpos[n] for n in tn]))
+        ps = _arc(p.jp[d["joints"]])
+        for k, s in zip(d["joints"], ps):
+            plan[k] = tn[int(np.clip(np.searchsorted(ts, s, side="right") - 1, 0, len(tn) - 1))]
+    for k in p.root:
+        plan.setdefault(k, "hips")
+    sources = [rig.read_glb(rig.M2M / f) for f in template["clips"]]
+    anims = {a["name"]: (d, b, a) for d, b in sources for a in d.get("animations", [])}
+    order = sorted(range(len(p.joints)), key=lambda k: len(p.path_to(k)))
+    sk = rig.Skeleton(p.doc)
+    w0 = sk.world({})
+    rest_rot = [w0[j][1] for j in p.joints]
+    th = float(np.ptp([ref_w[i][0][1] for i in tsk.index.values()]))
+    scale = p.H / max(th, 1e-9)
+    hips = tsk.index["hips"]
+    out = []
+    for name in names:
+        if name not in anims:
+            continue
+        d, b, a = anims[name]
+        ch = rig.prepare_clip(d, b, a, tsk)
+        times = np.arange(0, rig.clip_duration(d, b, a) + 1e-6, 1.0 / rig.FPS)
+        rot = {p.joints[k]: [] for k in order}
+        root_t = []
+        rnode = p.joints[p.root[0]]
+        for t in times:
+            tw = tsk.world(rig.sample_clip(ch, tsk, float(t)))
+            eff, want = {}, {}
+            for k in order:
+                n = plan.get(k)
+                dl = Ry * tw[tsk.index[n]][1] * ref_w[tsk.index[n]][1].inv() * Ry.inv() if n else (eff[p.par[k]] if p.par[k] >= 0 else R.identity())
+                eff[k] = dl
+                want[k] = dl * rest_rot[k]
+            for k in order:
+                pk = p.par[k]
+                if pk >= 0:
+                    pw = want[pk]
+                else:
+                    pj = sk.parent.get(p.joints[k])
+                    pw = w0[pj][1] if pj is not None else R.identity()
+                rot[p.joints[k]].append((pw.inv() * want[k]).as_quat())
+            root_t.append(np.array(p.doc["nodes"][rnode].get("translation", [0, 0, 0]), float)
+                          + Ry.apply((tw[hips][0] - ref_w[hips][0]) * scale))
+        out.append({"name": name, "times": times.astype(np.float32), "rot": {j: np.array(v, np.float32) for j, v in rot.items()},
+                    "root": rnode, "root_t": np.array(root_t, np.float32)})
+    return out, {"plan": {p.names[k]: n for k, n in plan.items()}, "scale": round(scale, 3)}

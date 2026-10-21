@@ -8,11 +8,15 @@ GET  /status
 GET  /status/<job_id>
 POST /cancel/<job_id>
 POST /intent/<stem>
+POST /rig/<stem>
+POST /rig/<stem>/inspect
 GET  /glb/<stem>
 GET  /stack/<stem>
 POST /export/<stem>
 POST /upload
 POST /generate
+POST /2d/draw            a 2D still (or Ideas) as a job: /status, /cancel
+GET  /2d/<stem>/drawing  the picture filling in while it draws
 """
 from __future__ import annotations
 
@@ -33,7 +37,10 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from flat2d import drawjob
 from flat2d.routes import handle as handle_flat2d
+from flat2d.sheet import still_backend
+import flow
 from flow import FLAT_WRITES, autosave
 from flow import handle as handle_flow
 from export_asset import handle as handle_export
@@ -97,8 +104,26 @@ STAGE_LABELS = {
     "inspect": "Check the model",
     "stack": "Sprite stack",
     "preview": "Thumbnail",
+    # scripts/rig.py
+    "classify": "Work out the body plan",
+    "rest": "Check the rest pose",
+    "pose": "Pose the skeleton",
+    "skin": "Learn the skin weights",
+    "clean": "Clean up the weights",
+    "clips": "Bake the clips",
+    "check": "Check the rig",
+    "fbx": "FBX for s&box",
+    # flat2d/drawjob.py: load draw ground redraw pieces motion say sound idea1..idea8
+    **drawjob.LABELS,
 }
 SUB_PROGRESS = re.compile(r"\[\s*(\d{1,3})%\]")
+def rig_env(root: Path) -> dict[str, str]:
+    """rig.py and rig_inspect.py write into FACTORY_ROOT/out, not next to their own (maybe symlinked) scripts/."""
+    return {**os.environ, "FACTORY_ROOT": str(root)}
+
+
+# Body plans scripts/rig.py has a template for.
+RIG_CLASSES = ("humanoid", "quadruped", "multileg", "avian")
 # What the asset is meant to be; the app picks its stages and Export card from this.
 OUTPUTS = ("ps1", "model", "stack", "sprite")
 
@@ -180,7 +205,9 @@ class Factory:
         self.python = factory_python(self.root)
         self._lock = threading.Lock()
         self._job: dict[str, Any] | None = None
+        self._checking: set[str] = set()  # stems whose rig is being checked again (POST /rig/<stem>/inspect)
         self._runner = generate_runner or self._run_generate_sh
+        self._sync_draws = 0  # plain POST /2d/generate or /2d/idea drawing right now (they share the model's hook)
 
     def health(self) -> dict[str, Any]:
         job = self._snapshot()
@@ -412,8 +439,11 @@ class Factory:
             return dict(self._job) if self._job else None
 
     def writing(self, stem: str) -> bool:
+        """A job is writing this asset, or its rig is being checked again (picking a version then would mix them)."""
         job = self._snapshot()
-        return bool(job and job.get("state") == "running" and job.get("stem") == stem)
+        with self._lock:
+            checking = stem in self._checking
+        return checking or bool(job and job.get("state") == "running" and job.get("stem") == stem)
 
     def status(self, job_id: str | None = None) -> dict[str, Any]:
         job = self._snapshot()
@@ -423,6 +453,7 @@ class Factory:
             return {"ok": False, "error": "unknown job", "job_id": job_id, "state": "unknown"}
         out = dict(job)
         out["ok"] = True
+        out["now"] = time.time()
         log_path = out.get("log")
         if log_path and Path(log_path).is_file():
             try:
@@ -496,6 +527,8 @@ class Factory:
         with self._lock:
             if self._job and self._job.get("state") == "running":
                 raise RuntimeError("generate already running")
+            if self._sync_draws:
+                raise RuntimeError("the factory is busy with another job")
             self._job = dict(spec)
 
         thread = threading.Thread(target=self._run_job, args=(spec,), daemon=False)
@@ -508,6 +541,207 @@ class Factory:
             "stem": stem,
             "status_url": f"/status/{job_id}",
         }
+
+    def start_flat(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Draw a 2D still (kind flat2d, then the picked steps) or Ideas (kind ideas) in the job slot.
+        The prompt, step texts and clip go to the runner only: the job dict is what /status returns."""
+        if not isinstance(body, dict):
+            raise ValueError("body must be a JSON object")
+        kind = str(body.get("kind") or "flat2d")
+        if kind not in ("flat2d", "ideas"):
+            raise ValueError("kind must be flat2d or ideas")
+        stem = check_stem(str(body.get("stem") or ""))
+        prompt = " ".join(str(body.get("prompt") or "").split())
+        drop = kind == "flat2d" and body.get("source") == "drop"
+        if body.get("source") not in (None, "", "drop"):
+            raise ValueError("source must be drop")
+        if drop:
+            if not (stem_dir(self.root, stem) / "flat" / "source.png").is_file():
+                raise FileNotFoundError("no picture to work from; drop one first")
+        elif not prompt:
+            raise ValueError("empty prompt")
+        backend = still_backend()
+        if not drop and not backend:
+            raise ValueError("No local image model. Install mflux.")
+        count = 1
+        if kind == "ideas":
+            try:
+                count = int(body.get("count") or 1)
+            except (TypeError, ValueError):
+                raise ValueError("count must be 1 to 8") from None
+            if not 1 <= count <= drawjob.MAX_IDEAS:
+                raise ValueError("count must be 1 to 8")
+        raw_steps = body.get("steps") if kind == "flat2d" else None
+        if raw_steps is not None and not isinstance(raw_steps, list):
+            raise ValueError("steps must be a list")
+        steps: list[str] = []
+        for step in raw_steps or []:
+            if step not in drawjob.STEPS:
+                raise ValueError(f"unknown step {step!r}")
+            if step not in steps:
+                steps.append(step)
+        payload: dict[str, Any] = {"prompt": prompt, "intent": clean_intent(body.get("intent"))}
+        for key in ("pieces", "motion", "say", "sound"):
+            if isinstance(body.get(key), str):
+                payload[key] = body[key]
+        if isinstance(body.get("video"), str) and body["video"]:
+            payload["video"] = body["video"]
+        elif isinstance(body.get("frames"), list):
+            payload["frames"] = [f for f in body["frames"] if isinstance(f, str)]
+        from flat2d.optional import model_loaded
+
+        plan = drawjob.plan_for(kind, loaded=drop or model_loaded(), steps=steps, count=count, drop=drop)
+        job_id = uuid.uuid4().hex[:8]
+        spec = {
+            "job_id": job_id,
+            "kind": kind,
+            "state": "running",
+            "stem": stem,
+            "prompt": prompt,
+            "steps": steps,
+            "revise": bool(body.get("revise")) and kind == "flat2d",
+            "source": "drop" if drop else None,
+            "backend": backend,
+            "count": count,
+            "log": str(stem_dir(self.root, stem) / "draw.log"),
+            "started": time.time(),
+            "finished": None,
+            "returncode": None,
+            "error": None,
+            "stage_times": {},
+            "preview_url": None,
+            "estimate_s": drawjob.estimate(self.root, backend, plan),
+            "stage_est": drawjob.stage_estimates(drawjob.read_times(self.root).get(backend), plan),
+            "result": {},
+        }
+        with self._lock:
+            if (self._job and self._job.get("state") == "running") or stem in self._checking or self._sync_draws:
+                raise RuntimeError("the factory is busy with another job")
+            # A fresh log before the job is visible, so the first /status never shows the last run's.
+            drawjob.fresh_log(Path(spec["log"]))
+            self._job = dict(spec)
+        threading.Thread(target=drawjob.run, args=(self, spec, payload), kwargs={"write_intent": write_intent},
+                         daemon=False).start()
+        return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "kind": kind,
+                "status_url": f"/status/{job_id}"}
+
+    def sync_draw(self, on: bool) -> None:
+        """A plain POST /2d/generate or /2d/idea began (True) or ended (False). Raises when a job runs."""
+        with self._lock:
+            if on:
+                if self._job and self._job.get("state") == "running":
+                    raise RuntimeError("the factory is busy with another job")
+                self._sync_draws += 1
+            else:
+                self._sync_draws = max(0, self._sync_draws - 1)
+
+    def start_rig(self, stem: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Rig an asset in the background (scripts/rig.py): the same job slot, /status and /cancel as generate."""
+        stem = check_stem(stem)
+        if not stem_dir(self.root, stem).is_dir():
+            raise FileNotFoundError(f"no asset {stem!r}")
+        argv = [str(self.python), str(self.root / "scripts" / "rig.py"), "--stem", stem]
+        cls = str(body.get("class") or "")
+        if cls:
+            if cls not in RIG_CLASSES:
+                raise ValueError(f"class must be one of {', '.join(RIG_CLASSES)}")
+            argv += ["--class", cls]
+        clips = body.get("clips")
+        if isinstance(clips, list) and clips:
+            argv += ["--clips", ",".join(str(c) for c in clips if re.fullmatch(r"[A-Za-z0-9 _-]{1,48}", str(c)))]
+        straighten = str(body.get("straighten") or "")
+        if straighten not in ("", "auto", "off"):
+            raise ValueError("straighten must be auto or off")
+        if straighten:
+            argv += ["--straighten", straighten]
+        job_id = uuid.uuid4().hex[:8]
+        log = stem_dir(self.root, stem) / "rig" / "rig.log"
+        spec = {"job_id": job_id, "kind": "rig", "state": "running", "stem": stem, "argv": argv, "log": str(log),
+                "started": time.time(), "returncode": None, "error": None}
+        with self._lock:
+            if (self._job and self._job.get("state") == "running") or stem in self._checking or self._sync_draws:
+                raise RuntimeError("the factory is busy with another job")
+            self._job = dict(spec)
+        threading.Thread(target=self._run_rig_job, args=(spec,), daemon=False).start()
+        return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "status_url": f"/status/{job_id}"}
+
+    def inspect_rig(self, stem: str) -> dict[str, Any]:
+        """Check the rig on disk again (rig/inspect.json, rig/summary.json), on the CPU, in seconds. A version saved
+        before the check is refreshed in place, so checking never makes a new version."""
+        stem = check_stem(stem)
+        folder = stem_dir(self.root, stem)
+        if not folder.is_dir():
+            raise FileNotFoundError(f"no asset {stem!r}")
+        info_path = folder / "rig" / "rig.json"
+        if not info_path.is_file():
+            raise ValueError("this asset has no rig yet")
+        try:
+            rigged = str(json.loads(info_path.read_text(encoding="utf-8")).get("rigged") or "rigged.glb")
+        except (OSError, ValueError):
+            raise ValueError("this version's rig/rig.json is unreadable; Re-rig instead") from None
+        for rel in ("rig/skinned_raw.glb", rigged, "rig/template_posed.glb"):
+            if not (folder / rel).is_file():
+                raise ValueError(f"this version is missing {rel}; Re-rig instead")
+        with self._lock:
+            if (self._job and self._job.get("state") == "running") or stem in self._checking:
+                raise RuntimeError("the factory is busy with another job")
+            self._checking.add(stem)
+        try:
+            entry = flow.read_manifest(folder)["stages"]["rig"]
+            live = flow.stage_files(folder, "rig")
+            found = flow.marks(folder, "rig", live)
+            take = next((t for t in entry["takes"] if t.get("print") in found), None)
+            before = flow.fingerprint(folder, flow.defining("rig", live))
+            import rig_inspect
+
+            bundle = rig_inspect.rebuild(folder)
+            # Only refresh the version if the rig on disk is still that version's.
+            if take is not None and flow.fingerprint(folder, flow.defining("rig", flow.stage_files(folder, "rig"))) == before:
+                flow.resave(self.root, stem, "rig", str(take["id"]))
+            else:
+                take = None
+        finally:
+            with self._lock:
+                self._checking.discard(stem)
+        return {"ok": True, "stem": stem, "take": take["id"] if take else None, "checks": bundle["checks"],
+                "summary": bundle["summary"]}
+
+    def _run_rig_job(self, spec: dict[str, Any]) -> None:
+        log = Path(spec["log"])
+        try:
+            if stem_dir(self.root, spec["stem"]).is_dir():
+                autosave(self.root, spec["stem"], ("rig",))
+            log.parent.mkdir(parents=True, exist_ok=True)
+            rc = -signal.SIGTERM
+            if not (self._snapshot() or {}).get("cancel"):
+                with log.open("w", encoding="utf-8") as fh:
+                    proc = subprocess.Popen(spec["argv"], cwd=str(self.root), stdout=fh, stderr=subprocess.STDOUT,
+                                            text=True, start_new_session=True, env=rig_env(self.root))
+                    with self._lock:
+                        if self._job and self._job.get("job_id") == spec["job_id"]:
+                            self._job["pid"] = proc.pid
+                    rc = proc.wait()
+            cancelled = bool((self._snapshot() or {}).get("cancel"))
+            ok = rc == 0 and (stem_dir(self.root, spec["stem"]) / "rigged.glb").is_file()
+            err = None
+            if cancelled:
+                state, err = "cancelled", "Cancelled"
+            elif ok:
+                state = "ok"
+                autosave(self.root, spec["stem"], ("rig",))
+            else:
+                state = "error"
+                text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+                lines = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("rig:") or "Error" in ln]
+                err = (lines[-1][4:].strip() if lines and lines[-1].startswith("rig:") else (lines[-1] if lines else f"rig exited {rc}"))[:400]
+            with self._lock:
+                if self._job and self._job.get("job_id") == spec["job_id"]:
+                    self._job.update({"state": state, "returncode": rc, "finished": time.time(), "error": err})
+        except Exception as e:
+            traceback.print_exc()
+            with self._lock:
+                if self._job and self._job.get("job_id") == spec["job_id"]:
+                    self._job.update({"state": "error", "error": str(e), "finished": time.time()})
 
     def _run_generate_sh(self, spec: dict[str, Any]) -> int:
         log_path = stem_dir(self.root, spec["stem"]) / "generate.log"
@@ -639,6 +873,43 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
         path = path.rstrip("/")
     parts = [p for p in path.split("/") if p]
 
+    # A 2D draw as a job (flat2d/drawjob.py). Not a FLAT_WRITES action: the runner saves its own takes.
+    if method == "POST" and path == "/2d/draw":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.start_flat(raw if isinstance(raw, dict) else {}), 202)
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except (ValueError, FileNotFoundError) as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+    if method == "GET" and len(parts) == 3 and parts[0] == "2d" and parts[2] == "drawing":
+        try:
+            drawing = stem_dir(factory.root, check_stem(parts[1])) / "flat" / "drawing.jpg"
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        try:
+            return 200, drawing.read_bytes(), "image/jpeg"
+        except OSError:
+            return _json_bytes({"ok": False, "error": "no drawing"}, 404)
+    # The plain draws wait while any job runs, and a job waits for them: they share the model's hook.
+    sync_draw = method == "POST" and path in ("/2d/generate", "/2d/idea")
+    if sync_draw:
+        try:
+            factory.sync_draw(True)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "busy": True, "error": str(e)}, 409)
+    try:
+        return _dispatch(factory, method, path, parts, query, body)
+    finally:
+        if sync_draw:
+            factory.sync_draw(False)
+
+
+def _dispatch(
+    factory: Factory, method: str, path: str, parts: list[str], query: dict[str, list[str]], body: bytes
+) -> tuple[int, bytes, str]:
     # 2D writes save a take before (so nothing on disk is lost) and after (so the result is one).
     flat_stem = None
     if method == "POST" and len(parts) == 2 and parts[0] == "2d" and parts[1] in FLAT_WRITES:
@@ -646,6 +917,9 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             flat_stem = check_stem(str(json.loads(body.decode("utf-8") or "{}").get("stem") or ""))
         except (ValueError, AttributeError):
             flat_stem = None
+        # A running job (a draw, its steps, a rig) owns the asset: a write now would race it.
+        if flat_stem and factory.writing(flat_stem):
+            return _json_bytes({"ok": False, "busy": True, "error": "a job is writing this asset"}, 409)
         if flat_stem and stem_dir(factory.root, flat_stem).is_dir():
             autosave(factory.root, flat_stem, FLAT_WRITES[parts[1]])
     flat = handle_flat2d(factory.root, method, path, body)
@@ -688,6 +962,8 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
                     "GET /status/<job_id>",
                     "POST /cancel/<job_id>",
                     "POST /intent/<stem>",
+                    "POST /rig/<stem>",
+                    "POST /rig/<stem>/inspect",
                     "GET /glb/<stem>",
                     "GET /stack/<stem>",
                     "POST /stack/<stem>",
@@ -700,6 +976,8 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
                     "POST /paint/stack",
                     "POST /paint/mesh",
                     "GET /2d/status",
+                    "POST /2d/draw",
+                    "GET /2d/<stem>/drawing",
                     "POST /2d/drop",
                     "POST /2d/split",
                     "POST /2d/save",
@@ -902,6 +1180,32 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             traceback.print_exc()
             return _json_bytes({"ok": False, "error": str(e)}, 500)
 
+    if method == "POST" and len(parts) == 3 and parts[0] == "rig" and parts[2] == "inspect":
+        try:
+            return _json_bytes(factory.inspect_rig(parts[1]))
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+        except Exception as e:
+            traceback.print_exc()
+            return _json_bytes({"ok": False, "error": f"couldn't check this rig: {e}"}, 500)
+
+    if method == "POST" and len(parts) == 2 and parts[0] == "rig":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.start_rig(parts[1], raw if isinstance(raw, dict) else {}), 202)
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+
     if method == "POST" and len(parts) == 2 and parts[0] == "cancel":
         result = factory.cancel(parts[1])
         return _json_bytes(result, 200 if result.get("ok") else 404)
@@ -1037,7 +1341,7 @@ def serve(host: str, port: int, root: Path, log_path: Path | None = None) -> Non
         f"factory_http listening http://{host}:{port}\n"
         f"  python={health['python']}\n"
         f"  gpu={health['gpu']}\n"
-        f"  GET /health  GET /inspect/<stem>  POST /generate  GET /status  GET /glb/<stem>\n"
+        f"  GET /health  GET /inspect/<stem>  POST /generate  GET /status  GET /glb/<stem>  POST /2d/draw\n"
     )
     sys.stdout.write(banner)
     sys.stdout.flush()
