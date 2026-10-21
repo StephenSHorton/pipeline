@@ -31,9 +31,9 @@ come out as busts (the game puts them on simple bodies).
 
 
 ```bash
-scripts/generate.sh --image in/mlg/cow.jpg        --quality psx --stem mlg-cow        --facing right  --psx-height 58 --psx-name cow
-scripts/generate.sh --image in/mlg/farmer_hat.jpg --quality psx --stem mlg-farmer_hat --facing camera --psx-height 30 --psx-name farmer_hat
-scripts/generate.sh --image in/mlg/farmer_cap.jpg --quality psx --stem mlg-farmer_cap --facing camera --psx-height 30 --psx-name farmer_cap
+scripts/generate.sh --image in/mlg/cow.jpg        --quality psx --stem mlg-cow        --facing right  --psx-height 58 --psx-up y --psx-name cow
+scripts/generate.sh --image in/mlg/farmer_hat.jpg --quality psx --stem mlg-farmer_hat --facing camera --psx-height 30 --psx-up y --psx-name farmer_hat
+scripts/generate.sh --image in/mlg/farmer_cap.jpg --quality psx --stem mlg-farmer_cap --facing camera --psx-height 30 --psx-up y --psx-name farmer_cap
 for s in cow farmer_hat farmer_cap; do .venv/bin/python scripts/export_asset.py --stem mlg-$s; done
 ```
 
@@ -46,8 +46,10 @@ About 3 minutes each on an M-series Mac. What `--quality psx` does:
    reads from both sides. The top and the two ends are still Hunyuan's.
 3. `psx_lowpoly.py` decimates to `--psx-faces` (1200), unwraps again, re-bakes the photo bake onto the low mesh,
    crunches it to `--psx-atlas` (256) px at 15-bit colour, and writes:
-   - `out/<stem>/psx/<name>.obj` + `.mtl` + `.png`: flat-shaded, Z up, the subject looking down +X, `--psx-height`
-     units tall (s&box: inches), feet on 0. `--psx-up y` keeps glTF axes instead.
+   - `out/<stem>/psx/<name>.obj` + `.mtl` + `.png`: flat-shaded, `--psx-height` units tall (s&box: inches), feet
+     on 0. `--psx-up y` (used above) keeps glTF axes, Y up with the subject looking down +Z, which is what s&box's
+     .obj importer wants: it converts glTF axes to Source itself. The default `--psx-up z` (Z up, looking down +X)
+     gets converted twice and lands on its side unless it is imported with `import_rotation [-90 0 -90]`.
    - `out/<stem>/psx.glb`: the same model in glTF axes (Y up, +Z front, metres) with a nearest sampler.
    - `out/<stem>/psx/psx.json`: budget, axes, size.
 
@@ -68,12 +70,13 @@ The PSX LOD shows with nearest sampling and no tone mapping; Pixel at Px 3 to 4 
 ```json
 "psx": {
   "file": "3d/psx.glb", "obj": "3d/psx/cow.obj", "mtl": "3d/psx/cow.mtl", "texture": "3d/psx/cow.png",
-  "axes": {"obj": "z-up, +x front", "glb": "y-up, +z front (glTF), metres"},
-  "triangles": 1198, "atlas": 256, "height": 58.0, "size": [87.4, 31.2, 57.9], "sampling": "nearest, no mips"
+  "axes": {"obj": "y-up, +z front (glTF)", "glb": "y-up, +z front (glTF), metres"},
+  "triangles": 1198, "atlas": 256, "height": 58.0, "size": [31.2, 57.9, 87.4], "sampling": "nearest, no mips"
 }
 ```
 
 `3d.model` is the full-detail photo bake (`textured_photo.glb`), not Hunyuan's paint.
 
-s&box imports the `.obj` (right-click > Create Model). Give it a material on `shaders/psx.shader` with the png as
+s&box imports the `.obj` (right-click > Create Model); a `--psx-up y` file needs no import rotation, and
+`psx.json` `obj_axes` says which axes a file uses. Give it a material on `shaders/psx.shader` with the png as
 `TextureColor` (see mlg-farming's `materials/psx/*.vmat`).
