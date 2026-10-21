@@ -47,9 +47,9 @@ About 3 minutes each on an M-series Mac. What `--quality psx` does:
 3. `psx_lowpoly.py` decimates to `--psx-faces` (1200), unwraps again, re-bakes the photo bake onto the low mesh,
    crunches it to `--psx-atlas` (256) px at 15-bit colour, and writes:
    - `out/<stem>/psx/<name>.obj` + `.mtl` + `.png`: flat-shaded, `--psx-height` units tall (s&box: inches), feet
-     on 0. `--psx-up y` (used above) keeps glTF axes, Y up with the subject looking down +Z, which is what s&box's
-     .obj importer wants: it converts glTF axes to Source itself. The default `--psx-up z` (Z up, looking down +X)
-     gets converted twice and lands on its side unless it is imported with `import_rotation [-90 0 -90]`.
+     on 0. `--psx-up y` (the default) keeps glTF axes, Y up with the subject looking down +Z, which is what s&box's
+     .obj importer wants: it converts glTF axes to Source itself. `--psx-up z` (Z up, looking down +X) gets
+     converted twice and lands on its side unless it is imported with `import_rotation [-90 0 -90]`.
    - `out/<stem>/psx.glb`: the same model in glTF axes (Y up, +Z front, metres) with a nearest sampler.
    - `out/<stem>/psx/psx.json`: budget, axes, size.
 

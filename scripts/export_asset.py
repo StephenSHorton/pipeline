@@ -14,7 +14,7 @@ are the ones the stages already wrote.
       2d/voices/        spoken line per piece
       stack/            sheet.png (layers bottom to top), stack.json, preview.png
       3d/               model.glb, game.glb, proxy.glb, pixel.glb, rigged.glb, psx.glb
-      3d/psx/           <name>.obj + .mtl + .png: the PS1 low-poly (Z up, +X front unless psx.axes says)
+      3d/psx/           <name>.obj + .mtl + .png: the PS1 low-poly (Y up, +Z front unless psx.axes says)
       3d/rig/           <name>.fbx (+ .png): the rigged model with every clip, for s&box ModelDoc
 
 Engine writers (a Godot scene, a Unity prefab) can read asset.json later.

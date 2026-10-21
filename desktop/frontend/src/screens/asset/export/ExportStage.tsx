@@ -201,7 +201,7 @@ function PsxHero({ card: p, src }: { card: PsxCard; src: string }) {
             Show in Finder and copy <code>3d/psx/</code> into your project's Assets folder.
           </li>
           <li>
-            Right-click <b>{p.name}.obj</b> → <b>Create Model</b>. It is already in inches, Z up, facing +X.
+            Right-click <b>{p.name}.obj</b> → <b>Create Model</b>. {p.importNote}
           </li>
           <li>
             Give it a material on <b>psx.shader</b> with <b>{p.name}.png</b> as TextureColor, point filtering, no mips.

@@ -2,7 +2,7 @@
 """PS1 budget pass: a photo-baked GLB cut down to a low-poly, flat-shaded model with a tiny crunched atlas.
 
     .venv/bin/python scripts/psx_lowpoly.py out/<stem>/textured_photo.glb --out out/<stem>/psx --name cow \
-        --height 58 [--facing right] [--faces 1200] [--atlas 256] [--yaw 0] [--up z] [--glb out/<stem>/psx.glb]
+        --height 58 [--facing right] [--faces 1200] [--atlas 256] [--yaw 0] [--up y] [--glb out/<stem>/psx.glb]
 
 What a PS1 artist did by hand: decimate the detailed mesh to --faces, unwrap again (xatlas) and re-bake the
 texture from the detailed mesh onto the low one (each texel takes the colour of the closest point on the
@@ -14,10 +14,10 @@ normals, glTF axes, metres) for the viewer and engines that take glTF.
 
 Axes. Hunyuan's +Z is the side the photo saw. --facing says where the subject looks in the photo: camera (a
 portrait, the default), right or left (side-on, like the cow), away. The model is turned so the subject looks
-down glTF +Z. The .obj then follows --up: z (default) is Z up with that front turned to +X (Source axes); y keeps
-glTF axes (Y up, +Z front), which is what s&box's .obj importer wants: it converts glTF axes to Source itself, so a
-Z-up file lands on its side unless it is rotated at import. Units are inches either way (1 unit = 1 inch);
---height is in .obj units, feet on 0, centred.
+down glTF +Z. The .obj then follows --up: y (default) keeps glTF axes (Y up, +Z front), which is what s&box's .obj
+importer wants: it converts glTF axes to Source itself. z is Z up with that front turned to +X (Source axes), for
+tools that take Source axes as they are; s&box turns such a file a second time and it lands on its side unless it
+is rotated at import. Units are inches either way (1 unit = 1 inch); --height is in .obj units, feet on 0, centred.
 
 Facing gate. After the model is placed (head down +Z by --facing), facing.check_mesh votes on where the head
 really is: the toes, the narrow end and a red comb (rig_fit.geometric_cues) plus the vision model on four textured
@@ -330,7 +330,7 @@ def main() -> int:
     ap.add_argument("--faces", type=int, default=1200, help="triangle budget (PS1 props ran a few hundred to ~1.5k)")
     ap.add_argument("--atlas", type=int, default=256, help="texture size; the PS1 topped out at 256")
     ap.add_argument("--yaw", type=float, default=0, help="extra turn about the up axis, degrees")
-    ap.add_argument("--up", choices=("z", "y"), default="z", help=".obj axes: z = Z up, +X front (Source); y = glTF, Y up, +Z front (s&box)")
+    ap.add_argument("--up", choices=("z", "y"), default="y", help=".obj axes: y = glTF, Y up, +Z front (s&box); z = Z up, +X front (Source)")
     ap.add_argument("--glb", dest="glb_out", type=Path, default=None, help="also write the model as a GLB here")
     ap.add_argument("--facing-source", choices=("drawn", "detected", "user", "cues"), default=None,
                     help="where --facing came from (recorded in psx.json)")

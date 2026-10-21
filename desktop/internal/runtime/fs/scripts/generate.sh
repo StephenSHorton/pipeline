@@ -31,7 +31,7 @@ FACING_SET=0
 PSX_HEIGHT=48
 PSX_FACES=1200
 PSX_ATLAS=256
-PSX_UP="z"
+PSX_UP="y"
 PSX_NAME=""
 NO_PICTURE="3D needs a picture. Draw or add one first."
 

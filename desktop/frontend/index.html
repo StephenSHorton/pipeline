@@ -3498,7 +3498,7 @@
           <strong>Into s&amp;box</strong>
           <ol>
             <li>Show in Finder and copy <code>3d/psx/</code> into your project's Assets folder.</li>
-            <li>Right-click <b>${esc(name)}.obj</b> → <b>Create Model</b>. It is already in inches, Z up, facing +X.</li>
+            <li>Right-click <b>${esc(name)}.obj</b> → <b>Create Model</b>. ${/^y-up/.test(axes) ? "It is already in inches, Y up, facing +Z: s&amp;box turns it upright itself." : "It is in inches, Z up, facing +X: set its import rotation to -90 0 -90 or it lands on its side."}</li>
             <li>Give it a material on <b>psx.shader</b> with <b>${esc(name)}.png</b> as TextureColor, point filtering, no mips.</li>
           </ol>
         </div>

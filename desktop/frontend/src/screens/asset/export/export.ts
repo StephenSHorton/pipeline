@@ -116,6 +116,8 @@ export interface PsxCard {
   height: string;
   size: string;
   axes: string;
+  /** The Create Model step's last sentence: what the importer does with these axes (psxImportNote). */
+  importNote: string;
 }
 
 export interface RigCard {
@@ -206,7 +208,16 @@ export function psxCard(p: ExportPsx): PsxCard {
     height: String(p.height || ""),
     size: Array.isArray(p.size) ? p.size.map((n) => Math.round(n)).join(" × ") : "",
     axes: p.axes?.obj || "z-up, +x front",
+    importNote: psxImportNote(p.axes?.obj || "z-up, +x front"),
   };
+}
+
+/** s&box's .obj importer reads glTF axes and turns them to Source itself, so a y-up file needs nothing and a z-up
+ * one (the old default, and what a psx.json with no axes was made with) is turned twice unless rotated at import. */
+export function psxImportNote(axes: string): string {
+  return /^y-up/.test(axes)
+    ? "It is already in inches, Y up, facing +Z: s&box turns it upright itself."
+    : "It is in inches, Z up, facing +X: set its import rotation to -90 0 -90 or it lands on its side.";
 }
 
 export function rigCard(r: ExportRigged): RigCard {

@@ -8,6 +8,7 @@ import {
   LEAD_EMPTY,
   leadText,
   psxCard,
+  psxImportNote,
   rigCard,
   type ExportDoc,
   type PlainCard,
@@ -158,6 +159,11 @@ describe("hero cards", () => {
       axes: "z-up, +x front",
     });
     expect(psxCard({ file: "3d/psx.glb" })).toMatchObject({ name: "model", atlas: "256", size: "", axes: "z-up, +x front", height: "" });
+  });
+  it("PS1 import step follows the obj axes: y-up needs no rotation, z-up does", () => {
+    expect(psxImportNote("y-up, +z front (glTF)")).toBe("It is already in inches, Y up, facing +Z: s&box turns it upright itself.");
+    expect(psxImportNote("z-up, +x front")).toBe("It is in inches, Z up, facing +X: set its import rotation to -90 0 -90 or it lands on its side.");
+    expect(psxCard({ file: "3d/psx.glb", axes: { obj: "y-up, +z front (glTF)" } }).importNote).toMatch(/^It is already in inches, Y up/);
   });
   it("Rigged facts: body plan name, basenames, clip names with spaces", () => {
     expect(rigCard(chicken["3d"]!.rigged!)).toEqual({
