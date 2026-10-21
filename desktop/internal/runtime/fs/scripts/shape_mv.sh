@@ -1,83 +1,96 @@
 #!/usr/bin/env bash
-# Multi-view Hunyuan3D-DiT-v2-mv shape if a backend is present.
+# Multi-view shape: Hunyuan3D-2mv (turbo by default) through vendor/hunyuan3d-2 on MPS.
 #
-# Hunyuan3D-MLX lists MPS for v2-mv but MLX-native 2mv is still "under construction";
-# hy3d shape is single-image mini only.
-# This wrapper tries, in order:
-#   1. vendor/hunyuan3d-mlx  `python main.py shape --shape-preset mv`
-#   2. vendor/hunyuan3d-2    PyTorch MPS
-# and otherwise exits 2 so generate.sh can fall back to single-image mini.
+# usage: shape_mv.sh <stem> [out.glb]
+# Views come from out/<stem>/views/lifted/{front,left,back,right}.png (Hunyuan names: 'left' = the subject's
+# left side, nose toward image left; 'right' = nose toward image right). At least three are needed.
+# Env: SHAPE_OCTREE (256), SHAPE_SEED (0), SHAPE_MV_MODEL turbo|full (turbo), SHAPE_MV_STEPS (turbo 5, full 30).
+# Weights load from $ROOT/weights/tencent/... (HY3DGEN_MODELS) with the hub offline: no downloads mid-job
+# (scripts/bootstrap.sh fetches them).
+# On failure prints one line 'SHAPE_MV_FAIL <reason>' and exits non-zero; generate.sh then takes the loud
+# single-image path.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=_common.sh
-source "$ROOT/scripts/_common.sh"
 STEM="${1:?usage: shape_mv.sh <stem> [out.glb]}"
 OUT_GLB="${2:-$ROOT/out/$STEM/mesh_mv.glb}"
 VIEWS="$ROOT/out/$STEM/views/lifted"
-[[ -d "$VIEWS" ]] || { echo "shape_mv: missing $VIEWS" >&2; exit 2; }
 
-front="$VIEWS/front.png"
-left="$VIEWS/left.png"
-back="$VIEWS/back.png"
-for f in "$front" "$left" "$back"; do
-  [[ -f "$f" ]] || { echo "shape_mv: need front/left/back under $VIEWS (missing $(basename "$f"))" >&2; exit 2; }
+fail() { echo "SHAPE_MV_FAIL $*"; exit 2; }
+
+ARGS=()
+for v in front left back right; do
+  [[ -f "$VIEWS/$v.png" ]] && ARGS+=("$v=$VIEWS/$v.png")
 done
-
-DEVICE="mps"
-
-MLX="$ROOT/vendor/hunyuan3d-mlx"
-if [[ -f "$MLX/main.py" ]]; then
-  echo "shape_mv: Hunyuan3D-MLX --shape-preset mv"
-  (cd "$MLX" && uv run python main.py shape --shape-preset mv \
-      --front "$front" --left "$left" --back "$back" --output "$OUT_GLB") \
-    && { echo "SHAPE_MV_RESULT $OUT_GLB"; exit 0; }
-fi
+((${#ARGS[@]} >= 3)) || fail "missing_views: need 3+ of front/left/back/right under $VIEWS (have ${#ARGS[@]})"
 
 HY2="$ROOT/vendor/hunyuan3d-2"
-if [[ -f "$HY2/examples/shape_gen_multiview.py" ]]; then
-  PY="$(factory_python)"
-  [[ -f "$HY2/.venv/bin/python" ]] && PY="$HY2/.venv/bin/python"
-  echo "shape_mv: trying Hunyuan3D-2 on $DEVICE"
-  export PYTORCH_ENABLE_MPS_FALLBACK=1
-  "$PY" - <<PY
-from pathlib import Path
-from PIL import Image
-import os, sys
-sys.path.insert(0, "$HY2")
+PY="$HY2/.venv/bin/python"
+[[ -f "$HY2/hy3dgen/shapegen/pipelines.py" && -x "$PY" ]] || fail "no_backend: vendor/hunyuan3d-2 with its .venv is not installed"
+
+MODEL="${SHAPE_MV_MODEL:-turbo}"
+case "$MODEL" in
+  turbo) SUB="hunyuan3d-dit-v2-mv-turbo"; STEPS="${SHAPE_MV_STEPS:-5}" ;;
+  full) SUB="hunyuan3d-dit-v2-mv"; STEPS="${SHAPE_MV_STEPS:-30}" ;;
+  *) fail "bad_model: SHAPE_MV_MODEL=$MODEL (turbo|full)" ;;
+esac
+OCTREE="${SHAPE_OCTREE:-256}"
+SEED="${SHAPE_SEED:-0}"
+[[ -d "$ROOT/weights/tencent/Hunyuan3D-2mv/$SUB" ]] || fail "no_weights: weights/tencent/Hunyuan3D-2mv/$SUB (run scripts/bootstrap.sh)"
+
+export HY3DGEN_MODELS="$ROOT/weights"
+export HF_HUB_OFFLINE=1
+export PYTORCH_ENABLE_MPS_FALLBACK=1
+echo "shape_mv: Hunyuan3D-2mv $SUB fp16 mps steps=$STEPS octree=$OCTREE seed=$SEED views=${#ARGS[@]} flashvdm=mc"
+mkdir -p "$(dirname "$OUT_GLB")"
+set +e
+"$PY" - "$HY2" "$OUT_GLB" "$SUB" "$STEPS" "$OCTREE" "$SEED" "${ARGS[@]}" <<'PY'
+import sys, time
+
+hy2, out, sub, steps, octree, seed = sys.argv[1:7]
+views = dict(a.split("=", 1) for a in sys.argv[7:])
+sys.path.insert(0, hy2)
+
+
+def fail(reason):
+    print("SHAPE_MV_FAIL", reason, flush=True)
+    sys.exit(3)
+
+
 try:
-    from hy3dgen.shapegen.pipelines import Hunyuan3DDiTFlowMatchingPipeline
-except Exception as e:
-    print("shape_mv: hy3dgen import failed:", e)
-    sys.exit(2)
-device = "$DEVICE"
-print("shape_mv: loading tencent/Hunyuan3D-2mv hunyuan3d-dit-v2-mv-turbo on", device)
+    import torch
+    from PIL import Image
+    from hy3dgen.shapegen import DegenerateFaceRemover, FloaterRemover, Hunyuan3DDiTFlowMatchingPipeline
+except Exception as e:  # noqa: BLE001
+    fail(f"import: {e.__class__.__name__}: {e}")
+t0 = time.time()
 try:
     pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-        "tencent/Hunyuan3D-2mv",
-        subfolder="hunyuan3d-dit-v2-mv-turbo",
-        use_safetensors=True,
-        device=device,
-    )
-except Exception as e:
-    print("shape_mv: from_pretrained failed:", e)
-    sys.exit(2)
-images = {
-    "front": Image.open("$front").convert("RGBA"),
-    "left": Image.open("$left").convert("RGBA"),
-    "back": Image.open("$back").convert("RGBA"),
-}
+        "tencent/Hunyuan3D-2mv", subfolder=sub, variant="fp16", use_safetensors=True,
+        device="mps", dtype=torch.float16)
+    pipe.enable_flashvdm(mc_algo="mc")
+except Exception as e:  # noqa: BLE001
+    fail(f"load: {e.__class__.__name__}: {str(e)[:300]}")
+t1 = time.time()
 try:
-    mesh = pipe(image=images)[0]
-except TypeError:
-    mesh = pipe(image=images["front"], extra_view_images=images)[0]
-out = Path("$OUT_GLB")
-out.parent.mkdir(parents=True, exist_ok=True)
-mesh.export(str(out))
-print("SHAPE_MV_RESULT", out)
+    images = {k: Image.open(v).convert("RGBA") for k, v in views.items()}
+    mesh = pipe(image=images, num_inference_steps=int(steps), octree_resolution=int(octree), num_chunks=20000,
+                generator=torch.manual_seed(int(seed)), output_type="trimesh")[0]
+    mesh = FloaterRemover()(mesh)
+    mesh = DegenerateFaceRemover()(mesh)
+    if mesh is None or not len(mesh.faces):
+        fail("empty: the model returned no surface")
+    mesh.export(out)
+except SystemExit:
+    raise
+except Exception as e:  # noqa: BLE001
+    fail(f"run: {e.__class__.__name__}: {str(e)[:300]}")
+t2 = time.time()
+print(f"shape_mv: load {t1 - t0:.1f}s gen {t2 - t1:.1f}s faces {len(mesh.faces)} -> {out}", flush=True)
+print("SHAPE_MV_RESULT", out, flush=True)
 PY
-  exit $?
-fi
-
-echo "shape_mv: no Mac-runnable 2mv backend (need vendor/hunyuan3d-mlx or vendor/hunyuan3d-2)." >&2
-echo "shape_mv: hy3d shape remains single-image mini; extra views still bake in retexture." >&2
-exit 2
+rc=$?
+set -e
+# Exit 3: the python side printed its own SHAPE_MV_FAIL. Anything else non-zero is a crash (signal, OOM).
+[[ $rc -eq 3 ]] && exit 2
+[[ $rc -eq 0 ]] || fail "crash: exit $rc"
+[[ -s "$OUT_GLB" ]] || fail "no_output: $OUT_GLB was not written"

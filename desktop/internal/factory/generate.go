@@ -3,6 +3,7 @@ package factory
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,11 +13,14 @@ import (
 	"github.com/StephenSHorton/pipeline/desktop/internal/sidecar"
 )
 
+// NoPicture is the one message for 3D asked for without a picture (scripts/factory_env.py NO_PICTURE).
+const NoPicture = "3D needs a picture. Draw or add one first."
+
 // StartGenerate posts the generate job to the in-process factory sidecar.
 // The image path is a factory-relative path from SaveUpload (e.g. in/foo.jpg).
 func (s *Service) StartGenerate(image, stem, quality, poly string) (map[string]any, error) {
 	if image == "" {
-		return nil, fmt.Errorf("image path required")
+		return nil, errors.New(NoPicture)
 	}
 	if quality == "" {
 		quality = "stack"

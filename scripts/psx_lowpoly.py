@@ -298,6 +298,25 @@ def facing_gate(verts, faces, uvs, png, name: str, cls: str, declared: str, work
     return got
 
 
+def degrade(stage: str, code: str, message: str) -> dict:
+    """Print 'DEGRADED <stage> <code>: <message>' and record it in $DEGRADED_JSON when generate.sh sets it."""
+    row = {"stage": stage, "code": code, "message": message}
+    print(f"DEGRADED {stage} {code}: {message}", flush=True)
+    path = os.environ.get("DEGRADED_JSON")
+    if path:
+        p = Path(path)
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            data = {}
+        rows = data.get("degraded") or []
+        if row not in rows:
+            rows.append(row)
+        data["degraded"] = rows
+        p.write_text(json.dumps(data, indent=2) + "\n")
+    return row
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("src", type=Path, help="textured GLB (textured_photo.glb, textured.glb)")
@@ -329,6 +348,7 @@ def main() -> int:
     gate = args.facing_check or ("off" if (os.environ.get("PSX_FACING_CHECK") or "").lower() in {"off", "0", "no"}
                                  else "auto")
     facing_check: dict = {"skipped": True} if gate == "off" else {}
+    degraded: list[dict] = []
     drawn = drawn_facing(args.src)
     canonical = bool(args.canonical or (drawn.get("canonical") and drawn.get("facing") == args.facing))
     source = args.facing_source or (drawn.get("facing_source") if drawn.get("facing") == args.facing else None)
@@ -356,6 +376,8 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001 - the check is advisory; the pass still writes the model
             facing_check = {"error": f"{e.__class__.__name__}: {e}"}
             print(f"psx_lowpoly: facing check failed: {e}", file=sys.stderr)
+            degraded.append(degrade("psx", "facing_check",
+                                    f"facing check failed ({e.__class__.__name__}: {e}); kept the declared facing"))
 
     obj = args.out / f"{args.name}.obj"
     tex = args.out / f"{args.name}.png"
@@ -381,6 +403,7 @@ def main() -> int:
         "facing_source": source,
         "canonical": canonical,
         "facing_check": facing_check,
+        "degraded": degraded,
         "size": [round(float(x), 1) for x in size.max(0) - size.min(0)],
     }
     (args.out / "psx.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

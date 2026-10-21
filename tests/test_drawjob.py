@@ -22,6 +22,30 @@ sys.path.insert(0, str(ROOT / "tests"))
 from test_factory_http import http_bytes, http_json  # noqa: E402
 
 
+def real_jpeg(path: Path) -> None:
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), (200, 40, 40)).save(path, format="JPEG")
+
+
+class LabelTests(unittest.TestCase):
+    def test_draw_stage_names_never_collide_with_rig_or_generate_labels(self) -> None:
+        # factory_http merges drawjob.LABELS after the generate and rig labels: a shared name relabels theirs.
+        theirs = {"isolate", "shape", "reduce", "paint", "retexture", "psx", "lods", "inspect", "stack", "preview",
+                  "classify", "rest", "pose", "skin", "clean", "clips", "check", "fbx"}
+        self.assertEqual(set(drawjob.LABELS) & theirs, set())
+        self.assertEqual(factory_http.STAGE_LABELS["check"], "Check the rig")
+        self.assertIn("views_split", drawjob.LABELS)
+        self.assertIn("views_check", drawjob.LABELS)
+        self.assertEqual(factory_http.STAGE_LABELS["views_check"], drawjob.LABELS["views_check"])
+
+    def test_a_sheet_plan(self) -> None:
+        self.assertEqual(drawjob.plan_for("flat2d", loaded=False, views=True),
+                         ["load", "draw", "views_split", "views_check"])
+        self.assertEqual(drawjob.plan_for("flat2d", loaded=True), ["draw", "ground"])
+
+
 class DrawJobTests(unittest.TestCase):
     STEP = "0.02"
 
@@ -78,6 +102,34 @@ class DrawJobTests(unittest.TestCase):
 
     def keys(self, st: dict) -> list[str]:
         return [s["key"] for s in (st.get("progress") or {}).get("stages") or []]
+
+    def test_a_3d_bound_draw_is_a_four_view_sheet_in_its_own_stages(self) -> None:
+        import facing
+
+        with mock.patch.dict("os.environ", {"FLAT2D_SHEET": "1152x1152"}), mock.patch.object(
+            facing, "detect_image", return_value={"head": "right", "profile": True, "confidence": 0.9, "how": "vlm"}
+        ):
+            job = self.start({"kind": "flat2d", "stem": "hen", "prompt": "a chicken", "intent": {"output": "ps1"}})
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        self.assertEqual(self.keys(st), ["load", "draw", "views_split", "views_check"])
+        labels = {s["key"]: s["label"] for s in st["progress"]["stages"]}
+        self.assertEqual(labels["views_check"], "Check the views agree")
+        r = st["result"]
+        self.assertEqual((r["views"], r["sheet"], r["consistent"], r["canonical_view"]),
+                         ("flat/views.json", "flat/sheet.png", True, "right"))
+        flat = self.root / "out" / "hen" / "flat"
+        for name in ("sheet.png", "views.json", "views/front.png", "views/right.png", "views/back.png",
+                     "views/left.png", "source.png", "key.json"):
+            self.assertTrue((flat / name).is_file(), name)
+        import flow
+
+        take = flow.read_manifest(self.root / "out" / "hen")["stages"]["concept"]["takes"][-1]
+        for name in ("flat/sheet.png", "flat/views.json", "flat/views/right.png"):
+            self.assertIn(name, take["files"])
+        times = json.loads((self.root / "out" / "draw-times.json").read_text())
+        for key in ("views_split", "views_check", "attempt"):
+            self.assertIn(key, times["stub"])
 
     def test_draw_job_runs_stages_saves_still_and_remembers_times(self) -> None:
         first = self.start({"kind": "flat2d", "stem": "lamp", "prompt": "a brass lamp", "intent": {"output": "sprite"}})
@@ -208,7 +260,7 @@ class DrawJobTests(unittest.TestCase):
 
     def test_one_job_at_a_time(self) -> None:
         (self.root / "out" / "radio").mkdir()
-        (self.root / "in" / "radio.jpg").write_bytes(b"jpeg")
+        real_jpeg(self.root / "in" / "radio.jpg")  # a real picture: /generate refuses anything else
         with mock.patch.dict("os.environ", {"FLAT2D_STUB_STEP": "0.3"}):
             job = self.start({"kind": "flat2d", "stem": "busy", "prompt": "a busy thing"})
             self.assertTrue(self.factory.health()["busy"])
@@ -334,6 +386,18 @@ class DrawJobTests(unittest.TestCase):
         with self.factory._lock:
             self.factory._job["state"] = "ok"
 
+    def test_views_reaches_the_draw_payload(self) -> None:
+        seen: list[dict] = []
+        with mock.patch.object(drawjob, "run", lambda factory, spec, payload, **k: seen.append(payload)):
+            self.factory.start_flat({"kind": "flat2d", "stem": "lamp", "prompt": "a lamp", "views": 1,
+                                     "intent": {"output": "ps1"}})
+            with self.factory._lock:
+                self.factory._job["state"] = "ok"
+            with self.assertRaises(ValueError):
+                self.factory.start_flat({"kind": "flat2d", "stem": "lamp", "prompt": "a lamp", "views": 3})
+        self.assertEqual(seen[0]["views"], 1)
+        self.assertFalse(optional.wants_views(seen[0]["intent"], seen[0]["views"]))
+
     def test_2d_writes_wait_for_the_job_on_that_asset(self) -> None:
         with mock.patch.dict("os.environ", {"FLAT2D_STUB_STEP": "0.3"}):
             job = self.start({"kind": "flat2d", "stem": "lamp", "prompt": "a lamp"})
@@ -348,7 +412,7 @@ class DrawJobTests(unittest.TestCase):
 
     def test_a_plain_draw_holds_off_generate_and_rig(self) -> None:
         (self.root / "out" / "radio").mkdir()
-        (self.root / "in" / "radio.jpg").write_bytes(b"jpeg")
+        real_jpeg(self.root / "in" / "radio.jpg")  # a real picture: /generate refuses anything else
         self.factory.sync_draw(True)
         try:
             status, body = http_json(self.base + "/generate", method="POST", data={"image": "in/radio.jpg"})

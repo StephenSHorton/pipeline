@@ -290,7 +290,9 @@ def gate(clip: dict, P, J, W, H, skel=None, faces=None, plan=None, *, ctx: gaits
         put("head_hold_drift_H", drift / H, G["head_hold_drift_H"], drift / H <= G["head_hold_drift_H"])
     if "beak_hold" in track.info and ctx.tip:
         hm = np.asarray(track.info["beak_hold"], bool)
-        gy = (pos[:, sk.i(ctx.tip), 1] - ctx.floor) / H
+        # the head's lowest skin when the generator measured it (a rooster's wattles hang below the beak tip)
+        low = track.info.get("beak_low")
+        gy = ((np.minimum(pos[:, sk.i(ctx.tip), 1], low) if low is not None else pos[:, sk.i(ctx.tip), 1]) - ctx.floor) / H
         lo_, hi_ = G["beak_gap_H"]
         per = []
         f = 0

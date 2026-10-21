@@ -2,6 +2,9 @@
 """Installed host must own factory_http and surface real start errors."""
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -108,7 +111,10 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn("Maximum fidelity", DESKTOP_HTML)
         self.assertIn("Keep fidelity, faster", DESKTOP_HTML)
         self.assertIn("Low-poly attempt", DESKTOP_HTML)
-        self.assertIn("~80k faces", DESKTOP_HTML)
+        # Medium is octree 256 then reduce_mesh.py, which only caps: "up to", never a promise of ~80k.
+        self.assertIn("up to 80k faces", DESKTOP_HTML)
+        self.assertNotIn("~80k faces", DESKTOP_HTML)
+        self.assertIn("Shape at octree 256, then reduced to at most 80,000 faces.", DESKTOP_HTML)
         self.assertIn("~2k faces", DESKTOP_HTML)
         self.assertNotIn("Mesh density", DESKTOP_HTML)
         self.assertNotIn("Proxy — ~2k faces", DESKTOP_HTML)
@@ -117,6 +123,7 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn('high) POLY="hero"', gen)
         self.assertIn('medium) POLY="lookdev"', gen)
         self.assertIn('low) POLY="proxy"', gen)
+        self.assertRegex(gen, r'lookdev\).*FACES="\$\{FACES:-80000\}"')
 
     def test_gen_cubbies_and_required_levers(self) -> None:
         self.assertIn("cubby-toggle", DESKTOP_HTML)
@@ -264,6 +271,99 @@ class DesktopShellTests(unittest.TestCase):
         for key in ("template", "built", "a2", "foot", "parts", "cshape", "slide", "loop_seam", "fbx"):
             self.assertRegex(inspect, rf"[{{ ,]{key}: \"(skeleton|skin|motion)\"")
         self.assertIn('seam: "skin"', inspect)  # seam stays the corner tears
+
+    def _fn(self, name: str) -> str:
+        """One top-level-in-the-module function's source, from 'function name(' to its closing '    }'."""
+        start = DESKTOP_HTML.index(f"    function {name}(")
+        return DESKTOP_HTML[start:DESKTOP_HTML.index("\n    }\n", start) + 6]
+
+    def _node(self, src: str) -> object:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed")
+        out = subprocess.run([node, "-e", src], capture_output=True, text=True, timeout=30, check=True)
+        return json.loads(out.stdout)
+
+    def test_degraded_is_one_plain_line_on_job_and_asset_cards(self) -> None:
+        # The job card: /status/<id> "degraded" is copied onto the job and shown as one line, in every state.
+        self.assertIn('<div class="job-degraded" id="job-degraded" role="status" hidden></div>', DESKTOP_HTML)
+        follow = DESKTOP_HTML[DESKTOP_HTML.index("async function followJob"):]
+        follow = follow[:follow.index("\n    }\n")]
+        self.assertIn('"source", "degraded"]', follow)
+        self.assertIn('setDegradedLine(document.getElementById("job-degraded"), degraded);', self._fn("showOverlay"))
+        draw = self._fn("drawJob")
+        self.assertEqual(draw.count("degraded: job.degraded"), 2)  # running, and error/cancelled
+        finish = DESKTOP_HTML[DESKTOP_HTML.index("async function finishJob"):]
+        finish = finish[:finish.index("\n    }\n")]
+        self.assertIn('state: "ok", degraded: job.degraded', finish)
+        self.assertIn("degradedLine(job.degraded)", finish)  # the ready toast says it too
+        flat = DESKTOP_HTML[DESKTOP_HTML.index("async function finishFlatJob"):]
+        flat = flat[:flat.index("\n    }\n")]
+        self.assertIn("degraded: job.degraded", flat)
+        # The asset card: inspect.json "degraded" for a model, fetched without holding up the list.
+        cards = DESKTOP_HTML[DESKTOP_HTML.index("async function refreshAssets"):]
+        cards = cards[:cards.index("\n    }\n")]
+        self.assertIn('warn.className = "card-degraded"', cards)
+        self.assertIn("/inspect.json?t=", cards)
+        self.assertIn("setDegradedLine(warn, doc.degraded)", cards)
+        self.assertIn("if (a.has_mesh)", cards)
+        # The line itself: the DEGRADED grammar without the prefix, nothing when there is nothing.
+        got = self._node(self._fn("degradedLine") + """
+            console.log(JSON.stringify([
+              degradedLine([{stage: "shape", code: "single_view", message: "one picture"},
+                            {stage: "rig", code: "clips_dropped", message: "Flap,Glide"}]),
+              degradedLine([]), degradedLine(undefined), degradedLine([{}]),
+              degradedLine([{stage: "views", code: "stale", message: ""}]),
+            ]));""")
+        self.assertEqual(got, [
+            "Degraded: shape single_view: one picture · rig clips_dropped: Flap,Glide",
+            "", "", "", "Degraded: views stale",
+        ])
+        # Display only: no views gallery, no views toggle, no redraw or suggestion UI came with it.
+        for absent in ("views-gallery", "gen-views", "views: 1", "sheet-gallery", "job-degraded-act", "card-degraded button"):
+            self.assertNotIn(absent, DESKTOP_HTML)
+
+    def test_shape_mv_tooltip_reads_the_probed_features(self) -> None:
+        self.assertIn("genStatus.title = `Factory: ${healthLabel(h)}${shapeMvNote(h.features)}`;", DESKTOP_HTML)
+        fn = self._fn("shapeMvNote")
+        got = self._node(fn + """
+            console.log(JSON.stringify([
+              shapeMvNote(undefined), shapeMvNote({}),
+              shapeMvNote({shape_mv: true, shape_mv_venv: true, shape_mv_weights: true}),
+              shapeMvNote({shape_mv: false, shape_mv_venv: false, shape_mv_weights: true}),
+              shapeMvNote({shape_mv: false, shape_mv_venv: true, shape_mv_weights: false}),
+              shapeMvNote({shape_mv: false, shape_mv_venv: false, shape_mv_weights: false}),
+            ]));""")
+        self.assertEqual(got[0], "")
+        self.assertEqual(got[1], "")
+        self.assertIn("is installed; it is used when a drawing's four views match it", got[2])
+        self.assertIn("its Python env is not installed", got[3])
+        self.assertIn("its weights are missing", got[4])
+        self.assertIn("its Python env and weights are missing", got[5])
+        for off in got[3:]:
+            self.assertIn("the shape comes from the first picture; extra views only photo-bake", off)
+        http = (ROOT / "scripts" / "factory_http.py").read_text(encoding="utf-8")
+        for key in ('"shape_mv":', '"shape_mv_venv":', '"shape_mv_weights":'):
+            self.assertIn(key, http)
+
+    def test_prompt_only_still_goes_to_ideas(self) -> None:
+        # Routing is unchanged: a prompt with no picture draws concepts on the Ideas grid; 3D always has a picture.
+        submit = DESKTOP_HTML[DESKTOP_HTML.index('genForm.addEventListener("submit"'):]
+        submit = submit[:submit.index("\n    });\n")]
+        ideas = submit.index("if (!hasPicture && typed) {\n        await startIdeas(typed, intent);\n        return;\n      }")
+        self.assertLess(submit.index('if (intent.output === "sprite")'), ideas)
+        self.assertLess(ideas, submit.index("await runJob({"))
+        self.assertIn("image: paths[0],", submit)
+        self.assertIn('setGenStatus("3D needs a picture. Draw or add one first.", "error");', submit)
+        start = DESKTOP_HTML[DESKTOP_HTML.index("async function startIdeas"):]
+        start = start[:start.index("\n    }\n")]
+        self.assertIn('{ kind: "ideas", stem, prompt, count: 4', start)
+        self.assertIn('{ path: "/2d/draw", kind: "ideas", title: "Drawing ideas" }', start)
+        route = self._fn("updateRoute")
+        self.assertIn("Draw <b>4 concept pictures</b> from your prompt first.", route)
+        self.assertIn('label = "Draw concepts";', route)
+        env = (ROOT / "scripts" / "factory_env.py").read_text(encoding="utf-8")
+        self.assertIn('NO_PICTURE = "3D needs a picture. Draw or add one first."', env)
 
     def test_viewer_fog_disabled(self) -> None:
         self.assertIn("scene.fog = null", DESKTOP_HTML)

@@ -102,7 +102,7 @@ class GenerateStillTests(unittest.TestCase):
             return seq.pop(0) if len(seq) > 1 else seq[0]
 
         with mock.patch.object(facing, "detect_image", side_effect=detect):
-            saved = optional.generate_still(self.root, "chick", prompt, intent=intent or {"output": "ps1"})
+            saved = optional.generate_still(self.root, "chick", prompt, intent=intent or {"output": "ps1"})  # views: 1
         return saved, calls
 
     def test_canonical_key(self) -> None:
@@ -157,12 +157,13 @@ class GenerateStillTests(unittest.TestCase):
         self.assertEqual(k["facing_check"]["how"], "not_canonical")
         self.assertIn("profile", k["facing_check"]["why"])
 
-    def test_vlm_unavailable_keeps_canonical(self) -> None:
+    def test_vlm_unavailable_is_never_a_pass(self) -> None:
         saved, calls = self.draw([{"head": None, "profile": None, "confidence": 0.0, "how": "unavailable",
                                    "why": "down"}])
         self.assertEqual(len(calls), 1)  # no redraws burned on a missing model
         k = self.key("chick")
-        self.assertEqual((k["canonical"], k["facing"], k["facing_check"]["how"]), (True, "right", "unchecked"))
+        self.assertEqual((k["canonical"], k["facing_check"]["how"]), (False, "unavailable"))
+        self.assertIn(("draw", "facing_unchecked"), [(d["stage"], d["code"]) for d in saved["degraded"]])
 
     def test_posed_idea_keeps_its_facing(self) -> None:
         from flat2d import ideas
@@ -236,11 +237,13 @@ class DrawJobCanonicalTests(unittest.TestCase):
         self.assertEqual((result["facing"], result["canonical"]), ("right", True))
 
     def test_mirrored_is_recorded_in_the_job(self) -> None:
+        # A four-view sheet (the default for a 3D-bound draw): a head-left right panel mirrors the views, no redraw.
         result = self.run_job([det("left")], {"output": "ps1"})
         self.assertEqual(result["facing_check"]["how"], "mirrored")
         self.assertTrue(any("mirrored" in n for n in result["notes"]))
         log = (self.root / "out" / "chicken-canon" / "draw.log").read_text()
-        self.assertIn("The head points the wrong way.", log)
+        self.assertIn("STAGE views_check", log)
+        self.assertNotIn("Drawing again", log)
         intent = json.loads((self.root / "out" / "chicken-canon" / "intent.json").read_text())
         self.assertEqual(intent["psx"]["facing"], "right")
 

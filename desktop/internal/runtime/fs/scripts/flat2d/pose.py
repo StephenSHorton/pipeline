@@ -120,3 +120,75 @@ def pose_for(intent: Any, prompt: str | None = None) -> str | None:
 
 def is_creature(intent: Any, prompt: str | None = None) -> bool:
     return pose_for(intent, prompt) is not None
+
+
+# ---------------------------------------------------------------- the four-view sheet (plan 1.1)
+
+# Panel order on every sheet, left to right (a 2x2 grid reads the same order, row by row).
+PANELS = ("front", "right", "back", "left")
+
+# The pose for a sheet: the same standard pose as CREATURE_POSE, without the one-view framing (centered, single
+# creature) and without any ground or baseline phrase: a drawn baseline is a full-width line the split must drop.
+SHEET_POSE = {
+    "avian": ("Standing upright on both legs, both legs straight down and visible, feet flat and slightly apart, "
+              "wings folded against the body, mouth closed, eye level, neutral relaxed rest pose, no motion."),
+    "quadruped": ("Standing square on all four legs, every leg straight and visible, feet flat, mouth closed, "
+                  "eye level, neutral relaxed rest pose, no motion."),
+    "creature": ("Standing with every leg straight down and visible, feet flat, mouth closed, eye level, neutral "
+                 "relaxed rest pose, no motion."),
+    "humanoid": ("Standing upright in an A-pose, arms straight and held 30° from the body, legs straight and "
+                 "slightly apart, feet flat, mouth closed, neutral relaxed expression, no motion."),
+}
+SHEET_FLOAT = "The object floats in the air in every view, upright, not standing on anything."
+SHEET_TAIL = ("Exactly four views, no more, {where}, each whole and separate, the same size, with wide empty gaps between "
+              "them. Plain flat uniform magenta #FF00FF background with no gradient, no vignette and no floor. Flat even "
+              "lighting. No shadow, no text, no labels, no borders.")
+# Where each panel sits, by layout. The wording "View n (where)" plus "turned to face RIGHT, its head at the right
+# and its tail at the left" is what made Qwen-Image-2512 draw the two profiles facing opposite ways (scratchpad
+# qmv/p2/ab.md); "head pointing toward the RIGHT edge" drew both profiles facing left.
+SHEET_WHERE = {"strip": ("in one row", "from left to right", ("", "", "", ""), "evenly spaced in one row"),
+               "grid": ("in a 2 by 2 grid, read row by row", "", (" (top left)", " (top right)", " (bottom left)",
+                                                               " (bottom right)"), "one in each quarter of the picture")}
+
+
+def sheet_views(kind: str | None) -> dict[str, str]:
+    """What each panel shows. A side-on creature's profiles say which way it faces (right panel: head toward the
+    RIGHT edge, the canonical view); a prop's say which side of the object is seen."""
+    if kind == "humanoid":
+        return {"front": "front, facing the viewer",
+                "right": "the character turned to face RIGHT, its face toward the right edge",
+                "back": "back, facing away from the viewer",
+                "left": "the character turned to face LEFT, its face toward the left edge"}
+    if kind:
+        return {"front": "front, facing the viewer",
+                "right": "the creature turned to face RIGHT, its head at the right and its tail at the left",
+                "back": "back, facing away from the viewer",
+                "left": "the creature turned to face LEFT, its head at the left and its tail at the right"}
+    return {"front": "front view", "right": "right side view", "back": "back view", "left": "left side view"}
+
+
+def sheet_prompt(text: str, kind: str | None = None, layout: str = "grid") -> str:
+    """One picture holding four orthographic views of the subject in PANELS order: front | right | back | left,
+    row by row in a 2x2 grid (layout 'grid', the default: a tall prop in a wide strip came back five times) or in
+    one row (layout 'strip'). kind is a CREATURE_POSE kind (the pose clause) or None for a prop (the
+    floating-object clause). No baseline phrase: the views are split at their magenta gaps."""
+    rows, order, cells, spread = SHEET_WHERE["grid" if layout == "grid" else "strip"]
+    v = sheet_views(kind)
+    listing = " ".join(f"View {i + 1}{cells[i]}: {v[pid]}." for i, pid in enumerate(PANELS))
+    if kind:
+        who = "character" if kind == "humanoid" else "creature"
+        head = (f"Character turnaround sheet {rows}, the same {who} turning in place, four orthographic full-body "
+                f"views{' ' + order if order else ''}.")
+        same = ("The two side views are mirror images of each other and face in opposite directions. "
+                + SHEET_POSE.get(kind, SHEET_POSE["creature"]))
+    else:
+        head = (f"Product turnaround sheet {rows}, the same single object turning in place, four orthographic "
+                f"views{' ' + order if order else ''}.")
+        same = "One object in each view, the same size, proportions and colours. " + SHEET_FLOAT
+    return " ".join([" ".join((text or "").split()).rstrip(".") + ".", head, listing, same,
+                     SHEET_TAIL.format(where=spread)])
+
+
+def canonical_view(kind: str | None) -> str:
+    """The panel that becomes flat/source.png: the head-right profile for a side-on creature, the front otherwise."""
+    return "right" if kind and FACING.get(kind) == "right" else "front"

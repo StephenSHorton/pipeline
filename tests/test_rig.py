@@ -679,5 +679,106 @@ class BuiltPathTests(unittest.TestCase):
         self.assertEqual(row["level"], "fail")
 
 
+@unittest.skipUnless((ROOT / "scripts" / "rig_plans" / "ground_bird.json").is_file() and
+                     (rig.M2M / "rigs" / "rig-bird.glb").is_file(), "no body plans or no vendor bird template")
+class BuildFallbackTests(unittest.TestCase):
+    """auto mode, the build raises: the vendor-template fallback binds the build's own (sampled) prediction, so
+    rig_pred.predict runs exactly once, and the fallback is loud (DEGRADED lines + rig.json degraded)."""
+    STEM = "synth-bird-fallback"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import contextlib
+        import io
+        import rig_build
+        import rig_fit
+        sys.path.insert(0, str(ROOT / "tests"))
+        from fixtures import synth_bird
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.asset = cls.root / "out" / cls.STEM
+        cls.d = synth_bird.write(cls.asset)
+        cls.saved = (rig.OUT, rig.run_skin, rig_pred.predict, rig_build.build, rig_fit.vlm_cue)
+        cls.predicts, cls.skinned = [], []
+        rig.OUT = cls.root / "out"
+        rig.run_skin = _stub_skin(cls.skinned)
+
+        def predict(source, work, **kw):
+            cls.predicts.append(kw)
+            return Path(cls.d["pred"]), 116.0, False
+        rig_pred.predict = predict
+
+        def build(*a, **k):
+            raise rig_build.BuildError("check", "neck 0.713H outside [0.25, 0.6]")
+        rig_build.build = build
+        rig_fit.vlm_cue = lambda *a, **k: None
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                cls.code = rig.main(["--stem", cls.STEM, "--class", "avian", "--no-fbx", "--render", "0"])
+        finally:
+            rig.OUT, rig.run_skin, rig_pred.predict, rig_build.build, rig_fit.vlm_cue = cls.saved
+            cls.log = buf.getvalue()
+        cls.info = json.loads((cls.asset / "rig" / "rig.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    def test_one_prediction_reused_by_the_fallback(self) -> None:
+        self.assertEqual(self.code, 0, self.log[-2000:])
+        self.assertEqual(len(self.predicts), 1, self.predicts)
+        self.assertEqual(self.predicts[0].get("temperature"), 0.7)  # the build's sampled prediction
+        self.assertEqual(self.log.count("Predicted a skeleton"), 1, self.log[-3000:])
+        self.assertEqual(self.info["template"]["mode"], "fixed")
+        self.assertEqual(self.info["build_error"]["code"], "check")
+        pred = self.info["pred"]
+        self.assertEqual(pred["reused_from"], "build")
+        self.assertEqual((pred["mode"], pred["file"]), ("sampled", "rig/" + Path(self.d["pred"]).name))
+
+    def test_every_fallback_is_degraded_and_loud(self) -> None:
+        deg = {d["code"]: d for d in self.info["degraded"]}
+        self.assertIn("build_failed", deg, self.info["degraded"])
+        self.assertTrue(all(d["stage"] == "rig" for d in self.info["degraded"]))
+        self.assertIn("neck 0.713H", deg["build_failed"]["message"])
+        self.assertIn("DEGRADED rig build_failed: check: neck 0.713H", self.log)
+        lines = [ln for ln in self.log.splitlines() if ln.startswith("DEGRADED rig ")]
+        self.assertEqual(len(lines), len(self.info["degraded"]), lines)
+        import re
+        parsed = [dict(zip(("stage", "code", "message"), m.groups())) for m in
+                  (re.match(r"^DEGRADED (\S+) (\S+): ?(.*)$", ln) for ln in lines) if m]
+        self.assertEqual(parsed, self.info["degraded"])
+        # the synthetic bird on the flying-bird template is the qmv chicken's case: poor match, no wings to flap
+        self.assertEqual(set(deg), {"build_failed", "poor_match", "clips_dropped"}, self.info["degraded"])
+        self.assertEqual(deg["clips_dropped"]["message"], "Flap,Glide")
+        self.assertEqual(self.info["unsupported_clips"], ["Flap", "Glide"])
+        self.assertTrue(deg["poor_match"]["message"].startswith("scale 2."), deg["poor_match"])
+        self.assertIn("DEGRADED rig clips_dropped: Flap,Glide", self.log)
+
+    def test_a_failed_build_prediction_is_not_retried(self) -> None:
+        import contextlib
+        import io
+        calls = []
+
+        def predict(source, work, **kw):
+            calls.append(kw)
+            raise RuntimeError("skin-tokens rig failed: no GPU")
+        saved = (rig.OUT, rig.run_skin, rig_pred.predict)
+        rig.OUT, rig.run_skin, rig_pred.predict = self.root / "out", _stub_skin([]), predict
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                try:
+                    rig.main(["--stem", self.STEM, "--class", "avian", "--no-fbx", "--render", "0"])
+                except SystemExit:
+                    pass  # with no prediction the template may not fit; only the call count matters here
+        finally:
+            rig.OUT, rig.run_skin, rig_pred.predict = saved
+        log = buf.getvalue()
+        self.assertEqual(len(calls), 1, log[-2000:])
+        self.assertIn("DEGRADED rig build_failed: RuntimeError: skin-tokens rig failed", log)
+        self.assertIn("DEGRADED rig pred_failed: no predicted skeleton (the build's prediction failed", log)
+
+
 if __name__ == "__main__":
     unittest.main()

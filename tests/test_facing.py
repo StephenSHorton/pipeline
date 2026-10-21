@@ -128,7 +128,10 @@ class DetectImageTests(unittest.TestCase):
         with mock.patch.object(facing, "ask", side_effect=facing.VLMUnavailable("down")):
             got = facing.detect_image(self.png)
         self.assertEqual(got["how"], "unavailable")
-        self.assertTrue(facing.judge(got, "right")["ok"])  # nothing to check with: the prompt stands
+        verdict = facing.judge(got, "right")  # nothing saw the drawing: never a pass
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["flaws"], ["facing_unavailable"])
+        self.assertFalse(verdict["checked"])
         with mock.patch.dict(os.environ, {"FACING_VLM": "off"}), self.assertRaises(facing.VLMUnavailable):
             facing.ask(self.png, facing.HEAD_Q)
 

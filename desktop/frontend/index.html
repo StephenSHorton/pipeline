@@ -120,6 +120,11 @@
     .job-card[data-state="error"] .gen-overlay-kicker { color: #e07a5a; }
     .job-card[data-state="error"] .gen-overlay-bar > i { background: #c45c3a; }
     .job-card[data-state="cancelled"] .gen-overlay-bar > i { background: var(--mute); }
+    /* A fallback the factory took (job status "degraded", inspect.json "degraded"): one plain line, no actions. */
+    .job-degraded, .card-degraded { color: var(--accent); font-size: 12px; line-height: 1.4; }
+    .job-degraded { margin-top: 8px; text-align: left; }
+    .job-degraded[hidden], .card-degraded[hidden] { display: none; }
+    .card-degraded { display: block; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .job-stages { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
     .job-stages li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; color: var(--mute); }
     .job-stages li::before { content: "○"; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; }
@@ -1903,7 +1908,7 @@
                 <label>
                   <input type="radio" name="gen-poly" value="medium" checked />
                   <strong>Medium</strong>
-                  <em>Keep fidelity, faster<br>~80k faces</em>
+                  <em title="Shape at octree 256, then reduced to at most 80,000 faces.">Keep fidelity, faster<br>up to 80k faces</em>
                 </label>
                 <label>
                   <input type="radio" name="gen-poly" value="low" />
@@ -2281,6 +2286,7 @@
         <div class="gen-overlay-kicker" id="gen-overlay-kicker">Factory</div>
         <h2 class="gen-overlay-title" id="gen-overlay-title">Generating</h2>
         <div class="gen-overlay-step" id="gen-overlay-step"></div>
+        <div class="job-degraded" id="job-degraded" role="status" hidden></div>
         <div id="job-picture-box" class="job-picture" hidden><img id="job-picture" alt="" hidden><span>The picture shows here</span></div>
         <ol class="job-stages" id="job-stages"></ol>
         <div class="gen-overlay-bar" aria-hidden="true"><i id="gen-overlay-fill"></i></div>
@@ -2540,6 +2546,15 @@
       if (!go.dataset.busy) go.textContent = label;
       go.disabled = !!go.dataset.busy || state === "need";
       promptEl.placeholder = photo ? "Describe it (optional)…" : "Or describe it, and we'll draw it first…";
+    }
+
+    // The multi-view shape, as /health.features probed it (factory_features): only what the probe shows.
+    function shapeMvNote(f) {
+      if (!f || typeof f.shape_mv !== "boolean") return "";
+      if (f.shape_mv) return ". Multi-view shape (Hunyuan3D-2mv) is installed; it is used when a drawing's four views match it.";
+      const why = !f.shape_mv_venv && !f.shape_mv_weights ? "its Python env and weights are missing"
+        : !f.shape_mv_venv ? "its Python env is not installed" : "its weights are missing";
+      return `. Multi-view shape is off (${why}): the shape comes from the first picture; extra views only photo-bake.`;
     }
 
     function esc(text) {
@@ -4649,6 +4664,17 @@
         name.addEventListener("click", open);
         name.title = "Open";
         card.append(cardOpen, meta);
+        if (a.has_mesh) {
+          // inspect.json "degraded": the fallbacks this model was made with (old assets have none).
+          const warn = document.createElement("span");
+          warn.className = "card-degraded";
+          warn.hidden = true;
+          card.appendChild(warn);
+          fetch(`/out/${encodeURIComponent(a.id)}/inspect.json?t=${a.mtime || 0}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((doc) => { if (doc && warn.isConnected) setDegradedLine(warn, doc.degraded); })
+            .catch(() => {});
+        }
         if (a.mtime) {
           const when = document.createElement("span");
           when.className = "card-when";
@@ -6136,7 +6162,20 @@
     // timing: {stage_times, stage_est, estimate_s, started, skew} from /status; picture: a live preview URL (2D only);
     // drawing: a 2D draw, which keeps a square for the picture and hides the 3D viewer behind it.
     let overlayView = null;
-    function showOverlay({ title, step, log, kicker, progress, state, actions, picture, timing, drawing }) {
+    // The factory's fallbacks ({stage, code, message}, the DEGRADED grammar) as one plain line; "" when none.
+    function degradedLine(list) {
+      const items = (Array.isArray(list) ? list : []).filter((e) => e && (e.stage || e.code || e.message));
+      if (!items.length) return "";
+      return "Degraded: " + items.map((e) => `${e.stage || "?"} ${e.code || "?"}${e.message ? `: ${e.message}` : ""}`).join(" · ");
+    }
+    function setDegradedLine(el, list) {
+      if (!el) return;
+      const line = degradedLine(list);
+      el.textContent = line;
+      el.title = line;
+      el.hidden = !line;
+    }
+    function showOverlay({ title, step, log, kicker, progress, state, actions, picture, timing, drawing, degraded }) {
       if (!genWatching) return;
       genOverlay.hidden = false;
       genOverlay.classList.toggle("is-solid", !!drawing);
@@ -6145,6 +6184,7 @@
       document.getElementById("gen-overlay-kicker").textContent = kicker || "Factory";
       document.getElementById("gen-overlay-title").textContent = title || "Generating";
       document.getElementById("gen-overlay-step").textContent = step || "";
+      setDegradedLine(document.getElementById("job-degraded"), degraded);
       setJobPicture(picture, !!drawing && (state || "running") === "running");
       const list = document.getElementById("job-stages");
       list.innerHTML = "";
@@ -6297,6 +6337,7 @@
           picture: job.preview_url,
           drawing: jobDraws(job),
           timing: jobTiming(job),
+          degraded: job.degraded,
           actions: [
             { label: "Run in background", run: () => abandonGenerateWatch() },
             job.stopping
@@ -6316,6 +6357,7 @@
           picture: job.preview_url,
           drawing: jobDraws(job),
           timing: jobTiming(job),
+          degraded: job.degraded,
           actions: [
             ...(job.spec ? [{ label: "Try again", primary: true, run: () => runJob(job.spec, job.opts || { title: job.title }) }] : []),
             { label: "Back to Home", run: () => { job = null; genWatching = false; hideOverlay(); renderJobChip(); clearView(); showHome(); refreshAssets(""); } },
@@ -6399,7 +6441,7 @@
         job.kind = st.kind || job.kind;
         job.progress = st.progress || job.progress;
         job.log = st.log_tail || "";
-        for (const k of ["preview_url", "stage_times", "stage_est", "estimate_s", "result", "started", "prompt", "count", "revise", "source"]) {
+        for (const k of ["preview_url", "stage_times", "stage_est", "estimate_s", "result", "started", "prompt", "count", "revise", "source", "degraded"]) {
           if (st[k] !== undefined) job[k] = st[k];
         }
         if (typeof st.now === "number") job.skew = st.now - Date.now() / 1000;
@@ -6460,7 +6502,7 @@
       };
       const text = result.revise ? `Redrawn: ${name}` : `Sprite ready: ${name}`;
       if (genWatching || (here && result.revise)) {
-        showOverlay({ title: `Opening ${name}`, step: "Loading the sprite…", kicker: "Done", progress: job.progress, state: "ok", picture: job.preview_url, drawing: jobDraws(job), timing: jobTiming(job) });
+        showOverlay({ title: `Opening ${name}`, step: "Loading the sprite…", kicker: "Done", progress: job.progress, state: "ok", picture: job.preview_url, drawing: jobDraws(job), timing: jobTiming(job), degraded: job.degraded });
         try {
           if (here && result.revise) await refreshFlow();
           else await openAsset(stem, { keepOverlay: true });
@@ -6537,9 +6579,10 @@
         rigSummary = await fetch(`/out/${encodeURIComponent(stem)}/rig/summary.json?t=${Date.now()}`).then((x) => (x.ok ? x.json() : null)).catch(() => null);
         if (rigSummary && rigSummary.line) facts += ` · ${rigSummary.line}`;
       }
-      const text = `${what[0].toUpperCase()}${what.slice(1)} ready: ${displayStem(stem)}${facts}`;
+      const degradedText = degradedLine(job.degraded);
+      const text = `${what[0].toUpperCase()}${what.slice(1)} ready: ${displayStem(stem)}${facts}${degradedText ? ` · ${degradedText}` : ""}`;
       if (genWatching) {
-        showOverlay({ title: `Opening ${displayStem(stem)}`, step: "Loading the model…", kicker: "Done", progress: job.progress, state: "ok" });
+        showOverlay({ title: `Opening ${displayStem(stem)}`, step: "Loading the model…", kicker: "Done", progress: job.progress, state: "ok", degraded: job.degraded });
         try {
           await openAsset(stem, { keepOverlay: true });
           if (rigJob) await enterStage("rig");
@@ -6801,7 +6844,7 @@
       try {
         const h = await factoryJson("/health");
         setGenStatus(h.busy ? "The factory is busy with another job." : "Ready.", h.busy ? "running" : "");
-        genStatus.title = `Factory: ${healthLabel(h)}` + (h.features && h.features.shape_mv === false ? ". Extra views photo-bake; the shape still comes from the first picture." : "");
+        genStatus.title = `Factory: ${healthLabel(h)}${shapeMvNote(h.features)}`;
         await reattachJob(h);
       } catch (err) {
         setGenStatus(err.message, "error");
@@ -6827,7 +6870,7 @@
       }
       const prompt = (genPrompt.value || "").trim();
       if (!queue.length) {
-        setGenStatus("Add a photo first, or describe the object to draw it.", "error");
+        setGenStatus("3D needs a picture. Draw or add one first.", "error");
         return;
       }
       holdGo(true);

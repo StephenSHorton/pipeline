@@ -155,8 +155,12 @@ def load_photo(path):
     a = arr[:, :, 3]
     luma = rgb.max(axis=2)
     alpha_fit = a > 32
-    # Drop the Vision white halo from the bake, not from the silhouette fit.
-    alpha_bake = (a > 220) & (luma < 245)
+    solid = a > 220
+    # Drop the Vision white halo from the bake, not from the silhouette fit. The halo is a rim: only bright
+    # pixels near the cutout's edge go, so a white or bright-yellow subject still bakes its inside.
+    ring = max(2, int(round(0.008 * max(a.shape))))
+    rim = solid & ~ndimage.binary_erosion(solid, iterations=ring)
+    alpha_bake = solid & ~(rim & (luma >= 245))
     return rgb, alpha_fit, alpha_bake
 
 
@@ -238,6 +242,28 @@ def blend(base, accum, weight, keep):
     return out, hit
 
 
+# Camera azimuth of each named view relative to the front camera (fit_camera's azimuth, eye_on_sphere).
+# 'left' / 'right' follow Hunyuan3D-2mv's views: the subject's nose points toward image left / right. With the
+# front camera at F, a head-toward-image-right view is the camera at F - 90 and head-left at F + 90 (checked on
+# chicken-canon: lifted.png, head right, fits az 14.7 with the head along +x, so the front camera is at ~105).
+# Front and back silhouettes are near mirror images, so a free fit cannot tell them apart; anchor on a side view.
+FACING_OFFSET = {"camera": 0.0, "right": -90.0, "away": 180.0, "left": 90.0}
+
+
+def view_offset(stem: str) -> float | None:
+    if "front" in stem:
+        return FACING_OFFSET["camera"]
+    if "back" in stem:
+        return FACING_OFFSET["away"]
+    if "handle" in stem or "side" in stem:
+        return -90.0
+    if "left" in stem:
+        return FACING_OFFSET["left"]
+    if "right" in stem:
+        return FACING_OFFSET["right"]
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("glb")
@@ -249,7 +275,21 @@ def main() -> int:
                     help="side-on photo: also bake it flipped onto the far side (through the glTF z mid-plane)")
     ap.add_argument("--erode", type=float, default=0.0,
                     help="pull the bake mask in by this fraction of the photo's longer side (drops cutout halos)")
+    ap.add_argument("--first-facing", choices=sorted(FACING_OFFSET), default=None,
+                    help="which way the subject faces in the first --view when its name does not say "
+                         "(camera = front view; right/left = side-on, head toward image right/left; away = back)")
     args = ap.parse_args()
+    # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
+    # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
+    # coin-flip, so a front-first free fit can land on the back. Splats accumulate, so order only moves fit.json.
+    offsets = [view_offset(Path(v).stem.lower()) for v in args.view]
+    if args.first_facing is not None:
+        offsets[0] = FACING_OFFSET[args.first_facing]
+    side = next((i for i, o in enumerate(offsets) if o is not None and abs(o) == 90.0), 0)
+    order = [side] + [i for i in range(len(args.view)) if i != side]
+    views = [args.view[i] for i in order]
+    offsets = [offsets[i] for i in order]
+    first_off = offsets[0] or 0.0
 
     mesh = trimesh.load(args.glb, force="mesh")
     if not isinstance(mesh, trimesh.Trimesh):
@@ -288,7 +328,7 @@ def main() -> int:
     weight_m = np.zeros((th, tw), dtype=np.float32)
     reports = []
 
-    for view in args.view:
+    for view, off in zip(views, offsets):
         rgb, alpha_fit, alpha_bake = load_photo(view)
         ph, pw = rgb.shape[:2]
         if args.erode > 0:
@@ -298,13 +338,11 @@ def main() -> int:
         stem = Path(view).stem.lower()
         az_hint, el_range = None, None
         if reports:
-            front_az = reports[0]["az"]
-            if "back" in stem:
-                az_hint = (front_az + 180) % 360
-            elif "handle" in stem or "side" in stem or "left" in stem:
-                az_hint = (front_az - 90) % 360
-            elif "right" in stem:
-                az_hint = (front_az + 90) % 360
+            # Hints are offsets from the FRONT camera, found from the anchor's fit and its known offset
+            # (its name, or --first-facing for the pipeline's unnamed lifted.png).
+            front_az = (reports[0]["az"] - first_off) % 360
+            if off is not None:
+                az_hint = (front_az + off) % 360
         if "top" in stem:
             el_range = [60, 72, 82, 88]
         score, az, el, rad = fit_camera(pts, center, radius0, ref_sil, az_hint=az_hint, el_range=el_range)

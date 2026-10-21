@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 import random
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from flat2d.sheet import (
     sound_prompt,
     speaker_name,
     still_backend,
+    still_degraded,
     voice_file,
     voice_ready,
     write_json,
@@ -247,6 +249,7 @@ def still_prompt(text: str, pose: str | None = None) -> str:
 CLEAN_TOL = 45  # a ground noisier than this (see ground_key) is cloudy
 CLEAN_SHADOW = 0.005  # share of the picture that may be shadow on the ground
 REDRAWS = 2  # new seeds to try when a still comes back with a cloudy ground or a shadow
+NO_REDRAW = {"facing_unavailable"}  # flaws a new seed cannot fix
 
 
 def ground_flaws(image) -> list[str]:
@@ -308,6 +311,8 @@ def clean_still(prompt: str, seed: int, check=None):
             ground_bad = bool(flaws)
         if not flaws:
             return image, seed, replaced
+        if all(f in NO_REDRAW for f in flaws):
+            return image, seed, replaced  # a new seed cannot bring the vision model back
         score = (ground_bad, rank, ground_key(image)["tol"])
         if best is None or score < best[0]:
             best = (score, image, seed)
@@ -317,6 +322,44 @@ def clean_still(prompt: str, seed: int, check=None):
     if DRAW is not None:
         DRAW.preview(best[1])  # the one kept, not the last one drawn
     return best[1], best[2], replaced
+
+
+# MLX keeps freed buffers for reuse, up to the memory limit by default: beside Qwen-Image's ~22 GiB of weights
+# that cache settled at ~44 GiB. FLAT2D_MLX_CACHE_GB caps it (0 turns the cache off).
+MLX_CACHE_GB = 4.0
+
+
+def _cap_mlx_cache() -> None:
+    """Before an MLX model is built. The limit is process-wide, so the last call wins."""
+    import mlx.core as mx
+
+    mx.set_cache_limit(int(_env_float("FLAT2D_MLX_CACHE_GB", MLX_CACHE_GB) * 2**30))
+
+
+def _release(model) -> None:
+    """After a draw, finished, failed or cancelled, on the model thread: drop the prompt's text features
+    (Qwen-Image keeps one entry per prompt ever drawn; a redraw of the same prompt encodes it again, a second
+    or two) and hand the buffers MLX kept for reuse back to the system."""
+    cache = getattr(model, "prompt_cache", None)
+    if isinstance(cache, dict):
+        cache.clear()
+    try:
+        import mlx.core as mx
+    except ImportError:  # a stand-in model in tests
+        return
+    mx.clear_cache()
+
+
+def _draw(model, relay, **kwargs):
+    try:
+        return model.generate_image(**kwargs)
+    except BaseException as e:
+        # The traceback holds the sampler's frames, latents and all; empty them so the release frees them now.
+        traceback.clear_frames(e.__traceback__)
+        raise
+    finally:
+        relay.prev = None  # a cancelled draw never reaches call_after_loop
+        _release(model)
 
 
 _ZIMAGE = None
@@ -331,23 +374,26 @@ def _cold(relay) -> None:
         relay.loading = True
 
 
-def zimage_still(prompt: str, seed: int = 1):
-    """Z-Image Turbo through mflux. Weights download on first use."""
+def zimage_still(prompt: str, seed: int = 1, width: int = 1024, height: int = 1024):
+    """Z-Image Turbo (Apache-2.0) through mflux, 8-bit, 8 steps. Weights download on first use."""
     global _ZIMAGE, _ZIMAGE_RELAY
     if _ZIMAGE is None:
         from mflux.models.z_image import ZImageTurbo
 
+        _cap_mlx_cache()
         model = ZImageTurbo(quantize=8)
         relay = _Relay(model, preview=False)  # the x0 preview is only checked on Qwen-Image
         model.callbacks.register(relay)
         _ZIMAGE, _ZIMAGE_RELAY = model, relay
     _cold(_ZIMAGE_RELAY)
-    return _ZIMAGE.generate_image(
+    return _draw(
+        _ZIMAGE,
+        _ZIMAGE_RELAY,
         seed=seed,
         prompt=prompt,
         num_inference_steps=8,
-        height=1024,
-        width=1024,
+        height=height,
+        width=width,
     )
 
 
@@ -355,11 +401,13 @@ _QWEN = None
 _QWEN_RELAY = None
 
 
-def qwen_still(prompt: str, seed: int = 1):
+def qwen_still(prompt: str, seed: int = 1, width: int = 1024, height: int = 1024):
     """Qwen-Image 2.1 Turbo through mflux, sampled on the checkpoint's own 8-node grid.
+    Qwen RESEARCH licence (non-commercial): reachable only with FLAT2D_ALLOW_NC=1 (sheet.still_backend).
 
     The transformer is quantized to 8 bits; the Qwen3-VL text encoder stays bf16
-    (mflux never quantizes it), so plan on about 30 GB of unified memory.
+    (mflux never quantizes it): ~22 GiB of weights stay resident, ~36 GiB peak while
+    drawing, and the MLX buffer cache is capped (MLX_CACHE_GB) and emptied after each draw.
     """
     global _QWEN, _QWEN_RELAY
     from flat2d.turbo import TurboGrid, load_grid
@@ -369,24 +417,141 @@ def qwen_still(prompt: str, seed: int = 1):
 
         if DRAW is not None:
             DRAW.loading(True)  # building the model takes a while too
+        _cap_mlx_cache()
         model = QwenImage21(quantize=8, model_path=qwen_repo())
         TurboGrid.NODES = load_grid(qwen_repo())
         relay = _Relay(model, preview=True)
         model.callbacks.register(relay)
         _QWEN, _QWEN_RELAY = model, relay
     _cold(_QWEN_RELAY)  # weights load lazily inside step 1
-    return _QWEN.generate_image(
+    return _draw(
+        _QWEN,
+        _QWEN_RELAY,
         seed=seed,
         prompt=prompt,
         num_inference_steps=len(TurboGrid.NODES),
-        height=1024,
-        width=1024,
+        height=height,
+        width=width,
         scheduler="flat2d.turbo.TurboGrid",
     )
 
 
+_Q2512 = None
+_Q2512_RELAY = None
+
+
+def _qwen_cfg1(model, seed: int, prompt: str, num_inference_steps: int, width: int, height: int,
+               scheduler: str = "flat2d.turbo.Lightning"):
+    """mflux QwenImage.generate_image at CFG 1, with ONE transformer pass a step. At guidance 1 mflux's guided
+    noise is the positive noise exactly (neg + 1 * (pos - neg), then rescaled to its own norm), so its second,
+    negative pass is wasted work: this loop leaves it out and halves the step time. Same latents, callbacks
+    and decode as mflux."""
+    import mlx.core as mx
+    from mflux.models.common.config.config import Config
+    from mflux.models.common.latent_creator.latent_creator import Img2Img, LatentCreator
+    from mflux.models.common.vae.vae_util import VAEUtil
+    from mflux.models.qwen.latent_creator.qwen_latent_creator import QwenLatentCreator
+    from mflux.models.qwen.model.qwen_text_encoder.qwen_prompt_encoder import QwenPromptEncoder
+    from mflux.utils.image_util import ImageUtil
+
+    config = Config(width=width, height=height, guidance=1.0, scheduler=scheduler, model_config=model.model_config,
+                    num_inference_steps=num_inference_steps)
+    latents = LatentCreator.create_for_txt2img_or_img2img(
+        seed=seed, width=config.width, height=config.height,
+        img2img=Img2Img(vae=model.vae, latent_creator=QwenLatentCreator, sigmas=config.scheduler.sigmas,
+                        init_time_step=config.init_time_step, image_path=None, tiling_config=model.tiling_config))
+    embeds, mask, _neg, _neg_mask = QwenPromptEncoder.encode_prompt(
+        prompt=prompt, negative_prompt=None, prompt_cache=model.prompt_cache,
+        qwen_tokenizer=model.tokenizers["qwen"], qwen_text_encoder=model.text_encoder)
+    ctx = model.callbacks.start(seed=seed, prompt=prompt, config=config)
+    ctx.before_loop(latents)
+    for t in config.time_steps:
+        latents = config.scheduler.scale_model_input(latents, t)
+        noise = model.transformer(t=t, config=config, hidden_states=latents, encoder_hidden_states=embeds,
+                                  encoder_hidden_states_mask=mask)
+        latents = config.scheduler.step(noise=noise, timestep=t, latents=latents)
+        ctx.in_loop(t, latents)
+        mx.eval(latents)
+    ctx.after_loop(latents)
+    latents = QwenLatentCreator.unpack_latents(latents=latents, height=config.height, width=config.width)
+    decoded = VAEUtil.decode(vae=model.vae, latent=latents, tiling_config=model.tiling_config)
+    return ImageUtil.to_image(decoded_latents=decoded, config=config, seed=seed, prompt=prompt,
+                              quantization=model.bits, lora_paths=model.lora_paths, lora_scales=model.lora_scales,
+                              image_path=None, image_strength=None,
+                              generation_time=config.time_steps.format_dict["elapsed"])
+
+
+def build_qwen2512():
+    """Qwen-Image-2512 (Apache-2.0) with lightx2v's Qwen-Image-2512-Lightning LoRA (Apache-2.0), 8-bit.
+    A pre-saved 8-bit copy (sheet.q2512_saved(), written by save_qwen2512) loads instead of the bf16 cache when
+    it is there; it holds the base weights only, and the LoRA is applied on top either way."""
+    from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
+
+    from flat2d.sheet import q2512_lora, q2512_repo, q2512_saved
+
+    saved = q2512_saved()
+    if saved is not None:
+        return QwenImage(quantize=None, model_path=str(saved), lora_paths=[q2512_lora()], lora_scales=[1.0])
+    return QwenImage(quantize=8, model_path=q2512_repo(), lora_paths=[q2512_lora()], lora_scales=[1.0])
+
+
+def qwen2512_still(prompt: str, seed: int = 1, width: int = 1024, height: int = 1024):
+    """The default draw: Qwen-Image-2512 + Lightning, sheet.Q2512_STEPS steps on the Lightning schedule, CFG 1."""
+    global _Q2512, _Q2512_RELAY
+    from flat2d.sheet import q2512_steps
+
+    if _Q2512 is None:
+        if DRAW is not None:
+            DRAW.loading(True)
+        _cap_mlx_cache()
+        model = build_qwen2512()
+        relay = _Relay(model, preview=False)  # the x0 preview is a 2.1-only relay
+        model.callbacks.register(relay)
+        _Q2512, _Q2512_RELAY = model, relay
+    _cold(_Q2512_RELAY)
+    try:
+        return _qwen_cfg1(_Q2512, seed=seed, prompt=prompt, num_inference_steps=q2512_steps(), width=width,
+                          height=height)
+    except BaseException as e:
+        traceback.clear_frames(e.__traceback__)
+        raise
+    finally:
+        _Q2512_RELAY.prev = None
+        _release(_Q2512)
+
+
+def unload() -> dict:
+    """Free every draw model (the factory calls this before shape and paint: plan 1.9) and hand MLX's buffer
+    cache back to the system. Safe to call when nothing is loaded. Returns what was freed."""
+    global _ZIMAGE, _ZIMAGE_RELAY, _QWEN, _QWEN_RELAY, _Q2512, _Q2512_RELAY, _STUB_LOADED
+
+    def run() -> list[str]:
+        freed = [name for name, m in (("qwen-2512", _Q2512), ("qwen-2.1", _QWEN), ("z-image", _ZIMAGE)) if m is not None]
+        return freed
+
+    freed = on_model_thread(run)
+    _Q2512 = _Q2512_RELAY = _QWEN = _QWEN_RELAY = _ZIMAGE = _ZIMAGE_RELAY = None
+    if _STUB_LOADED:
+        freed.append("stub")
+    _STUB_LOADED = False
+
+    def clear() -> None:
+        import gc
+
+        gc.collect()
+        try:
+            import mlx.core as mx
+        except ImportError:
+            return
+        mx.clear_cache()
+
+    on_model_thread(clear)
+    return {"ok": True, "freed": freed}
+
+
 _STUB_LOADED = False
 _STUB_FLAWS_LEFT = 0
+_STUB_SHEET_FLAWS_LEFT = 0
 STUB_SIZE = 1024
 
 
@@ -426,10 +591,52 @@ def _stub_picture(seed: int, fill: float, cloudy: bool = False):
     return im
 
 
-def stub_still(prompt: str, seed: int = 1):
+def _stub_sheet(seed: int, width: int, height: int, flaw: str = ""):
+    """The stub's four-view sheet: front | right | back | left (row by row on a square grid), one creature-ish
+    shape per panel, its head (a smaller disc) toward the RIGHT edge in the right panel and the LEFT in the left.
+    flaw ('height', 'colour', 'side', 'empty' or 'swap': the side panels swapped, so the head in the right panel
+    points left) breaks one check on purpose."""
+    from PIL import Image, ImageDraw
+
+    from flat2d.pose import PANELS
+
+    im = Image.new("RGB", (width, height), (255, 0, 255))
+    d = ImageDraw.Draw(im)
+    grid = width == height
+    cw, ch = (width // 2, height // 2) if grid else (width // 4, height)
+    colour = _stub_color(seed)
+    for i, pid in enumerate(PANELS):
+        ox, oy = ((i % 2) * cw, (i // 2) * ch) if grid else (i * cw, 0)
+        cx, cy = ox + cw // 2, oy + ch // 2
+        bh = int(ch * (0.25 if flaw == "height" and pid == "back" else 0.35))
+        fill = (40, 40, 40) if flaw == "colour" and pid == "back" else colour
+        if flaw == "empty" and pid == "front":
+            continue
+        side = pid in ("right", "left") and not (flaw == "side" and pid == "left")  # 'side': left drawn head-on
+        if flaw == "swap" and side:
+            pid = "left" if pid == "right" else "right"
+        if side:
+            bw = int(cw * 0.3)
+            d.ellipse((cx - bw, cy - bh // 2, cx + bw, cy + bh // 2), fill=fill)
+            r = int(bh * 0.35)
+            hx = cx + bw if pid == "right" else cx - bw
+            d.ellipse((hx - r, cy - bh // 2 - r, hx + r, cy - bh // 2 + r), fill=fill)
+            d.rectangle((cx - 4, cy + bh // 2 - 2, cx + 4, cy + bh // 2 + int(bh * 0.15)), fill=fill)
+        else:
+            bw = int(cw * 0.18)
+            r = int(bh * 0.35)
+            d.ellipse((cx - bw, cy - bh // 2, cx + bw, cy + bh // 2), fill=fill)
+            d.ellipse((cx - r, cy - bh // 2 - r, cx + r, cy - bh // 2 + r), fill=fill)
+            d.rectangle((cx - 4, cy + bh // 2 - 2, cx + 4, cy + bh // 2 + int(bh * 0.15)), fill=fill)
+    return im
+
+
+def stub_still(prompt: str, seed: int = 1, width: int = STUB_SIZE, height: int = STUB_SIZE):
     """FLAT2D_STILL=stub: a fake model for tests and the app without weights. It loads once,
     takes FLAT2D_STUB_STEP seconds per step, fires the same hook calls as the real models,
-    and returns a magenta still with a disc coloured by the seed."""
+    and returns a magenta still with a disc coloured by the seed; a sheet-sized ask (sheet_size) gets a stub
+    four-view sheet instead: FLAT2D_STUB_SHEET_FLAW (height, colour, side, empty, swap) breaks one check on the
+    first FLAT2D_STUB_SHEET_FLAWS sheets of a draw (default 1), and FLAT2D_STUB_FLAWS grades their ground."""
     global _STUB_LOADED, _STUB_FLAWS_LEFT
     if not _STUB_LOADED:
         if DRAW is not None:
@@ -454,6 +661,25 @@ def stub_still(prompt: str, seed: int = 1):
     cloudy = _STUB_FLAWS_LEFT > 0
     if cloudy:
         _STUB_FLAWS_LEFT -= 1
+    if (width, height) != (STUB_SIZE, STUB_SIZE):
+        global _STUB_SHEET_FLAWS_LEFT
+        flaw = ""
+        if _STUB_SHEET_FLAWS_LEFT > 0:
+            _STUB_SHEET_FLAWS_LEFT -= 1
+            flaw = (os.environ.get("FLAT2D_STUB_SHEET_FLAW") or "").strip()
+        sheet = _stub_sheet(seed, width, height, flaw)
+        if cloudy:  # a graded ground, darker toward the bottom, like the real model paints
+            import numpy as np
+
+            from PIL import Image
+
+            rgb = np.asarray(sheet, dtype=np.int16)
+            ground = (rgb == (255, 0, 255)).all(-1)
+            ramp = np.linspace(0, 70, height, dtype=np.int16)[:, None]
+            rgb[..., 0] = np.where(ground, rgb[..., 0] - ramp, rgb[..., 0])
+            rgb[..., 2] = np.where(ground, rgb[..., 2] - ramp, rgb[..., 2])
+            sheet = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8), "RGB")
+        return sheet
     return _stub_picture(seed, 1.0, cloudy=cloudy)
 
 
@@ -462,6 +688,8 @@ def model_loaded() -> bool:
     backend = still_backend()
     if backend == "stub":
         return _STUB_LOADED
+    if backend == "qwen-2512":
+        return _Q2512_RELAY is not None and _Q2512_RELAY.warm
     if backend == "qwen-image":
         return _QWEN_RELAY is not None and _QWEN_RELAY.warm
     if backend == "z-image":
@@ -469,15 +697,17 @@ def model_loaded() -> bool:
     return False
 
 
-def still_image(prompt: str, seed: int = 1):
+def still_image(prompt: str, seed: int = 1, width: int = 1024, height: int = 1024):
     """The still from whichever local model still_backend() picked."""
     backend = still_backend()
     if backend == "stub":
-        return stub_still(prompt, seed=seed)
+        return stub_still(prompt, seed=seed, width=width, height=height)
+    if backend == "qwen-2512":
+        return on_model_thread(qwen2512_still, prompt, seed=seed, width=width, height=height)
     if backend == "qwen-image":
-        return on_model_thread(qwen_still, prompt, seed=seed)
+        return on_model_thread(qwen_still, prompt, seed=seed, width=width, height=height)
     if backend == "z-image":
-        return on_model_thread(zimage_still, prompt, seed=seed)
+        return on_model_thread(zimage_still, prompt, seed=seed, width=width, height=height)
     raise FlatUnavailable("No local image model. Install mflux.")
 
 
@@ -517,10 +747,13 @@ def canonical_result(image, kind: str, got: dict | None):
     det = (got or {}).get("detect") or {}
     check = {k: det.get(k) for k in ("head", "profile", "confidence", "how") if k in det}
     canonical = True
-    if not got or det.get("how") == "unavailable":
+    if not got:
         check["how"] = "unchecked"
-        if det.get("why"):
-            check["why"] = det["why"]
+    elif det.get("how") == "unavailable":
+        # Never a pass: the prompt asked for the canonical pose, but nothing saw it.
+        canonical = False
+        check["how"] = "unavailable"
+        check["why"] = det.get("why") or "vision model unavailable"
     elif got.get("ok"):
         check["how"] = "vlm"
     elif got.get("mirror"):
@@ -556,6 +789,7 @@ def generate_still(root: Path, stem: str, prompt: str, intent: dict | None = Non
     posed = None
     if kind:
         image, posed = canonical_result(image, kind, check.seen.get(id(image)))
+    clear_views(root, stem)  # a single still: views from an older sheet must not sit beside it
     buf = __import__("io").BytesIO()
     image.save(buf, format="PNG")
     saved = save_source(root, stem, buf.getvalue())
@@ -570,6 +804,140 @@ def generate_still(root: Path, stem: str, prompt: str, intent: dict | None = Non
     saved["still"] = backend
     saved["seed"] = seed
     saved["redrawn"] = redrawn
+    saved["degraded"] = still_degraded(backend)
+    if posed:
+        saved.update(posed)
+        saved["kind"] = kind
+        if posed["facing_check"].get("how") == "unavailable":
+            from factory_env import degraded_entry
+
+            saved["degraded"].append(degraded_entry("draw", "facing_unchecked", posed["facing_check"]["why"]))
+    return saved
+
+
+VIEW_FILES = ("sheet.png", "views.json")
+
+
+def clear_views(root: Path, stem: str) -> None:
+    """Remove flat/sheet.png, flat/views/ and flat/views.json (a concept take keeps its own copy)."""
+    import shutil
+
+    folder = flat_dir(root, stem)
+    for name in VIEW_FILES:
+        (folder / name).unlink(missing_ok=True)
+    shutil.rmtree(folder / "views", ignore_errors=True)
+
+
+def wants_views(intent: dict | None, views=None) -> bool:
+    """A 3D-bound draw (intent output ps1, model or stack) is a four-view sheet unless views is 1."""
+    from flat2d.pose import CREATURE_OUTPUTS
+
+    if views is not None and str(views).strip() in ("1", "one", "single"):
+        return False
+    if isinstance(intent, dict) and str(intent.get("views") or "").strip() == "1":
+        return False
+    return isinstance(intent, dict) and intent.get("output") in CREATURE_OUTPUTS
+
+
+def draw(root: Path, stem: str, prompt: str, intent: dict | None = None, views=None) -> dict:
+    """The draw a request gets: generate_views for a 3D-bound intent, else (or with views: 1) generate_still."""
+    if wants_views(intent, views):
+        return generate_views(root, stem, prompt, intent)
+    return generate_still(root, stem, prompt, intent=intent)
+
+
+def _phase(name: str) -> None:
+    if DRAW is not None and hasattr(DRAW, "phase"):
+        DRAW.phase(name)
+
+
+def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = None) -> dict:
+    """The four-view draw (plan 1.1-1.3): one sheet, front | right | back | left, split at its magenta gaps,
+    cut out and checked (flat2d/views.py). At most SHEET_REDRAWS new sheets, for hard flaws only (a cloudy ground
+    or a shadow is a note); when every sheet is flawed the best one is kept with consistent: false.
+    Writes flat/sheet.png, flat/views/*.png, flat/views.json, flat/source.png (the canonical panel), key.json
+    (+ "views": "flat/views.json") and prompt.txt."""
+    text = " ".join((prompt or "").split())
+    if not text:
+        raise FlatUnavailable("empty prompt")
+    backend = still_backend()
+    if not backend:
+        raise FlatUnavailable("No local image model. Install mflux.")
+    from flat2d import views as V
+    from flat2d.pose import FACING, POSE_NAME, canonical_view, pose_for, sheet_prompt
+    from flat2d.sheet import SHEET_REDRAWS, sheet_size, still_info
+    from flat2d.store import save_source
+    from factory_env import degraded_entry
+
+    global _STUB_FLAWS_LEFT, _STUB_SHEET_FLAWS_LEFT
+    _STUB_FLAWS_LEFT = _stub_flaws()
+    try:
+        _STUB_SHEET_FLAWS_LEFT = max(0, int(os.environ.get("FLAT2D_STUB_SHEET_FLAWS") or 1))
+    except ValueError:
+        _STUB_SHEET_FLAWS_LEFT = 1
+    kind = pose_for(intent, text)
+    w, h, layout = sheet_size()
+    ask = sheet_prompt(text, kind, layout)
+    seed = random.randint(1, 2**31 - 1)
+    tries: list[dict] = []
+    redrawn: list[str] = []
+    for attempt in range(SHEET_REDRAWS + 1):
+        _check_cancel()
+        if attempt and DRAW is not None:
+            DRAW.attempt(attempt + 1, SHEET_REDRAWS + 1, V.redrawable(tries[-1]["result"]["flaws"]))
+        image = still_image(ask, seed=seed, width=w, height=h)
+        image = getattr(image, "image", image).convert("RGB")
+        if DRAW is not None:
+            DRAW.preview(image)
+        key = ground_key(image)
+        _check_cancel()
+        result = V.check_panels(image, key, kind, layout, phase=_phase)
+        tries.append({"image": image, "seed": seed, "key": key, "result": result})
+        if DRAW is not None and hasattr(DRAW, "line"):
+            DRAW.line("Views: " + (", ".join(result["flaws"]) if result["flaws"] else "consistent") + ".")
+        again = V.redrawable(result["flaws"])
+        if not again or attempt == SHEET_REDRAWS:
+            break
+        redrawn.extend(again)
+        seed = random.randint(1, 2**31 - 1)
+    best = min(tries, key=lambda t: V.score(t["result"]))
+    result, image = best["result"], best["image"]
+    if DRAW is not None and best is not tries[-1]:
+        DRAW.preview(image)  # the one kept, not the last one drawn
+    canonical = canonical_view(kind)
+    degraded = list(still_degraded(backend))
+    fc = result["checks"].get("facing") or {}
+    if fc.get("how") == "unavailable":
+        degraded.append(degraded_entry("draw", "facing_unchecked", fc.get("why") or "vision model unavailable"))
+    if "mask_key" in result["notes"]:
+        degraded.append(degraded_entry("views", "mask_key", "Apple Vision unavailable; views cut out on the magenta key"))
+    # A flawed sheet is consistent: false in views.json; the factory's views handoff says DEGRADED views inconsistent.
+    folder = flat_dir(root, stem)
+    clear_views(root, stem)
+    buf = __import__("io").BytesIO()
+    result["panels"][canonical].convert("RGB").save(buf, format="PNG")
+    saved = save_source(root, stem, buf.getvalue())
+    info = still_info(backend)
+    meta = {"w": w, "h": h, "layout": layout, "seed": best["seed"], "redraws": len(tries) - 1,
+            "model": info["model"], "licence": info["licence"], "backend": backend, "prompt": ask}
+    doc = V.write_views(folder, image, result, kind=kind, canonical=canonical, meta=meta, degraded=degraded)
+    key = ground_key(result["panels"][canonical])
+    key["views"] = "flat/views.json"
+    posed = None
+    if kind:
+        expected = FACING[kind]
+        check = {k: fc.get(k) for k in ("head", "profile", "confidence", "how", "why", "head_before") if k in fc}
+        canonical_ok = not result["flaws"] and fc.get("how") != "unavailable"
+        if fc.get("how") == "not_needed":
+            check = {"how": "front", "why": "a front-canonical figure"}
+        posed = {"pose": POSE_NAME[kind], "facing": expected, "canonical": canonical_ok, "facing_check": check}
+        key.update(posed)
+    write_json(folder / "key.json", key)
+    (folder / "prompt.txt").write_text(text + "\n", encoding="utf-8")
+    saved.update({"prompt": text, "key": key["rgb"], "still": backend, "seed": best["seed"], "redrawn": redrawn,
+                  "views": "flat/views.json", "consistent": doc["consistent"], "flaws": doc["flaws"],
+                  "notes": [V.NOTE_TEXT.get(n, n) for n in doc["notes"]], "degraded": degraded,
+                  "sheet": "flat/sheet.png", "canonical_view": canonical})
     if posed:
         saved.update(posed)
         saved["kind"] = kind
@@ -669,6 +1037,7 @@ def kokoro_model():
         return _KOKORO
     from mlx_audio.tts.utils import load
 
+    _cap_mlx_cache()
     _KOKORO = load(repo)
     _KOKORO_REPO = repo
     return _KOKORO
@@ -717,9 +1086,13 @@ def speak(root: Path, stem: str, part: dict) -> dict:
     dest = flat_dir(root, stem) / "voices" / filename
     def run():
         chunks, rate = [], 24000
-        for result in kokoro_model().generate(line, voice=speaker, speed=1.0, lang_code="a"):
-            chunks.append(result.audio)
-            rate = int(result.sample_rate)
+        model = kokoro_model()
+        try:
+            for result in model.generate(line, voice=speaker, speed=1.0, lang_code="a"):
+                chunks.append(result.audio)
+                rate = int(result.sample_rate)
+        finally:
+            _release(model)
         return chunks, rate
 
     try:

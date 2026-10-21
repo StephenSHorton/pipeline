@@ -22,7 +22,10 @@
    (rig_build on the sampled prediction, rig_template: rig/template/rig.glb, yaw 0, scale 1, nothing folded away),
    skinned by skin-tokens like any other, then its own clips made and gated on those weights (rig_clips:
    every clip of the plan, rig/template/clips.glb + clips_report.json + template.json, verified) and baked as a
-   near-identity. A failed build falls back to the class's template with a warning (auto) or stops (build).
+   near-identity. A failed build falls back to the class's template (auto) or stops (build); the fallback fits
+   on the build's own sampled prediction (pred.reused_from "build"), so a rig never predicts twice.
+   Every fallback is loud: a `DEGRADED rig <code>: <message>` line and a rig.json `degraded` entry (build_failed,
+   poor_match, clips_dropped, pred_failed, pred_skeleton).
 3. skin-tokens.cpp (vendor/skin-tokens.cpp, Metal) learns the weights onto that named skeleton. The mesh is not
    moved; the skeleton is fitted to it. No --postprocess: its voxel cleanup never links corners at exactly the same
    point, so on flat-shaded (unshared-corner) meshes each triangle got its own bones and the mesh tore when it moved.
@@ -290,7 +293,8 @@ def classify(stem_dir: Path) -> dict:
                               "rigid": "A vehicle or machine with rigid moving parts, e.g. a tank",
                               "static": "An object that doesn't move, e.g. a crate, lantern or staff"}}}
     body = {"model": os.environ.get("RIG_PLANNER_MODEL", "clef-flash"), "state": "Picture of a game asset to rig.",
-            "images": [base64.b64encode(image.read_bytes()).decode()], "questions": questions}
+            "images": [base64.b64encode(image.read_bytes()).decode()], "questions": questions,
+            "keep_alive": 0}  # one question per rig: unload the planner (12 GB) now, not after ollama's 5 min
     req = urllib.request.Request(os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/v1/systemone",
                                  data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     try:
@@ -1038,11 +1042,16 @@ def _slim_build(info: dict) -> dict:
     return json.loads(json.dumps(out, default=str))
 
 
-def build_skeleton(asset: Path, source: Path, work: Path, plan: dict, pred_opt: str, facing_prior: dict, note) -> dict:
+def build_skeleton(asset: Path, source: Path, work: Path, plan: dict, pred_opt: str, facing_prior: dict, note,
+                   keep: dict | None = None) -> dict:
     """Design section 9.2: predict (sampled, as the plan says), build the plan's skeleton on the mesh
     (rig_build), write rig/template/rig.glb and rig/template_posed.glb, and the fit record (yaw 0, scale 1, nothing
     unsupported). Returns {info, ref_store, pred_ctx}. Raises rig_build.BuildError, or whatever the prediction
-    raised; the caller falls back to the class's template in auto mode."""
+    raised; the caller falls back to the class's template in auto mode.
+
+    keep (filled before the build can raise): {"pred": Pred, "pred_ctx": {...}} once the prediction is made, or
+    {"pred_error": str} when it failed, so the fallback binds this same prediction instead of making a second one
+    (one prediction per rig; the t0.7 sample binds the vendor template as well as greedy does, scratchpad A/B)."""
     import rig_build
     import rig_pred
     import rig_template
@@ -1053,11 +1062,18 @@ def build_skeleton(asset: Path, source: Path, work: Path, plan: dict, pred_opt: 
     pred, pred_ctx, pmode = None, {}, "none"
     if pred_opt != "never":
         kw = {"beams": beams if beams > 1 else None, "temperature": float(temp) if temp else None}
-        pglb, psecs, cached = rig_pred.predict(source, work, **kw)
-        pred = rig_pred.Pred(pglb)
+        try:
+            pglb, psecs, cached = rig_pred.predict(source, work, **kw)
+            pred = rig_pred.Pred(pglb)
+        except Exception as e:
+            if keep is not None:
+                keep["pred_error"] = str(e)[:300]
+            raise
         pmode = "sampled" if kw["temperature"] else ("beam" if kw["beams"] else "default")
         pred_ctx = {"seconds": round(psecs, 1), "cached": cached, "joints": len(pred.names), "mode": pmode,
                     "file": f"rig/{pglb.name}", **{k: v for k, v in kw.items() if v}}
+        if keep is not None:
+            keep.update(pred=pred, pred_ctx=dict(pred_ctx))
         note(f"Predicted a skeleton of its own for the model ({len(pred.names)} joints, {pmode}, {psecs:.0f} s"
              + (", from the cache" if cached else "") + ")")
     info = rig_build.build(source, plan, pred, tdir, pred_mode=pmode)
@@ -1293,6 +1309,12 @@ def main(argv: list[str] | None = None) -> int:
         notes.append(text)
         print("rig: " + text, flush=True)
 
+    degraded: list[dict] = []  # rig.json `degraded`: every fallback, said out loud (DEGRADED <stage> <code>: <message>)
+
+    def degrade(code: str, message: str) -> None:
+        degraded.append({"stage": "rig", "code": code, "message": message})
+        print(f"DEGRADED rig {code}: {message}", flush=True)
+
     stage("rest", "Checking the rest pose")
     sdoc, sbin0 = read_glb(source)
     mesh_points = accessor(sdoc, sbin0, sdoc["meshes"][0]["primitives"][0]["attributes"]["POSITION"]).astype(float)
@@ -1329,9 +1351,10 @@ def main(argv: list[str] | None = None) -> int:
     sprim = sdoc["meshes"][0]["primitives"][0]
     faces = accessor(sdoc, sbin0, sprim["indices"]).reshape(-1, 3).astype(np.int64) if "indices" in sprim else np.arange(len(mesh_points)).reshape(-1, 3)
     built, build_error = None, None
+    build_keep: dict = {}  # the build's prediction, reused by the fallback (one prediction per rig)
     if mode == "build":
         try:
-            built = build_skeleton(asset, source, work, plan, args.pred, facing_prior, note)
+            built = build_skeleton(asset, source, work, plan, args.pred, facing_prior, note, keep=build_keep)
         except Exception as e:  # noqa: BLE001 - BuildError, a failed prediction or a template the verifier rejects
             import rig_build
             code = e.code if isinstance(e, rig_build.BuildError) else type(e).__name__
@@ -1340,6 +1363,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(f"rig: couldn't build a skeleton ({code}: {msg})")
             build_error = {"code": code, "msg": msg}
             note(f"warn: couldn't build a skeleton ({code}: {msg}); using the class's vendor template")
+            degrade("build_failed", f"{code}: {msg}; rigged on the class's vendor template instead")
             mode = "fixed"
     plan_used = plan if built is not None else fixed_plan(plan, cls)
     if built is not None:  # rig/plan.json: the plan the built template was made with (rig_clips/rig_frames read it)
@@ -1368,6 +1392,20 @@ def main(argv: list[str] | None = None) -> int:
         mesh_tm = trimesh.Trimesh(mesh_points, faces, process=False)
         red = rig_pred._red(sdoc, sbin0)
 
+        if "pred" in build_keep:  # the build predicted, then failed: bind that same prediction, don't make another
+            pr_ = build_keep["pred"]
+            holder["pred"] = pr_
+            same = len(pr_.P) == len(mesh_points) and float(np.abs(pr_.P - mesh_points).max()) < 1e-6
+            pred_ctx.update(build_keep["pred_ctx"], same_vertices=same, independent=rig_pred.label(pr_, None, red),
+                            reused_from="build")
+            note(f"Reusing the skeleton predicted for the build ({len(pr_.names)} joints, {pred_ctx.get('mode')}) "
+                 "to fit the template")
+        elif "pred_error" in build_keep:  # the build's prediction failed: don't try a second one
+            holder["pred"] = None
+            pred_ctx.update(error=build_keep["pred_error"], reused_from="build")
+            degrade("pred_failed", f"no predicted skeleton (the build's prediction failed: {build_keep['pred_error'][:120]}); "
+                    "the template is fitted by its own shape")
+
         def get_pred():
             if "pred" not in holder:
                 holder["pred"] = None
@@ -1383,6 +1421,7 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as e:  # noqa: BLE001 - no prediction: the geometric fit (rig_fit) does it alone
                     pred_ctx["error"] = str(e)[:300]
                     note(f"Couldn't predict a skeleton ({str(e)[:120]}); fitting the template by its own shape")
+                    degrade("pred_failed", f"no predicted skeleton ({str(e)[:120]}); the template is fitted by its own shape")
             return holder["pred"]
 
         def pred_fn(yaw: int):
@@ -1454,6 +1493,9 @@ def main(argv: list[str] | None = None) -> int:
         note(f"Pose check: {gate['joints_outside_box']:.0%} of joints outside the model's box, "
              f"{gate['bone_far_outside_0p08H']:.0%} of the bones well outside the model; skeleton/model size "
              + " / ".join(f"{x:.2f}" for x in gate["skeleton_over_mesh_extent"]))
+        if fitinfo.get("poor_match"):
+            degrade("poor_match", f"scale {float(fitinfo.get('scale_ratio') or 0):.1f}x between axes; the {cls} "
+                    "template is a poor body-plan match for this model")
         if (gate["level"] == "fail" or os.environ.get("RIG_FORCE_FALLBACK")) and pred is not None and pred_ctx.get("labels") \
                 and pred_ctx.get("same_vertices"):
             # E3 fallback: the template can't be fitted; ship the predicted rig itself with the template's clips mapped
@@ -1466,6 +1508,10 @@ def main(argv: list[str] | None = None) -> int:
             has = {d["label"] for d in pred_ctx["labels"]["chains"]}
             unsupported_clips = [n for g, cl in needs.items() if g not in has for n in cl if n in names]
             names = [n for n in names if n not in unsupported_clips]
+            degrade("pred_skeleton", "the template didn't fit; rigged on the model's own predicted skeleton, "
+                    "clips mapped chain by chain, no floor pass")
+            if unsupported_clips:
+                degrade("clips_dropped", ",".join(unsupported_clips))
             stage("clips", "Baking animation clips")
             fclips, finfo = rig_pred.fallback_clips(pred, pred_ctx["labels"], template, cls, names, float(fitinfo.get("yaw", 0)),
                                                     plan=plan_used)
@@ -1481,7 +1527,8 @@ def main(argv: list[str] | None = None) -> int:
                       "joints": len(pred.names), "clips": [c["name"] for c in fclips], "missing_clips": [], "skin_seconds": 0.0,
                       "binder": "pred-rig", "fallback": {"why": "pose gate", "gate": gate, **finfo}, "fit": fitinfo,
                       "far_motion": far, "unsupported_clips": unsupported_clips, "made": int(time.time()), "fbx": None,
-                      "fbx_note": "skipped", "pred": {k: v for k, v in pred_ctx.items() if k != "independent"}}
+                      "fbx_note": "skipped", "pred": {k: v for k, v in pred_ctx.items() if k != "independent"},
+                      "degraded": degraded}
             (work / "rig.json").write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
             bad = [c for c, v in far.items() if v["level"] == "fail"]
             summary = {"version": 1, "made": report["made"], "class": cls, "level": "fail" if bad else "warn",
@@ -1663,6 +1710,9 @@ def main(argv: list[str] | None = None) -> int:
             far = far_motion(out_glb)
         note(("Floor pass (" if rig_pred.paths_for(cls, plan_used) else "Floor pass, grounding only (") + f"{time.time() - t0:.0f} s): " + "; ".join(
             f"{c} lowest {v['low_min_before']:+.2f}→{v['low_min_after']:+.2f}× height" for c, v in floor.items()))
+    gone_clips = list(dict.fromkeys(list(unsupported_clips) + list(dropped_clips) + [f["name"] for f in clips_failed]))
+    if gone_clips:
+        degrade("clips_dropped", ",".join(gone_clips))
     # last: designed joint frames (bone rolls for the FBX); the skinning is unchanged, so nothing above is re-run
     reframed = None
     if (args.reframe == "1" or (args.reframe == "auto" and built is not None)) and clips:
@@ -1682,6 +1732,7 @@ def main(argv: list[str] | None = None) -> int:
         "unsupported_clips": unsupported_clips, "floor": floor,
         "clips_report": clips_report, "clips_failed": clips_failed, "facing_prior": facing_prior,
         "build_error": build_error, "binder_report": binder_report, "reframe": reframed, "fbx_check": None,
+        "degraded": degraded,
     }
     stage("check", "Checking the rig")
     bundle = None

@@ -34,6 +34,41 @@ class FlowTest(unittest.TestCase):
     def stage(self, name: str) -> dict:
         return next(s for s in flow.state(self.root, "radio")["stages"] if s["stage"] == name)
 
+    def test_concept_take_carries_the_views(self) -> None:
+        for rel in ("flat/sheet.png", "flat/views/front.png", "flat/views/right.png", "flat/views.json"):
+            write(self.asset / rel, "sheet one " + rel)
+        write(self.asset / "views" / "lifted" / "right.png", "isolated by generate.sh")
+        files = self.stage("concept")["files"]
+        for rel in ("flat/sheet.png", "flat/views/front.png", "flat/views/right.png", "flat/views.json"):
+            self.assertIn(rel, files)
+        self.assertNotIn("views/lifted/right.png", files)  # generate.sh's, the mesh take's
+        flow.snapshot(self.root, "radio", "concept")
+        # A newer sheet; then going back to t1 brings ITS views back with its source.png, never a mix.
+        write(self.asset / "flat" / "source.png", "still two")
+        write(self.asset / "flat" / "views.json", "sheet two")
+        (self.asset / "flat" / "views" / "front.png").unlink()
+        flow.snapshot(self.root, "radio", "concept")
+        flow.pick(self.root, "radio", "concept", "t1")
+        self.assertEqual((self.asset / "flat" / "source.png").read_text(), "still one")
+        self.assertEqual((self.asset / "flat" / "views.json").read_text(), "sheet one flat/views.json")
+        self.assertTrue((self.asset / "flat" / "views" / "front.png").is_file())
+        self.assertTrue((self.asset / "views" / "lifted" / "right.png").is_file())  # the concept pick leaves it
+
+    def test_a_single_still_concept_drops_newer_views_when_picked(self) -> None:
+        flow.snapshot(self.root, "radio", "concept")  # t1: a single still, no views
+        write(self.asset / "flat" / "source.png", "sheet canonical")
+        write(self.asset / "flat" / "views.json", "{}")
+        flow.snapshot(self.root, "radio", "concept")
+        flow.pick(self.root, "radio", "concept", "t1")
+        self.assertFalse((self.asset / "flat" / "views.json").exists())
+
+    def test_mesh_take_carries_shape_degraded_and_lifted_views(self) -> None:
+        for rel in ("shape.json", "degraded.json", "views/lifted/front.png", "views/lifted/left.png"):
+            write(self.asset / rel, rel)
+        files = self.stage("mesh")["files"]
+        for rel in ("mesh.glb", "shape.json", "degraded.json", "views/lifted/front.png", "views/lifted/left.png"):
+            self.assertIn(rel, files)
+
     def test_old_asset_reads_as_unsaved(self) -> None:
         self.assertTrue(self.stage("concept")["unsaved"])
         self.assertTrue(self.stage("mesh")["live"])

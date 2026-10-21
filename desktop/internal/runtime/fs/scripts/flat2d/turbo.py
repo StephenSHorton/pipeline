@@ -1,4 +1,8 @@
-"""The fixed sampling grid Qwen-Image 2.1 Turbo was distilled on, as an mflux scheduler.
+"""Sampling schedules as mflux schedulers.
+
+TurboGrid: the fixed grid Qwen-Image 2.1 Turbo was distilled on. It applies to the 2.1 path only (an NC model,
+reachable only with FLAT2D_ALLOW_NC=1). Lightning: the schedule lightx2v's Qwen-Image-2512-Lightning LoRAs were
+distilled with (the default draw).
 
 The Turbo checkpoint stores its 8 sigma nodes in model_index.json (`sample_sigmas`).
 They are used as is: no resolution shift, no terminal rescale, then a final 0.
@@ -35,11 +39,23 @@ def load_grid(repo: str) -> tuple[float, ...]:
         return TURBO_SIGMAS
 
 
+# lightx2v Qwen-Image-Lightning's scheduler config: FlowMatchEuler, use_dynamic_shifting with base_shift = max_shift
+# = log(3) and time_shift_type exponential, so every resolution gets the same shift mu = log(3) on a linspace
+# (1 .. 1/N), with no terminal stretch, then a final 0.
+LIGHTNING_SHIFT = 3.0
+
+
+def lightning_sigmas(steps: int, shift: float = LIGHTNING_SHIFT) -> list[float]:
+    nodes = [1.0 - i * (1.0 - 1.0 / steps) / max(steps - 1, 1) for i in range(steps)]
+    return [shift * s / (1.0 + (shift - 1.0) * s) for s in nodes] + [0.0]
+
+
 try:
     import mlx.core as mx
     from mflux.models.common.schedulers.base_scheduler import BaseScheduler
-except ImportError:  # no mflux: the class is never asked for
+except ImportError:  # no mflux: the classes are never asked for
     TurboGrid = None
+    Lightning = None
 else:
 
     class TurboGrid(BaseScheduler):
@@ -64,3 +80,24 @@ else:
         def step(self, noise: mx.array, timestep: int, latents: mx.array, **kwargs) -> mx.array:
             dt = (self._sigmas[timestep + 1] - self._sigmas[timestep]).astype(latents.dtype)
             return latents + noise.astype(latents.dtype) * dt
+
+    class Lightning(BaseScheduler):
+        """mflux scheduler with the Lightning LoRA's own schedule (any step count; the LoRA is made for 4 or 8)."""
+
+        def __init__(self, config):
+            self.config = config
+            self._sigmas = mx.array(lightning_sigmas(config.num_inference_steps), dtype=mx.float32)
+            self._timesteps = mx.arange(config.num_inference_steps, dtype=mx.float32)
+
+        @property
+        def sigmas(self) -> mx.array:
+            return self._sigmas
+
+        @property
+        def timesteps(self) -> mx.array:
+            return self._timesteps
+
+        def step(self, noise: mx.array, timestep: int, latents: mx.array, **kwargs) -> mx.array:
+            dt = (self._sigmas[timestep + 1] - self._sigmas[timestep]).astype(latents.dtype)
+            return latents + noise.astype(latents.dtype) * dt
+

@@ -552,6 +552,25 @@ def _build(source: Path, plan: dict, pred: rig_pred.Pred | None, out_dir: Path, 
                                                             "pred:" + pred.names[head_c[-1]] if n == "mouth_upper" else hsrc)
     neck = chains.get("neck", {}) if isinstance(chains.get("neck"), dict) else {}
     cap = float(neck.get("tip_cap_H", 0.4))
+    # a predicted head chain that ends in a comb or crest climbs steeply from head to mouth_upper (passing
+    # chickens rise ~50 deg, comb-tipped ones 59-72 deg): swing mouth_upper toward the head's forward-most surface,
+    # keeping the segment's length, so the beak base sits in the head and not in the comb
+    seg = mu - hd
+    rise = float(neck.get("beak_rise_max_deg", 55))
+    if np.degrees(np.arctan2(seg[1], max(seg[2], 1e-9))) > rise:
+        near = V[np.linalg.norm(V - hd, axis=1) < 0.3 * H]
+        if len(near):
+            f = near[np.argmax(near[:, 2])] - hd
+            if f[2] > 0:
+                # the forward-most point is usually the beak tip; the base is the furthest point toward it that
+                # is still inside the (low-poly, thin-beaked) head
+                fn = float(np.linalg.norm(f))
+                for k in (0.6, 0.5, 0.4, 0.3, 0.2):
+                    cand = hd + f / fn * min(float(np.linalg.norm(seg)), k * fn)
+                    if mesh.inside(cand[None])[0]:
+                        mu = pos["mouth_upper"] = cand
+                        src["mouth_upper"] = "head_forward"
+                        break
     # the beak: a ray from mouth_upper toward the head's forward-most surface (the head direction, bent forward)
     hd_dir = mu - hd
     headpts = V[np.linalg.norm(V - mu, axis=1) < 0.25 * H]

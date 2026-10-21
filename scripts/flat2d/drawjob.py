@@ -26,6 +26,10 @@ LABELS = {
     "draw": "Draw the picture",
     "ground": "Check the ground",
     "redraw": "Draw it again",
+    # The four-view sheet. Not 'check' or 'split': factory_http merges these after the rig labels ("check" is
+    # "Check the rig"), so a draw stage must never reuse a rig or generate stage name.
+    "views_split": "Split the four views",
+    "views_check": "Check the views agree",
     "pieces": "Cut the pieces",
     "motion": "Pack the motion",
     "say": "Speak the line",
@@ -37,9 +41,15 @@ TEXTS = ("prompt", "pieces", "motion", "say", "sound")
 MAX_IDEAS = 8
 PREVIEW_PX = 768
 FLAW_TEXT = {"cloudy": "Ground is cloudy.", "shadow": "There is a shadow on the ground.",
-             "facing": "The head points the wrong way.", "profile": "It is not a side view."}
+             "facing": "The head points the wrong way.", "profile": "It is not a side view.",
+             "height": "The views are not the same height.", "colour": "The views are not the same colours.",
+             "side": "The two side views do not match.", "empty": "A view is missing.",
+             "pieces": "A view holds more than one subject."}
 FLAW_PAST = {"cloudy": "ground was cloudy", "shadow": "ground had a shadow", "facing": "head pointed the wrong way",
-             "profile": "not a side view"}
+             "profile": "not a side view", "height": "views were different heights", "colour": "views were "
+             "different colours", "side": "side views did not match", "empty": "a view was missing",
+             "pieces": "a view held more than one subject"}
+VIEW_STAGES = ("views_split", "views_check")
 
 
 def times_path(root: Path) -> Path:
@@ -72,6 +82,7 @@ def stage_estimates(known: Any, plan: list[str], redraws: int = 1, extra: dict[s
     for stage in plan:
         if stage == "redraw":
             a, g = num("attempt"), num("ground")
+            # "ground" is a still's ground check, or a sheet's split and check (Hook.phase starts that clock too).
             value = None if a is None else (a + (g or 0.0)) * max(1, redraws)
         else:
             value = num(_time_key(stage))
@@ -114,13 +125,15 @@ def write_times(root: Path, backend: str, seconds: dict[str, float]) -> None:
     os.replace(tmp, path)
 
 
-def plan_for(kind: str, *, loaded: bool, steps: list[str] | None = None, count: int = 1, drop: bool = False) -> list[str]:
+def plan_for(kind: str, *, loaded: bool, steps: list[str] | None = None, count: int = 1, drop: bool = False,
+             views: bool = False) -> list[str]:
+    """The stages a draw job shows. views: the four-view sheet (draw, split, check) instead of a still's ground."""
     head = [] if loaded else ["load"]
     if kind == "ideas":
         return head + [f"idea{i}" for i in range(1, count + 1)]
     if drop:
         return list(steps or [])
-    return head + ["draw", "ground"] + list(steps or [])
+    return head + ["draw", *(VIEW_STAGES if views else ("ground",))] + list(steps or [])
 
 
 class Hook:
@@ -245,6 +258,22 @@ class Hook:
             self.stage("ground")
         self.line("Checking the ground.")
 
+    def phase(self, key: str) -> None:
+        """A four-view sheet moved on: 'views_split' (the drawing is done; split and cut out) or 'views_check'.
+        During a redraw both stay inside the redraw stage, as the ground check does."""
+        now = time.time()
+        if key == "views_split":
+            if self.attempt_t0 is not None:
+                self.attempts.append(now - self.attempt_t0)
+                self.attempt_t0 = None
+            self.ground_t0 = now
+            text = "Splitting the four views."
+        else:
+            text = "Checking the views agree."
+        if self.kind == "flat2d" and self.target == "draw" and key in self.plan:
+            self.stage(key)
+        self.line(text)
+
     def ground_done(self) -> None:
         if self.ground_t0 is not None:
             self.grounds.append(time.time() - self.ground_t0)
@@ -252,8 +281,9 @@ class Hook:
 
     def attempt(self, i: int, total: int, flaws: list[str]) -> None:
         self.ground_done()
-        why = " ".join(FLAW_TEXT.get(f, f) for f in flaws) or "The ground needs another try."
-        self.why = " and ".join(FLAW_PAST.get(f, f) for f in flaws) or "new seed"
+        kinds = list(dict.fromkeys(f.split(":", 1)[0] for f in flaws))  # "empty:front" reads as "empty"
+        why = " ".join(FLAW_TEXT.get(f, f) for f in kinds) or "The ground needs another try."
+        self.why = " and ".join(FLAW_PAST.get(f, f) for f in kinds) or "new seed"
         if self.kind == "flat2d":
             self.target = "redraw"
             self.redraws += 1
@@ -331,7 +361,7 @@ def _remember(root: Path, backend: str, hook: Hook | None) -> None:
         out["attempt"] = hook.attempts[-1]
     if hook.grounds:
         out["ground"] = hook.grounds[-1]
-    for step in STEPS:
+    for step in (*STEPS, *VIEW_STAGES):
         s = hook.seconds(step)
         if s is not None:
             out[step] = s
@@ -390,7 +420,8 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
     if stem_dir(root, stem).is_dir() and not drop:
         autosave(root, stem, ("concept",))
     had_parts = (flat_dir(root, stem) / "parts.json").is_file() and "pieces" not in steps
-    plan = plan_for("flat2d", loaded=optional.model_loaded(), steps=steps, drop=drop)
+    views = not drop and optional.wants_views(payload.get("intent"), payload.get("views"))
+    plan = plan_for("flat2d", loaded=optional.model_loaded(), steps=steps, drop=drop, views=views)
     hook = Hook(factory, job_id, stem, stem_dir(root, stem) / "draw.log", plan, "flat2d", spec.get("backend") or "")
     hooks.append(hook)
     hook.set_plan(plan)
@@ -404,10 +435,22 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
             hook.stage("draw")
             hook.attempt_t0 = time.time()
         with optional.drawing(hook):
-            saved = optional.generate_still(root, stem, str(payload.get("prompt") or ""), intent=payload.get("intent"))
+            saved = optional.draw(root, stem, str(payload.get("prompt") or ""), intent=payload.get("intent"),
+                                  views=payload.get("views"))
         hook.ground_done()
         result["seed"] = saved.get("seed")
         result["redrawn"] = list(saved.get("redrawn") or [])
+        result["degraded"] = list(saved.get("degraded") or [])
+        from factory_env import degraded_line
+
+        for entry in result["degraded"]:
+            hook.line(degraded_line(entry))
+        if saved.get("views"):
+            for k in ("views", "sheet", "consistent", "flaws", "canonical_view"):
+                result[k] = saved.get(k)
+            for note in saved.get("notes") or []:
+                result["notes"].append(note)
+                hook.line(note)
         if saved.get("pose"):
             for k in ("pose", "facing", "canonical", "facing_check"):
                 result[k] = saved.get(k)

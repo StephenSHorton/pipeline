@@ -12,7 +12,7 @@ from factory_env import check_stem, stem_dir
 
 from flat2d.atlas import pack_request
 from flat2d.ideas import clear_ideas, draw_idea, keep_idea, read_ideas, use_idea
-from flat2d.optional import FlatUnavailable, draft_mechanics, generate_still, render_sound, speak
+from flat2d.optional import FlatUnavailable, draft_mechanics, draw, render_sound, speak
 from flat2d.sheet import backends
 from flat2d.steps import apply_steps
 from flat2d.store import FlatError, load_sheet, save_sheet, save_source, source_path, split_source
@@ -177,7 +177,8 @@ def handle(root: Path, method: str, path: str, body: bytes) -> tuple[int, bytes,
         if action == "draft":
             return _json(draft_mechanics(root, stem, str(payload.get("note") or ""), payload.get("parts") or []))
         if action == "generate":
-            return _json(generate_still(root, stem, str(payload.get("prompt") or "")))
+            intent = payload.get("intent") if isinstance(payload.get("intent"), dict) else None
+            return _json(draw(root, stem, str(payload.get("prompt") or ""), intent=intent, views=payload.get("views")))
         if action == "sound":
             part = payload.get("part") or {}
             if not isinstance(part, dict):

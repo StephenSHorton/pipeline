@@ -49,6 +49,11 @@ FILES: dict[str, tuple[str, ...]] = {
         "flat/source.png",
         "flat/key.json",
         "flat/prompt.txt",
+        # The four-view sheet (flat2d/views.py): a concept take carries its views, so picking an older take never
+        # leaves a newer views.json beside another drawing's source.png (views.json also holds its sha256).
+        "flat/sheet.png",
+        "flat/views/*",
+        "flat/views.json",
     ),
     # flat/view.json (which picture is centered) is a view setting, not part of any take.
     "flat": (
@@ -72,6 +77,10 @@ FILES: dict[str, tuple[str, ...]] = {
         "lods.json",
         "inspect.json",
         "preview.png",
+        # What generate.sh made the mesh from and how: the orientation fit, its fallbacks, the isolated views.
+        "shape.json",
+        "degraded.json",
+        "views/lifted/*",
     ),
     # rig/template/* is a template built for this model (rig.glb, clips.glb, its reports); of rig/preview/ only the
     # contact sheet and frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be rendered again.
@@ -79,6 +88,10 @@ FILES: dict[str, tuple[str, ...]] = {
     "stack": ("stack/*",),
     "export": ("export/**/*",),
 }
+
+# Paths a stage's globs reach that belong to another stage: views/lifted/ is generate.sh's (the mesh take), not
+# the concept's views/**.
+EXCLUDE: dict[str, tuple[str, ...]] = {"concept": ("views/lifted/",)}
 
 MANIFEST = "flow.json"
 TAKES = "takes"
@@ -96,10 +109,13 @@ def check_stage(stage: str) -> str:
 
 def stage_files(folder: Path, stage: str) -> list[str]:
     seen: set[str] = set()
-    for pattern in FILES[check_stage(stage)]:
+    skip = EXCLUDE.get(check_stage(stage), ())
+    for pattern in FILES[stage]:
         for p in folder.glob(pattern):
             if p.is_file() and not p.name.startswith("."):
-                seen.add(p.relative_to(folder).as_posix())
+                rel = p.relative_to(folder).as_posix()
+                if not rel.startswith(skip):
+                    seen.add(rel)
     return sorted(seen)
 
 

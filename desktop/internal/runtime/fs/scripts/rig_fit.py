@@ -224,6 +224,14 @@ print('RENDER_OK')
 """
 
 
+def vlm_num_ctx() -> int:
+    """Same small context as facing.num_ctx: ollama's default here (262144) wires ~41 GB for qwen3.8:27b."""
+    try:
+        return max(2048, int(os.environ.get("VLM_NUM_CTX") or 8192))
+    except ValueError:
+        return 8192
+
+
 def vlm_cue(source: Path, blender: str | None, out_prefix: Path) -> dict:
     """Ask the local vision model which side the head is on in a +X and a -X side render. Camera at +X: image right
     is -Z; camera at -X: image right is +Z. Votes only when both views agree. keep_alive 0 unloads the model."""
@@ -242,7 +250,8 @@ def vlm_cue(source: Path, blender: str | None, out_prefix: Path) -> dict:
     url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/generate"
     answers = {}
     for view in ("side", "xside"):
-        body = {"model": model, "prompt": VLM_Q, "stream": False, "think": False, "keep_alive": 0, "options": {"temperature": 0},
+        body = {"model": model, "prompt": VLM_Q, "stream": False, "think": False, "keep_alive": 0,
+                "options": {"temperature": 0, "num_ctx": vlm_num_ctx()},
                 "images": [base64.b64encode(Path(f"{out_prefix}_{view}.png").read_bytes()).decode()]}
         try:
             r = urllib.request.urlopen(urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"}), timeout=600)

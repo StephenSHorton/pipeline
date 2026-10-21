@@ -48,16 +48,25 @@ from flow import FLAT_WRITES, autosave
 from flow import handle as handle_flow
 from export_asset import handle as handle_export
 from factory_env import (
+    NO_PICTURE,
     PSX_KEYS,
+    UPLOAD_EXTS,
+    add_degraded,
     auto_stem,
     check_stem,
     clean_psx,
+    degraded_entry,
+    degraded_line,
     factory_python,
+    file_sha256,
     generate_argv,
+    json_degraded,
     normalize_poly,
+    parse_degraded,
     pick_glb,
     poly_label,
     repo_root,
+    require_picture,
     resolve_under_root,
     slug_stem,
     stem_dir,
@@ -66,7 +75,7 @@ from inspect_glb import inspect as inspect_glb
 from clean_mesh import clean_name
 
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
-UPLOAD_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+QUALITIES = ("draft", "textured", "pbr", "stack", "psx")
 NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 ALLOWED_HOSTS = LOOPBACK
 DEFAULT_PORT = 8766
@@ -81,17 +90,101 @@ def _dir_has_files(path: Path) -> bool:
         return False
 
 
+def _executable(path: Path) -> bool:
+    """The file a path (or symlink chain) resolves to exists and can be run; a dangling link is False."""
+    try:
+        target = Path(os.path.realpath(path))
+    except OSError:
+        return False
+    return target.is_file() and os.access(target, os.X_OK)
+
+
+def _has_weights(folder: Path) -> bool:
+    try:
+        return folder.is_dir() and any(folder.glob("*.safetensors")) and (folder / "config.yaml").is_file()
+    except OSError:
+        return False
+
+
+_HY2_PROBE: dict[tuple[str, int], bool] = {}
+
+
+def _hy2_imports(root: Path) -> bool:
+    """vendor/hunyuan3d-2's venv imports torch and hy3dgen (what scripts/shape_mv.sh needs). Run once per venv
+    (keyed on its python's mtime), since /health is polled and the import takes about a second."""
+    hy2 = root / "vendor" / "hunyuan3d-2"
+    py = hy2 / ".venv" / "bin" / "python"
+    if not _executable(py):
+        return False
+    try:
+        key = (str(py.resolve()), py.stat().st_mtime_ns)
+    except OSError:
+        return False
+    if key not in _HY2_PROBE:
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import torch, hy3dgen, importlib.util as u; "
+                "sys.exit(0 if u.find_spec('hy3dgen.shapegen') else 1)")
+        try:
+            ok = subprocess.run([str(py), "-c", code, str(hy2)], cwd=str(root), capture_output=True,
+                                timeout=60).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        _HY2_PROBE[key] = ok
+    return _HY2_PROBE[key]
+
+
+# What each draw backend's weights are licensed under (flat2d.sheet.still_backend names), used only when the sheet
+# module can't say itself (flat2d.sheet.still_info()); a backend neither knows reads "unknown", never a guess.
+DRAW_LICENCES = {
+    "qwen-2512": "apache-2.0",  # Qwen-Image-2512 + Lightning LoRA
+    "qwen-image": "qwen-research (non-commercial)",  # Qwen-Image-2.1-Turbo: Qwen RESEARCH LICENSE, NC only
+    "z-image": "apache-2.0",
+    "stub": "none (test stub)",
+}
+
+
+def draw_feature() -> dict[str, Any]:
+    from flat2d import sheet
+
+    try:
+        backend = still_backend()
+    except Exception as e:  # noqa: BLE001 - a broken draw stack is a fact to report, not a crash of /health
+        return {"backend": "", "licence": "unknown", "error": str(e)[:200]}
+    out: dict[str, Any] = {"backend": backend or ""}
+    try:
+        info = sheet.still_info(backend) or {}
+    except Exception:  # noqa: BLE001
+        info = {}
+    licence = info.get("licence")
+    if licence and licence != "unknown" and info.get("model"):
+        out["model"] = str(info["model"])
+    else:
+        licence = DRAW_LICENCES.get(backend, "unknown") if backend else "none"
+    out["licence"] = str(licence)
+    return out
+
+
 def factory_features(root: Path) -> dict[str, Any]:
-    remesh = (root / "bin" / "autoremesher").is_file() or (root / "bin" / "AutoRemesher.app").is_dir()
-    lift = (root / "bin" / "lift-subject").is_file()
+    """What this machine can really do, probed (not claimed): isolate, shape, the 2mv path, remesh and the draw."""
+    root = Path(root)
+    lift = _executable(root / "bin" / "lift-subject")
+    hy3d = _executable(root / "bin" / "hy3d")
+    shape_weights = _has_weights(root / "weights" / "shape-small")
+    mv_dir = root / "weights" / "tencent" / "Hunyuan3D-2mv"
+    mv_weights = _has_weights(mv_dir / "hunyuan3d-dit-v2-mv-turbo") or _has_weights(mv_dir / "hunyuan3d-dit-v2-mv")
+    hy2 = _hy2_imports(root)
+    remesh = _executable(root / "bin" / "autoremesher")
     return {
         "isolate": "vision" if lift else "none",
-        "shape": "mini-mlx",
+        "shape": "hy3d-mlx" if hy3d and shape_weights else "none",
+        "shape_weights": shape_weights,
         "paint": "mlx-rgb",
         "paint_pbr": True,
-        "shape_mv": False,
+        "shape_mv": bool(hy2 and mv_weights),
+        "shape_mv_venv": hy2,
+        "shape_mv_weights": mv_weights,
         "unirig": False,
         "remesh": remesh,
+        "draw": draw_feature(),
     }
 
 
@@ -309,34 +402,60 @@ def parse_progress(text: str) -> dict[str, Any] | None:
     }
 
 
+def _given(value: Any) -> bool:
+    return value not in (None, "", [])
+
+
 def clean_intent(raw: Any) -> dict[str, Any] | None:
-    """The app's chosen output for an asset, checked: {"output": ps1|model|stack|sprite, ...settings}."""
-    if not isinstance(raw, dict) or raw.get("output") not in OUTPUTS:
+    """The app's chosen output for an asset, checked: {"output": ps1|model|stack|sprite, ...settings}. None when
+    no intent was sent; a bad value for a known key raises ValueError (a 400), never a quiet drop. Keys this
+    doesn't know are ignored."""
+    if raw is None:
         return None
+    if not isinstance(raw, dict):
+        raise ValueError("intent must be a JSON object")
+    if raw.get("output") not in OUTPUTS:
+        raise ValueError("intent needs output: " + " | ".join(OUTPUTS))
     out: dict[str, Any] = {"output": raw["output"]}
     psx = clean_psx({k: raw.get(k) for k in PSX_KEYS})
     if psx:
         out["psx"] = psx
-    if raw.get("poly") in ("high", "medium", "low"):
+    if _given(raw.get("poly")):
+        if raw["poly"] not in ("high", "medium", "low"):
+            raise ValueError("intent poly must be high, medium or low")
         out["poly"] = raw["poly"]
     steps = raw.get("steps")
-    if isinstance(steps, list):
-        out["steps"] = [str(x) for x in steps if x in ("pieces", "motion", "say", "sound")]
+    if steps is not None:
+        allowed = ("pieces", "motion", "say", "sound")
+        if not isinstance(steps, list) or any(x not in allowed for x in steps):
+            raise ValueError("intent steps must be a list of " + ", ".join(allowed))
+        out["steps"] = [str(x) for x in steps]
     # What the subject is (the canonical draw and the rig read these): {subject, kind, name}.
-    for key in ("subject", "kind"):
-        if isinstance(raw.get(key), str) and re.fullmatch(r"[A-Za-z0-9 _-]{1,48}", raw[key].strip()):
-            out[key] = raw[key].strip()
-    if isinstance(raw.get("name"), str) and re.fullmatch(r"[A-Za-z0-9 _-]{1,64}", raw["name"].strip()):
-        out["name"] = raw["name"].strip()
-    if raw.get("facing_source") in FACING_SOURCES:
+    for key, limit in (("subject", 48), ("kind", 48), ("name", 64)):
+        value = raw.get(key)
+        if not _given(value):
+            continue
+        if not (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9 _-]{1,%d}" % limit, value.strip())):
+            raise ValueError(f"intent {key} must be 1 to {limit} letters, digits, spaces, _ or -")
+        out[key] = value.strip()
+    if _given(raw.get("facing_source")):
+        if raw["facing_source"] not in FACING_SOURCES:
+            raise ValueError("intent facing_source must be one of " + ", ".join(FACING_SOURCES))
         out["facing_source"] = raw["facing_source"]
     rig = raw.get("rig")
-    if isinstance(rig, dict):
+    if rig is not None:
+        if not isinstance(rig, dict):
+            raise ValueError("intent rig must be an object")
         keep: dict[str, Any] = {}
         for key in ("plan", "plan_hint"):
-            if isinstance(rig.get(key), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,48}", rig[key]):
-                keep[key] = rig[key]
-        if isinstance(rig.get("canonical"), bool):
+            if not _given(rig.get(key)):
+                continue
+            if not (isinstance(rig[key], str) and re.fullmatch(r"[A-Za-z0-9_-]{1,48}", rig[key])):
+                raise ValueError(f"intent rig {key} must be 1 to 48 letters, digits, _ or -")
+            keep[key] = rig[key]
+        if rig.get("canonical") is not None:
+            if not isinstance(rig["canonical"], bool):
+                raise ValueError("intent rig canonical must be true or false")
             keep["canonical"] = rig["canonical"]
         if keep:
             out["rig"] = keep
@@ -436,13 +555,20 @@ class Factory:
         raw = Path(name or "upload.jpg").name
         ext = Path(raw).suffix.lower()
         if ext not in UPLOAD_EXTS:
-            ext = ".jpg"
+            raise ValueError(NO_PICTURE)
         stem = NAME_RE.sub("-", Path(raw).stem).strip("-._") or "upload"
         stem = stem[:48]
         check_stem(stem)
         dest = self.root / "in" / f"{stem}{ext}"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
+        # Decode it first (in a temp file beside the target), so an upload that isn't a picture never lands in in/.
+        tmp = dest.with_name(f".upload-{uuid.uuid4().hex[:8]}{ext}")
+        try:
+            tmp.write_bytes(data)
+            require_picture(tmp)
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
         return {
             "ok": True,
             "path": f"in/{dest.name}",
@@ -601,6 +727,22 @@ class Factory:
                 pass
         return {"ok": True, "job_id": job_id, "state": "cancelling"}
 
+    def reap(self) -> None:
+        """The sidecar is going away: stop the running job's process group. Jobs start in their own session,
+        so the app's SIGTERM to the sidecar's group never reaches them. A 2D draw has no pid; the cancel flag
+        stops it at its next step."""
+        with self._lock:
+            job = self._job
+            if not job or job.get("state") != "running":
+                return
+            job["cancel"] = True
+            pid = job.get("pid")
+        if pid:
+            try:
+                os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
     def set_intent(self, stem: str, raw: Any) -> dict[str, Any]:
         stem = check_stem(stem)
         intent = clean_intent(raw)
@@ -639,7 +781,82 @@ class Factory:
                 out["progress"] = parse_progress(text)
             except OSError:
                 out["log_tail"] = ""
+        out["degraded"] = self._degraded(job)
+        if isinstance(out.get("result"), dict):
+            out["result"] = {**out["result"], "degraded": out["degraded"]}
         return out
+
+    def _degraded(self, job: dict[str, Any]) -> list[dict[str, str]]:
+        """Every fallback this job took, from one grammar ("DEGRADED <stage> <code>: <message>" lines in its log),
+        what the factory itself noted (spec "degraded"), and the "degraded" lists in rig/rig.json (a rig) or
+        flat/views.json (a draw), when this job wrote them."""
+        out: list[dict[str, str]] = []
+        for entry in job.get("degraded") or []:
+            add_degraded(out, entry)
+        log_path = job.get("log")
+        if log_path:
+            try:
+                text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            for entry in parse_degraded(text):
+                add_degraded(out, entry)
+        kind = job.get("kind")
+        try:
+            folder = stem_dir(self.root, str(job.get("stem") or ""))
+        except ValueError:
+            return out
+        sidecar = None
+        if kind == "rig":
+            sidecar = folder / "rig" / "rig.json"
+        elif kind in ("flat2d", "ideas"):
+            sidecar = folder / "flat" / "views.json"
+        elif job.get("views_json"):
+            sidecar = Path(job["views_json"])
+        if sidecar is not None and sidecar.is_file():
+            # An older run's sidecar says nothing about this job (a generate's views.json is hash-checked already).
+            fresh = kind is None or sidecar.stat().st_mtime >= float(job.get("started") or 0) - 1
+            if fresh:
+                for entry in json_degraded(sidecar):
+                    add_degraded(out, entry)
+        return out
+
+    def views_handoff(self, img: Path) -> tuple[Path | None, list[dict[str, str]]]:
+        """The draw's views.json to pass to generate.sh (--views-json), or None, plus the degraded notes.
+        Views pass only when the picture is out/<stem>/flat/source.png and its sha256 is the one views.json was
+        made from (a concept take swapped in later must never bake another drawing's views). Every view file must
+        be a picture (ValueError otherwise)."""
+        out_dir = (self.root / "out").resolve()
+        img = img.resolve()
+        is_flat = img.name == "source.png" and img.parent.name == "flat" and img.parent.parent.parent == out_dir
+        views_path = img.parent / "views.json" if is_flat else None
+        if views_path is None or not views_path.is_file():
+            # A drawing with no views: drawn with views 1, before views existed, or an older concept take picked
+            # (a take carries its own views, so an older one without them leaves none rather than stale ones).
+            why = "this drawing has no turnaround views; one picture" if is_flat else "one picture"
+            return None, [degraded_entry("shape", "single_view", why)]
+        try:
+            doc = json.loads(views_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            doc = None
+        want = doc.get("source_sha256") if isinstance(doc, dict) else None
+        if not want or str(want).lower() != file_sha256(img):
+            return None, [degraded_entry("views", "stale",
+                                         "flat/views.json was drawn for another picture; using one picture")]
+        views = doc.get("views")
+        if not isinstance(views, list) or not views:
+            return None, [degraded_entry("shape", "single_view", "views.json lists no views")]
+        folder = img.parent.parent
+        for view in views:
+            rel = view.get("file") if isinstance(view, dict) else None
+            if not isinstance(rel, str) or not rel:
+                raise ValueError(NO_PICTURE)
+            require_picture(resolve_under_root(folder, rel))
+        notes: list[dict[str, str]] = []
+        if doc.get("consistent") is False:
+            flaws = ", ".join(str(f) for f in doc.get("flaws") or []) or "the views disagree"
+            return None, [degraded_entry("views", "inconsistent", f"{flaws}; using one picture")]
+        return views_path, notes
 
     def start_generate(
         self,
@@ -654,27 +871,26 @@ class Factory:
         psx: dict[str, Any] | None = None,
         intent: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if quality not in {"draft", "textured", "pbr", "stack", "psx"}:
-            quality = "stack"
+        # Everything is checked before the job slot is taken: a refused request leaves /status idle.
+        quality = str(quality or "stack")
+        if quality not in QUALITIES:
+            raise ValueError(f"quality must be one of {', '.join(QUALITIES)}")
         poly_in = str(poly or "medium")
         poly = normalize_poly(poly_in)
-        paths: list[str] = []
-        if image:
-            paths.append(str(image))
+        # No 3D without a picture: the main image, every ref and every view must be one.
+        if not image:
+            raise ValueError(NO_PICTURE)
+        paths: list[str] = [str(image)]
         for extra in images or []:
             if extra and str(extra) not in paths:
                 paths.append(str(extra))
-        if not paths:
-            raise FileNotFoundError("image not found")
         resolved = [resolve_under_root(self.root, p) for p in paths]
-        img = resolved[0]
-        if not img.is_file():
-            raise FileNotFoundError(f"image not found: {paths[0]}")
-        refs: list[Path] = []
-        for extra_path, extra_src in zip(resolved[1:], paths[1:]):
-            if not extra_path.is_file():
-                raise FileNotFoundError(f"image not found: {extra_src}")
-            refs.append(extra_path)
+        for p in resolved:
+            require_picture(p)
+        img, refs = resolved[0], resolved[1:]
+        views_json, degraded = self.views_handoff(img)
+        psx_opts = clean_psx(psx)
+        intent_doc = clean_intent(intent)
         prompt = str(prompt or "").strip()
         if not stem:
             stem = auto_stem(self.root, prompt, [img, *refs])
@@ -694,8 +910,11 @@ class Factory:
             "poly_in": poly_in,
             "poly_label": poly_label(poly),
             "seed": str(seed),
-            "psx": clean_psx(psx) if quality == "psx" else {},
-            "intent": clean_intent(intent),
+            "psx": psx_opts if quality == "psx" else {},
+            "intent": intent_doc,
+            "views_json": str(views_json) if views_json else None,
+            "degraded": degraded,
+            "log": str(stem_dir(self.root, stem) / "generate.log"),
             "started": time.time(),
             "glb_path": None,
             "returncode": None,
@@ -706,7 +925,8 @@ class Factory:
                 raise RuntimeError("generate already running")
             if self._sync_draws:
                 raise RuntimeError("the factory is busy with another job")
-            self._job = dict(spec)
+            # The log joins the job once _start_log has begun this run's, so /status never shows the last run's.
+            self._job = {k: v for k, v in spec.items() if k != "log"}
 
         thread = threading.Thread(target=self._run_job, args=(spec,), daemon=False)
         thread.start()
@@ -758,6 +978,11 @@ class Factory:
             if step not in steps:
                 steps.append(step)
         payload: dict[str, Any] = {"prompt": prompt, "intent": clean_intent(body.get("intent"))}
+        views = body.get("views")
+        if views not in (None, ""):  # API-only opt-in (plan 1.1): views 1 is the old single draw, 4 the sheet
+            if str(views).strip() not in ("1", "4"):
+                raise ValueError("views must be 1 or 4")
+            payload["views"] = int(str(views).strip())
         for key in ("pieces", "motion", "say", "sound"):
             if isinstance(body.get(key), str):
                 payload[key] = body[key]
@@ -942,8 +1167,15 @@ class Factory:
                         proc = subprocess.Popen(spec["argv"], cwd=str(self.root), stdout=fh, stderr=subprocess.STDOUT,
                                                 text=True, start_new_session=True, env=rig_env(self.root))
                         with self._lock:
+                            cancelled = False
                             if self._job and self._job.get("job_id") == spec["job_id"]:
                                 self._job["pid"] = proc.pid
+                                cancelled = bool(self._job.get("cancel"))
+                        if cancelled:  # Cancel or reap arrived between the check above and the pid being known
+                            try:
+                                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                            except OSError:
+                                pass
                         rc = proc.wait()
                 return rc
 
@@ -979,9 +1211,7 @@ class Factory:
                     self._job.update({"state": "error", "error": str(e), "finished": time.time()})
 
     def _run_generate_sh(self, spec: dict[str, Any]) -> int:
-        log_path = stem_dir(self.root, spec["stem"]) / "generate.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        spec["log"] = str(log_path)
+        log_path = Path(spec["log"])
         argv = generate_argv(
             self.root,
             image=Path(spec["image"]),
@@ -992,20 +1222,19 @@ class Factory:
             refs=[Path(p) for p in spec.get("refs") or []],
             prompt=spec.get("prompt") or None,
             psx=spec.get("psx") or None,
+            views_json=Path(spec["views_json"]) if spec.get("views_json") else None,
+            degraded=list(spec.get("degraded") or []),
         )
         spec["argv"] = argv
         with self._lock:
             if self._job and self._job.get("job_id") == spec["job_id"]:
-                self._job["log"] = spec["log"]
                 self._job["argv"] = argv
         env = os.environ.copy()
         env["FACTORY_ROOT"] = str(self.root)
-        # One log per run: the previous one is kept as generate.prev.log so /status never shows an old run.
-        if log_path.is_file():
-            log_path.replace(log_path.with_name("generate.prev.log"))
         if (self._snapshot() or {}).get("cancel"):
             return -signal.SIGTERM  # cancelled before it started
-        with log_path.open("w", encoding="utf-8") as fh:
+        # The log was started by _run_job (the unload note and the factory's DEGRADED lines); generate.sh appends.
+        with log_path.open("a", encoding="utf-8") as fh:
             proc = subprocess.Popen(
                 argv,
                 cwd=str(self.root),
@@ -1027,6 +1256,39 @@ class Factory:
                     pass
             return int(proc.wait())
 
+    def _unload_draw(self) -> str:
+        """Free the draw model before any 3D: paint alone peaks at 61-74 GB. Returns the log line saying what
+        happened; a missing or failing unload is a warning in the job log, never a silent skip or a failed job."""
+        try:
+            from flat2d import optional
+        except Exception as e:  # noqa: BLE001
+            return f"generate: WARNING could not import flat2d.optional to unload the draw model ({e})"
+        unload = getattr(optional, "unload", None)
+        if not callable(unload):
+            return ("generate: WARNING flat2d.optional.unload() is missing; the draw model may still be in memory "
+                    "while the 3D stages run")
+        try:
+            unload()
+        except Exception as e:  # noqa: BLE001
+            return f"generate: WARNING unloading the draw model failed ({type(e).__name__}: {e})"
+        return "generate: unloaded the draw model"
+
+    def _start_log(self, spec: dict[str, Any]) -> None:
+        """A fresh generate.log for this run (the last one is kept as generate.prev.log), opened with the
+        unload note and a DEGRADED line for every fallback the factory chose before generate.sh runs."""
+        log_path = Path(spec["log"])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.is_file():
+            log_path.replace(log_path.with_name("generate.prev.log"))
+        lines = [self._unload_draw()]
+        if spec.get("views_json"):
+            lines.append(f"generate: views from {spec['views_json']}")
+        lines += [degraded_line(e) for e in spec.get("degraded") or []]
+        log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with self._lock:
+            if self._job and self._job.get("job_id") == spec["job_id"]:
+                self._job["log"] = spec["log"]
+
     def _run_job(self, spec: dict[str, Any]) -> None:
         try:
             # Keep what this run is about to overwrite.
@@ -1034,6 +1296,7 @@ class Factory:
                 autosave(self.root, spec["stem"], ("concept", "mesh", "stack"))
             if spec.get("intent"):
                 write_intent(self.root, spec["stem"], spec["intent"])
+            self._start_log(spec)
             rc = -signal.SIGTERM if (self._snapshot() or {}).get("cancel") else self._runner(spec)
             if (self._snapshot() or {}).get("cancel"):
                 with self._lock:
@@ -1046,6 +1309,7 @@ class Factory:
             err = None if state == "ok" else _generate_error(rc, report, spec.get("log"))
             if state == "ok":
                 autosave(self.root, spec["stem"], ("concept", "mesh", "stack"))
+            degraded = self._degraded(spec)
             with self._lock:
                 if self._job and self._job.get("job_id") == spec["job_id"]:
                     self._job.update(
@@ -1056,6 +1320,8 @@ class Factory:
                             "inspect": report,
                             "finished": time.time(),
                             "error": err,
+                            "degraded": degraded,
+                            "result": {"glb_path": str(glb) if glb else None, "degraded": degraded},
                         }
                     )
         except Exception as e:
@@ -1605,6 +1871,24 @@ def make_handler(factory: Factory):
     return Handler
 
 
+def stop_handler(factory: Factory, httpd: ThreadingHTTPServer):
+    """SIGTERM/SIGINT: reap the job first, then stop serving. The app (desktop/internal/sidecar/proc.go) sends
+    SIGTERM and SIGKILLs the group 100 ms later, so the kill cannot wait. shutdown() blocks until serve_forever
+    returns, and serve_forever is on this (the main) thread, so it runs on its own."""
+    stopping = threading.Event()
+
+    def handle(signum, frame) -> None:
+        # Set before reaping: a second signal landing while reap() holds the factory lock would re-enter it and
+        # deadlock. serve()'s finally reaps again, so a signal that returns here loses nothing.
+        if stopping.is_set():
+            return
+        stopping.set()
+        factory.reap()
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    return handle
+
+
 def serve(host: str, port: int, root: Path, log_path: Path | None = None) -> None:
     if host not in ALLOWED_HOSTS:
         raise SystemExit(f"loopback only (got {host})")
@@ -1625,9 +1909,14 @@ def serve(host: str, port: int, root: Path, log_path: Path | None = None) -> Non
     pid_path = root / "out" / "factory_http.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    handle = stop_handler(factory, httpd)
+    before = {sig: signal.signal(sig, handle) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         httpd.serve_forever()
     finally:
+        for sig, old in before.items():
+            signal.signal(sig, old)
+        factory.reap()  # also when serve_forever stopped some other way; after the handlers, so it is not re-entered
         httpd.server_close()
         try:
             pid_path.unlink()

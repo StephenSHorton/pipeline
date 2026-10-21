@@ -717,7 +717,18 @@ def run_biped(ctx: Ctx, spec: dict, e: float) -> Track:
     return tr
 
 
-def peck(ctx: Ctx, spec: dict, e: float) -> Track:
+def _head_v(ctx: Ctx) -> np.ndarray:
+    """The points the head, beak and jaw own (wattles and comb included): what reaches the floor in a peck."""
+    k = ctx.neck.index(ctx.head) if ctx.head in ctx.neck else len(ctx.neck) - 1
+    bones = {ctx.sk.i(n) for n in ctx.neck[k:]} | ({ctx.sk.i(ctx.jaw)} if ctx.jaw else set())
+    bones |= {i for i, n in enumerate(ctx.sk.names) if n.startswith(("mouth_", "head"))}
+    return np.isin(ctx.top, sorted(bones)) if len(ctx.top) else np.zeros(0, bool)
+
+
+def peck(ctx: Ctx, spec: dict, e: float, _lift: float = 0.0) -> Track:
+    """Pecks the ground in front of the toes. The goal is the beak tip's, raised (twice at most) by however far the
+    head's lowest skin (wattles hang below a rooster's beak) would go past the beak gap, so the skin, not the joint,
+    touches down; info.beak_low is that skin's height per frame, which the beak-gap gate reads."""
     p = _P(spec)
     sk, H = ctx.sk, ctx.H
     tr = Track(sk, snap_frames(spec.get("T", 1.6)), loop=True)
@@ -734,7 +745,7 @@ def peck(ctx: Ctx, spec: dict, e: float) -> Track:
     tips = [sk.rest[lg["ix"]["T"]] if "T" in lg["ix"] else sk.rest[lg["ix"]["K"]] for lg in ctx.legs]
     tip_names = [lg["names"]["tip"] for lg in ctx.legs if sk.has(lg["names"]["tip"])]
     toes_z = max([sk.rest[sk.i(n)][2] for n in tip_names] or [p_[2] for p_ in tips] or [0.0])
-    goal = np.array([ctx.sk.cx, ctx.floor + p.get("beak_gap_H", 0.01) * H, toes_z + p.get("reach_H", 0.12) * H])
+    goal = np.array([ctx.sk.cx, ctx.floor + p.get("beak_gap_H", 0.01) * H + _lift, toes_z + p.get("reach_H", 0.12) * H])
     # hips pitch: the plan's amount, raised (up to hips_pitch_max) until the neck can reach the goal
     hp_base = p.get("hips_pitch", 15) * e
     hp_max = max(p.get("hips_pitch_max", 30), hp_base)
@@ -774,6 +785,14 @@ def peck(ctx: Ctx, spec: dict, e: float) -> Track:
         tr.contact[lg["names"]["K"]] = np.ones(tr.F, bool)
     tr.contact["beak"] = hold
     tr.info.update(v=0.0, goal=goal, hips_pitch=hp, beak_hold=hold)
+    hv = _head_v(ctx)
+    if ctx.neck and hv.any():
+        pos, rot = tr.fk()
+        low = ctx.skin(pos, rot, hv)[:, :, 1].min(1)
+        tr.info["beak_low"] = low
+        over = (ctx.floor + p.get("beak_gap_H", 0.01) * H) - float(low[hold].min()) if hold.any() else 0.0
+        if over > 0.002 * H and _lift < 0.3 * H and spec.get("_relift", 0) < 2:
+            return peck(ctx, {**spec, "_relift": spec.get("_relift", 0) + 1}, e, _lift + over)
     return tr
 
 

@@ -73,6 +73,16 @@ def _model() -> str:
     return os.environ.get("RIG_VLM_MODEL", "qwen3.8:27b")
 
 
+def num_ctx() -> int:
+    """The context the vision model is loaded with. ollama's VRAM-based default on this machine is 262144, which
+    wires about 41 GB for qwen3.8:27b; one picture and a one-line question need under 1k tokens, and 8192 wires
+    about 22 GB (measured 2026-10-20). VLM_NUM_CTX overrides it."""
+    try:
+        return max(2048, int(os.environ.get("VLM_NUM_CTX") or 8192))
+    except ValueError:
+        return 8192
+
+
 def ask(png, question: str, keep: bool = False) -> str:
     """One vision question about one PNG; the raw answer text. keep=True leaves the model loaded for the next ask
     (keep_alive 60s); the last ask of a batch passes keep=False, which unloads it (keep_alive 0, like rig_fit)."""
@@ -80,7 +90,7 @@ def ask(png, question: str, keep: bool = False) -> str:
         raise VLMUnavailable("FACING_VLM=off")
     url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/generate"
     body = {"model": _model(), "prompt": question, "stream": False, "think": False,
-            "keep_alive": "60s" if keep else 0, "options": {"temperature": 0},
+            "keep_alive": "60s" if keep else 0, "options": {"temperature": 0, "num_ctx": num_ctx()},
             "images": [base64.b64encode(Path(png).read_bytes()).decode()]}
     try:
         r = urllib.request.urlopen(urllib.request.Request(url, json.dumps(body).encode(),
@@ -88,6 +98,18 @@ def ask(png, question: str, keep: bool = False) -> str:
         return str(json.loads(r.read()).get("response") or "")
     except Exception as e:  # noqa: BLE001 - no model: the caller records it and does not vote
         raise VLMUnavailable(f"vision model unavailable ({e})") from e
+
+
+def release() -> None:
+    """Unload the vision model now (ollama keep_alive 0, no prompt). Never raises."""
+    if (os.environ.get("FACING_VLM") or "").strip().lower() in {"off", "0", "no", "false"}:
+        return
+    url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434") + "/api/generate"
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, json.dumps({"model": _model(), "keep_alive": 0}).encode(),
+                                                      {"Content-Type": "application/json"}), timeout=10).read()
+    except Exception:  # noqa: BLE001 - nothing to unload, or no server
+        pass
 
 
 def first_word(text: str) -> str:
@@ -131,6 +153,7 @@ def detect_image(png) -> dict:
             a_prof = ask(png, PROFILE_Q, keep=True)
             a_mirr = ask(mirrored, HEAD_Q, keep=False)
         except VLMUnavailable as e:
+            release()  # an ask that kept the model loaded may have gone through before the failure
             return {**out, "how": "unavailable", "why": str(e)}
     out["answers"] = {"head": a_head.strip()[:80], "profile": a_prof.strip()[:80], "mirrored": a_mirr.strip()[:80]}
     head, prof, mirr = parse_head(a_head), parse_yes(a_prof), parse_head(a_mirr)
@@ -153,9 +176,9 @@ def detect_image(png) -> dict:
 def judge(det: dict, expected: str = "right") -> dict:
     """What a draw does with a detection: {ok, flaws, rank, mirror}. rank orders fallbacks (0 best):
     0 accepted, 1 the head on the wrong side of a clean profile (mirrorable), 2 anything else.
-    An unavailable model accepts (the prompt made it canonical; nothing to check it with)."""
+    An unavailable model is never a pass: the flaw 'facing_unavailable' (a new seed cannot fix it)."""
     if det.get("how") == "unavailable":
-        return {"ok": True, "flaws": [], "rank": 0, "mirror": False, "checked": False}
+        return {"ok": False, "flaws": ["facing_unavailable"], "rank": 2, "mirror": False, "checked": False}
     head, prof, conf = det.get("head"), det.get("profile"), float(det.get("confidence") or 0)
     side = expected in ("left", "right")
     if head == expected and (prof is True or not side) and conf >= ACCEPT:
