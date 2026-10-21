@@ -1,4 +1,4 @@
-# ai-asset-pipeline
+# pipeline
 
 Local image-to-3D on Apple Silicon (MLX). No Meshy. See **[PLAN.md](PLAN.md)**.
 
