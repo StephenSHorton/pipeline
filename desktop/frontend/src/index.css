@@ -1,0 +1,74 @@
+/* One CSS source: the Mokei package (git dependency). Do not import src/mokei/* copies; `npx shadcn add`
+   writes them and injects cssVars here, so delete them again after adding a component. */
+@import 'tailwindcss';
+@import 'shadcn/tailwind.css'; /* animate-in, data-open: and the other variants the components use */
+@import 'mokei/theme/preset.css';
+@import 'mokei/themes/yardline.css';
+
+@source '../src';
+
+@layer base {
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+:root {
+  /* Inter everywhere (the approved Make-panel design); it ships with the app (@fontsource-variable/inter), so
+     it works offline. html.is-apple is not set: it is Mokei's SF Pro sizing. */
+  font-family: 'Inter Variable', Inter, -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: 'cv11' off;
+  letter-spacing: var(--track, -0.012em);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* App text tokens Yardline lacks. Yardline's --destructive (#ef4444), --success (#15803d on its tint) and
+   --muted-foreground (#64748b) fall under 4.5:1 as small text on the ground or the glass, so text uses these:
+   danger-text #b91c1c, success-text #166534, ink-3 #475569 (the approved design's secondary text). Fills and
+   dots keep the Yardline tokens. --ground-ellipse is the design's #dfe6f5 band, as a mix of Yardline tokens. */
+:root {
+  --danger-text: #b91c1c;
+  --success-text: #166534;
+  --ink-3: #475569;
+  --ground-ellipse: color-mix(in srgb, var(--clay-road) 30%, var(--background));
+}
+
+@theme inline {
+  --color-danger-text: var(--danger-text);
+  --color-success-text: var(--success-text);
+  --color-ink-3: var(--ink-3);
+  --color-ground-ellipse: var(--ground-ellipse);
+  --color-signal: var(--mokei-accent-2);
+  --color-signal-foreground: var(--mokei-detail-dark);
+}
+
+/* A 44 px touch target around a control the HUD look draws smaller (29 px toggles, 18 px links): an invisible
+   hit area, and on touch screens the control itself grows to 44 px. */
+@utility hit-44 {
+  position: relative;
+  &::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, calc(50% - 22px));
+  }
+  @media (pointer: coarse) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
