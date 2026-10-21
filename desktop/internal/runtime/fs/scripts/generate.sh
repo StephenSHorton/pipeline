@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Vertical slice: image -> lifted PNG -> hy3d GLB -> inspect.json
+# Vertical slice: picture(s) -> lifted PNG(s) -> shape GLB -> paint + photo bake -> inspect.json
+#
+# No 3D without a picture: a missing or non-image --image, --ref or turnaround view stops here (exit 2).
+# Turnaround views (--views-json, written by the 2D draw) drive the multi-view shape (Hunyuan3D-2mv) and the
+# photo bake. Anything that falls back prints 'DEGRADED <stage> <code>: <message>' and lands in
+# out/<stem>/degraded.json and inspect.json's "degraded".
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,16 +22,21 @@ STACK_RES=160
 WANT_STACK=1
 PROMPT=""
 REFS=()
+VIEWS_JSON=""
+PRE_DEGRADED=()  # --degraded "<stage> <code>: <message>": a fallback the caller (the factory) already chose
+REMESH=""
 # --quality psx: PS1 low-poly with the photo baked on (psx_lowpoly.py).
 FACING="camera"
+FACING_SET=0
 PSX_HEIGHT=48
 PSX_FACES=1200
 PSX_ATLAS=256
 PSX_UP="z"
 PSX_NAME=""
+NO_PICTURE="3D needs a picture. Draw or add one first."
 
 usage() {
-  echo "usage: generate.sh --image <path> [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack]" >&2
+  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N]" >&2
   echo "       psx: [--facing camera|right|left|away] [--psx-height N] [--psx-faces N] [--psx-atlas N] [--psx-up z|y] [--psx-name name]" >&2
   exit 2
 }
@@ -35,6 +45,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --image) IMAGE="$2"; shift 2 ;;
     --ref) REFS+=("$2"); shift 2 ;;
+    --views-json) VIEWS_JSON="$2"; shift 2 ;;
+    --degraded) PRE_DEGRADED+=("$2"); shift 2 ;;
     --prompt) PROMPT="$2"; shift 2 ;;
     --quality) QUALITY="$2"; shift 2 ;;
     --poly) POLY="$2"; shift 2 ;;
@@ -44,7 +56,8 @@ while [[ $# -gt 0 ]]; do
     --stem) STEM="$2"; shift 2 ;;
     --stack-res) STACK_RES="$2"; shift 2 ;;
     --no-stack) WANT_STACK=0; shift ;;
-    --facing) FACING="$2"; shift 2 ;;
+    --remesh) REMESH="$2"; shift 2 ;;
+    --facing) FACING="$2"; FACING_SET=1; shift 2 ;;
     --psx-height) PSX_HEIGHT="$2"; shift 2 ;;
     --psx-faces) PSX_FACES="$2"; shift 2 ;;
     --psx-atlas) PSX_ATLAS="$2"; shift 2 ;;
@@ -62,11 +75,12 @@ case "$POLY" in
   low) POLY="proxy" ;;
 esac
 
+# Octree per detail level (reduce_mesh.PRESETS keeps the same table).
 case "$POLY" in
-  hero) OCTREE="${OCTREE:-256}" ;;
-  lookdev) OCTREE="${OCTREE:-128}"; FACES="${FACES:-80000}" ;;
-  game) OCTREE="${OCTREE:-64}"; FACES="${FACES:-12000}" ;;
-  proxy) OCTREE="${OCTREE:-64}"; FACES="${FACES:-2000}" ;;
+  hero) OCTREE="${OCTREE:-384}" ;;
+  lookdev) OCTREE="${OCTREE:-256}"; FACES="${FACES:-80000}" ;;
+  game) OCTREE="${OCTREE:-128}"; FACES="${FACES:-12000}" ;;
+  proxy) OCTREE="${OCTREE:-128}"; FACES="${FACES:-2000}" ;;
   *) echo "generate: unknown --poly $POLY_IN (high|medium|low or hero|lookdev|game|proxy)" >&2; exit 2 ;;
 esac
 
@@ -83,18 +97,139 @@ if [[ "$QUALITY" == "psx" ]]; then
   WANT_PSX=1
   WANT_STACK=0
 fi
+case "$QUALITY" in
+  draft|textured|pbr) ;;
+  *) echo "generate: unknown --quality $QUALITY (draft|textured|pbr|stack|psx)" >&2; exit 2 ;;
+esac
 case "$FACING" in
   camera|right|left|away) ;;
   *) echo "generate: unknown --facing $FACING (camera|right|left|away)" >&2; exit 2 ;;
 esac
+if [[ -n "$REMESH" && ! "$REMESH" =~ ^[0-9]+$ ]]; then
+  echo "generate: --remesh takes a quad count" >&2; exit 2
+fi
 
 PYTHON="$(factory_python)"
 
-[[ -n "$IMAGE" && -f "$IMAGE" ]] || { echo "generate: --image is required and must exist" >&2; exit 2; }
-IMAGE="$(cd "$(dirname "$IMAGE")" && pwd)/$(basename "$IMAGE")"
+# --- No picture, no 3D -------------------------------------------------------------------------------------
+# Each file must exist, carry a picture suffix (the factory's UPLOAD_EXTS) and decode.
+not_pictures() {
+  "$PYTHON" - "$@" <<'PY'
+import sys
+from pathlib import Path
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+bad = []
+for arg in sys.argv[1:]:
+    p = Path(arg)
+    ok = p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    if ok and Image is not None:
+        try:
+            with Image.open(p) as im:
+                im.verify()
+        except Exception:
+            ok = False
+    if not ok:
+        bad.append(arg)
+for b in bad:
+    print(b)
+PY
+}
+refuse_picture() {
+  echo "$NO_PICTURE" >&2
+  echo "generate: not a picture: $1" >&2
+  exit 2
+}
+[[ -n "$IMAGE" ]] || refuse_picture "(no --image)"
+
+# Turnaround views: id<TAB>path rows (Hunyuan names front|left|back|right), plus canonical/facing/consistent.
+VIEW_IDS=()
+VIEW_FILES=()
+VIEWS_CANON=""
+VIEWS_FACING=""
+VIEWS_CONSISTENT=1
+VIEWS_NOTE=""
+if [[ -n "$VIEWS_JSON" ]]; then
+  [[ -f "$VIEWS_JSON" ]] || refuse_picture "$VIEWS_JSON (--views-json)"
+  VROWS="$("$PYTHON" - "$VIEWS_JSON" <<'PY'
+import json, sys
+from pathlib import Path
+src = Path(sys.argv[1]).resolve()
+try:
+    data = json.loads(src.read_text())
+except (OSError, ValueError) as e:
+    print(f"error\tviews.json unreadable: {e}")
+    sys.exit(0)
+naming = data.get("naming", "hunyuan")
+if naming != "hunyuan":
+    print(f"error\tviews.json naming {naming!r} is not supported (hunyuan)")
+    sys.exit(0)
+seen = set()
+for v in data.get("views") or []:
+    vid, f = v.get("id"), v.get("file")
+    if vid not in {"front", "left", "back", "right"} or not f or vid in seen:
+        continue
+    seen.add(vid)
+    p = Path(f)
+    if not p.is_absolute():
+        # 'file' is relative to the asset folder (out/<stem>/flat/views/x.png from out/<stem>/flat/views.json)
+        # or to the views.json folder.
+        cands = [src.parent.parent / p, src.parent / p]
+        p = next((c for c in cands if c.exists()), cands[0])
+    print(f"view\t{vid}\t{p}")
+print(f"canonical\t{data.get('canonical') or ''}")
+print(f"facing\t{data.get('facing') or ''}")
+print(f"consistent\t{0 if data.get('consistent') is False else 1}")
+flaws = data.get("flaws") or []
+if flaws:
+    print("flaws\t" + "; ".join(str(x) for x in flaws)[:300])
+PY
+)"
+  while IFS=$'\t' read -r kind a b; do
+    case "$kind" in
+      error) echo "generate: $a" >&2; exit 2 ;;
+      view) VIEW_IDS+=("$a"); VIEW_FILES+=("$b") ;;
+      canonical) VIEWS_CANON="$a" ;;
+      facing) VIEWS_FACING="$a" ;;
+      consistent) VIEWS_CONSISTENT="$a" ;;
+      flaws) VIEWS_NOTE="$a" ;;
+    esac
+  done <<< "$VROWS"
+  ((${#VIEW_IDS[@]})) || refuse_picture "$VIEWS_JSON (no views listed)"
+fi
+
+CHECK=("$IMAGE")
+((${#REFS[@]})) && CHECK+=("${REFS[@]}")
+((${#VIEW_FILES[@]})) && CHECK+=("${VIEW_FILES[@]}")
+BAD="$(not_pictures "${CHECK[@]}")"
+[[ -z "$BAD" ]] || refuse_picture "$(printf '%s' "$BAD" | head -1)"
+# ------------------------------------------------------------------------------------------------------------
+
+abspath() { printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")"; }
+IMAGE="$(abspath "$IMAGE")"
 if [[ -z "$STEM" ]]; then
   STEM="$(basename "$IMAGE")"
   STEM="${STEM%.*}"
+fi
+
+# The canonical view: which way the subject looks in the main picture (retexture's --first-facing, psx --facing).
+facing_of() {
+  case "$1" in
+    right) echo right ;; left) echo left ;; back) echo away ;; *) echo camera ;;
+  esac
+}
+view_of() {
+  case "$1" in
+    right) echo right ;; left) echo left ;; away) echo back ;; *) echo front ;;
+  esac
+}
+if ((${#VIEW_IDS[@]})); then
+  [[ -n "$VIEWS_CANON" ]] || VIEWS_CANON="$(view_of "${VIEWS_FACING:-$FACING}")"
+  if [[ "$FACING_SET" -eq 0 ]]; then
+    FACING="$(facing_of "$VIEWS_CANON")"
+  fi
 fi
 
 OUT="$ROOT/out/$STEM"
@@ -112,11 +247,76 @@ if [[ -z "${FACTORY_ROOT:-}" ]]; then
   exec > >(tee -a "$LOG") 2>&1
 fi
 
+# --- Loud degradation ---------------------------------------------------------------------------------------
+export DEGRADED_JSON="$OUT/degraded.json"
+printf '{\n  "degraded": []\n}\n' > "$DEGRADED_JSON"
+degrade() {
+  # degrade <stage> <code> <message>
+  echo "DEGRADED $1 $2: $3"
+  record_degraded "$@"
+}
+record_degraded() {
+  # The degraded.json row only (the caller already printed the DEGRADED line).
+  "$PYTHON" - "$DEGRADED_JSON" "$1" "$2" "$3" <<'PY'
+import json, sys
+from pathlib import Path
+p, row = Path(sys.argv[1]), {"stage": sys.argv[2], "code": sys.argv[3], "message": sys.argv[4]}
+try:
+    data = json.loads(p.read_text())
+except (OSError, ValueError):
+    data = {}
+rows = data.get("degraded") or []
+if row not in rows:
+    rows.append(row)
+data["degraded"] = rows
+p.write_text(json.dumps(data, indent=2) + "\n")
+PY
+}
+merge_degraded() {
+  # inspect_glb.py writes inspect.json; the degraded list is merged in here so that script stays as it is.
+  [[ -f "$1" ]] || return 0
+  "$PYTHON" - "$DEGRADED_JSON" "$1" <<'PY'
+import json, sys
+from pathlib import Path
+deg, ins = Path(sys.argv[1]), Path(sys.argv[2])
+try:
+    rows = json.loads(deg.read_text()).get("degraded") or []
+except (OSError, ValueError):
+    rows = []
+data = json.loads(ins.read_text())
+data["degraded"] = rows
+ins.write_text(json.dumps(data, indent=2) + "\n")
+PY
+}
+# The factory's own fallbacks (views stale, views inconsistent, ...) are already in the log; they belong in
+# degraded.json and inspect.json too, so the model card says why as well as the job card.
+PRE_SINGLE=0  # the factory already said why there is one picture (views stale / inconsistent / none)
+for ROW in ${PRE_DEGRADED[@]+"${PRE_DEGRADED[@]}"}; do
+  if [[ "$ROW" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]:]+):[[:space:]]?(.*)$ ]]; then
+    record_degraded "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    [[ "${BASH_REMATCH[1]}" == views || "${BASH_REMATCH[2]}" == single_view ]] && PRE_SINGLE=1
+  else
+    echo "generate: --degraded wants '<stage> <code>: <message>', got '$ROW'" >&2; exit 2
+  fi
+done
+# ------------------------------------------------------------------------------------------------------------
+
+# A rebuild starts clean: products of the last run must not sit next to a new shape.
+rm -f "$OUT/shape.json" "$OUT/textured.glb" "$OUT/pbr.glb" "$OUT/textured_photo.glb" "$OUT/textured_photo.albedo.png" \
+  "$OUT/textured_photo.fit.json" "$OUT/textured_game.glb" "$OUT/lod_textured_game.json" "$OUT/mesh_quad.glb" \
+  "$OUT/psx.glb" "$OUT/mesh_mv.glb"
+
+USE_MV=0
+if ((${#VIEW_IDS[@]})); then
+  if [[ "$VIEWS_CONSISTENT" -eq 1 ]]; then
+    USE_MV=1
+  fi
+fi
+
 # Progress for the app: one STAGES line with the plan, then "STAGE <key> <label>" as each one starts.
 PLAN="isolate shape reduce"
 if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
-  PLAN="$PLAN paint"
-  { ((${#REFS[@]})) || [[ -d "$OUT/views/lifted" || "$WANT_PSX" -eq 1 ]]; } && PLAN="$PLAN retexture"
+  PLAN="$PLAN paint retexture"
   [[ "$WANT_PSX" -eq 1 ]] && PLAN="$PLAN psx"
   PLAN="$PLAN lods"
 fi
@@ -124,93 +324,227 @@ PLAN="$PLAN inspect"
 [[ "$WANT_STACK" -eq 1 ]] && PLAN="$PLAN stack"
 [[ -x "$BIN/preview-glb" ]] && PLAN="$PLAN preview"
 echo "STAGES $PLAN"
-stage() { echo "STAGE $1 $2"; }
+STAGE_KEY=""
+STAGE_T0=0
+stage_done() {
+  if [[ -n "$STAGE_KEY" ]]; then
+    echo "generate: stage $STAGE_KEY took $(( $(date +%s) - STAGE_T0 ))s"
+  fi
+}
+stage() { stage_done; STAGE_KEY="$1"; STAGE_T0="$(date +%s)"; echo "STAGE $1 $2"; }
 
 echo "generate: root=$ROOT"
 echo "generate: image=$IMAGE"
 echo "generate: python=$PYTHON"
-echo "generate: quality=$QUALITY psx=$WANT_PSX poly=$POLY_IN ($POLY) octree=$OCTREE faces=${FACES:-keep} seed=$SEED stack=$WANT_STACK stack-res=$STACK_RES out=$OUT"
+echo "generate: quality=$QUALITY psx=$WANT_PSX poly=$POLY_IN ($POLY) octree=$OCTREE faces=${FACES:-keep} seed=$SEED stack=$WANT_STACK stack-res=$STACK_RES facing=$FACING out=$OUT"
 if [[ -n "$PROMPT" ]]; then
   echo "generate: prompt=$PROMPT"
+fi
+if ((${#VIEW_IDS[@]})); then
+  echo "generate: views=${VIEW_IDS[*]} canonical=$VIEWS_CANON consistent=$VIEWS_CONSISTENT ($VIEWS_JSON)"
 fi
 if ((${#REFS[@]})); then
   echo "generate: refs=${#REFS[@]}"
 fi
 
 if [[ ! -x "$BIN/hy3d" || ! -x "$BIN/lift-subject" || ! -f "$BIN/mlx.metallib" ]]; then
-  echo "generate: factory binaries missing, running bootstrap ($QUALITY)"
-  "$ROOT/scripts/bootstrap.sh" "$QUALITY"
+  echo "generate: factory binaries missing: run scripts/bootstrap.sh $QUALITY" >&2
+  exit 1
 fi
 
 LIFTED="$OUT/lifted.png"
 stage isolate "Cutting out the subject"
 echo "generate: lifting subject via Vision"
 "$BIN/lift-subject" "$IMAGE" "$LIFTED"
-isolate_one() { "$BIN/lift-subject" "$1" "$2"; }
+# A drawn picture's see-through parts (glass, vents) show the magenta key; Vision keeps them as subject. Take the
+# key's hue out of them before shape, paint and retexture see it (scripts/key_spill.py; photos have no key.json).
+IMAGE_KEY="$(dirname "$IMAGE")/key.json"
+if [[ -f "$IMAGE_KEY" ]]; then
+  KEY_RGB="$("$PYTHON" -c 'import json,sys; r=json.load(open(sys.argv[1])).get("rgb"); print(",".join(str(int(c)) for c in r) if isinstance(r, list) and len(r) == 3 else "")' "$IMAGE_KEY" 2>/dev/null || true)"
+  if [[ -n "$KEY_RGB" ]]; then
+    echo "generate: key spill on lifted.png $("$PYTHON" "$ROOT/scripts/key_spill.py" "$LIFTED" "$LIFTED" --key "$KEY_RGB")"
+  fi
+fi
 
+# Views and refs are built in a fresh folder, then swapped in, so a rebuild may read its own old views.
+NEWV="$OUT/views.new"
+rm -rf "$NEWV"
+mkdir -p "$NEWV/lifted"
+ROWS_JSON=()
+i=0
+while (( i < ${#VIEW_IDS[@]} )); do
+  vid="${VIEW_IDS[$i]}"
+  src="${VIEW_FILES[$i]}"
+  vext="${src##*.}"
+  cp "$src" "$NEWV/$vid.$vext"
+  ROWS_JSON+=("$vid|views/$vid.$vext|shape")
+  i=$((i + 1))
+done
+idx=0
 if ((${#REFS[@]})); then
-  echo "generate: isolating ${#REFS[@]} extra reference image(s) into views/"
-  mkdir -p "$OUT/views/lifted"
-  SLOTS=(front left back threequarter top)
-  VIEW_ROWS=()
-  idx=0
   for REF in "${REFS[@]}"; do
-    [[ -f "$REF" ]] || { echo "generate: missing --ref $REF" >&2; exit 2; }
-    REF="$(cd "$(dirname "$REF")" && pwd)/$(basename "$REF")"
-    REXT="${REF##*.}"
-    if (( idx < ${#SLOTS[@]} )); then
-      SLOT="${SLOTS[$idx]}"
-    else
-      SLOT="ref-$((idx + 1))"
-    fi
-    cp "$REF" "$OUT/views/$SLOT.$REXT"
-    isolate_one "$REF" "$OUT/views/lifted/$SLOT.png"
-    VIEW_ROWS+=("$SLOT|$REXT")
     idx=$((idx + 1))
+    rext="${REF##*.}"
+    cp "$REF" "$NEWV/ref-$idx.$rext"
+    "$BIN/lift-subject" "$REF" "$NEWV/lifted/ref-$idx.png"
+    ROWS_JSON+=("ref-$idx|views/ref-$idx.$rext|ref")
   done
+fi
+if ((${#VIEW_IDS[@]})); then
+  echo "generate: isolating ${#VIEW_IDS[@]} turnaround view(s) into views/lifted/ (key despill)"
+  KEY_JSON="$(dirname "$VIEWS_JSON")/key.json"
+  "$PYTHON" - "$NEWV" "$BIN/lift-subject" "$KEY_JSON" "$ROOT/scripts" "${VIEW_IDS[@]}" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[4])
+from key_spill import despill as key_spill
+
+import numpy as np
+from PIL import Image
+from scipy import ndimage
+
+views, lift, key_json, ids = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]), sys.argv[5:]
+key = (255, 0, 255)
+try:
+    rgb = json.loads(key_json.read_text()).get("rgb")
+    if isinstance(rgb, list) and len(rgb) == 3:
+        key = tuple(int(c) for c in rgb)
+except (OSError, ValueError):
+    pass
+weak = int(np.argmin(key))
+strong = [c for c in range(3) if key[c] - key[weak] > 96]
+for vid in ids:
+    src = next(p for p in views.iterdir() if p.is_file() and p.stem == vid)
+    out = views / "lifted" / f"{vid}.png"
+    im = Image.open(src)
+    a = np.asarray(im.convert("RGBA"))
+    cut = im.mode in ("RGBA", "LA") and (a[..., 3] < 128).mean() > 0.02
+    if not cut:
+        # No cut-out alpha: Vision lifts the subject as it does the main picture.
+        subprocess.run([lift, str(src), str(out)], check=True)
+        a = np.asarray(Image.open(out).convert("RGBA"))
+    a = a.copy()
+    # Despill: on the rim (within 3 px of the ground) the key's strong channels come down to its weak one.
+    solid = a[..., 3] >= 128
+    rim = (a[..., 3] > 0) & ndimage.binary_dilation(~solid, iterations=3)
+    if strong:
+        px = a[..., :3].astype(np.int32)
+        excess = np.clip(px[..., strong].min(-1) - px[..., weak], 0, None)
+        for c in strong:
+            px[..., c] = np.where(rim, px[..., c] - excess, px[..., c])
+        a[..., :3] = np.clip(px, 0, 255).astype(np.uint8)
+    # Then the see-through parts (glass, vents) that show the key: its hue comes out of them too.
+    a, spill = key_spill(a, key)
+    Image.fromarray(a, "RGBA").save(out)
+    note = f", key spill {spill['pixels']} px" if not spill["skipped"] else f", key spill skipped: {spill['skipped']}"
+    print(f"generate: views/lifted/{vid}.png ({'cut-out' if cut else 'lifted'}, {int(rim.sum())} rim px despilled{note})")
+PY
+fi
+rm -rf "$OUT/views"
+if ((${#ROWS_JSON[@]})); then
+  mv "$NEWV" "$OUT/views"
   {
     printf '{\n  "views": [\n'
     printf '    {"id": "input", "file": "input.%s", "role": "shape", "label": "Input image"}' "$EXT"
-    for row in "${VIEW_ROWS[@]}"; do
-      SLOT="${row%%|*}"
-      REXT="${row##*|}"
-      printf ',\n    {"id": "%s", "file": "views/%s.%s", "role": "ref", "label": "%s"}' "$SLOT" "$SLOT" "$REXT" "$SLOT"
+    for row in "${ROWS_JSON[@]}"; do
+      vid="${row%%|*}"; rest="${row#*|}"; file="${rest%%|*}"; role="${rest##*|}"
+      printf ',\n    {"id": "%s", "file": "%s", "role": "%s", "label": "%s"}' "$vid" "$file" "$role" "$vid"
     done
     printf '\n  ]\n}\n'
   } > "$OUT/views.json"
   echo "generate: wrote $OUT/views.json"
+else
+  rm -rf "$NEWV" "$OUT/views.json"
 fi
 
 stage shape "Building the shape"
 HERO="$OUT/mesh_hero.glb"
 MESH="$OUT/mesh.glb"
-USED_MV=0
 export SHAPE_OCTREE="$OCTREE"
 export SHAPE_SEED="$SEED"
+SHAPE_T0="$(date +%s)"
+SHAPE_MODEL=""
+SHAPE_STEPS=""
+ORIENT_VIEWS=()
 
-if [[ -d "$OUT/views/lifted" && -f "$OUT/views/lifted/front.png" && -f "$OUT/views/lifted/left.png" && -f "$OUT/views/lifted/back.png" ]]; then
-  if "$ROOT/scripts/shape_mv.sh" "$STEM" "$HERO"; then
-    USED_MV=1
+if [[ "$USE_MV" -eq 1 ]]; then
+  set +e
+  "$ROOT/scripts/shape_mv.sh" "$STEM" "$HERO" 2>&1 | tee "$OUT/shape_mv.log"
+  MV_RC=${PIPESTATUS[0]}
+  set -e
+  MV_LOG="$(cat "$OUT/shape_mv.log")"
+  if [[ $MV_RC -eq 0 && -s "$HERO" ]]; then
+    SHAPE_MODEL="hunyuan3d-2mv-${SHAPE_MV_MODEL:-turbo}"
+    SHAPE_STEPS="${SHAPE_MV_STEPS:-$([[ "${SHAPE_MV_MODEL:-turbo}" == "full" ]] && echo 30 || echo 5)}"
     echo "generate: multi-view shape wrote $HERO"
+    for v in front left back right; do
+      [[ -f "$OUT/views/lifted/$v.png" ]] && ORIENT_VIEWS+=(--view "$v=$OUT/views/lifted/$v.png")
+    done
   else
-    echo "generate: 2mv unavailable, single-image"
+    REASON="$(printf '%s\n' "$MV_LOG" | sed -n 's/^SHAPE_MV_FAIL //p' | tail -1)"
+    degrade shape mv_failed "multi-view shape failed (${REASON:-exit $MV_RC}); single-image shape instead"
+    USE_MV=0
   fi
+elif ((${#VIEW_IDS[@]})); then
+  degrade shape single_view "turnaround views failed the consistency check${VIEWS_NOTE:+ ($VIEWS_NOTE)}; one picture"
+elif [[ "$PRE_SINGLE" -eq 0 ]]; then
+  degrade shape single_view "one picture"
 fi
-if [[ "$USED_MV" -eq 0 ]]; then
-  SHAPE_WEIGHTS="$ROOT/weights/shape-small"
-  [[ -d "$SHAPE_WEIGHTS" ]] || { echo "generate: missing $SHAPE_WEIGHTS" >&2; exit 1; }
-  echo "generate: hy3d shape (octree $OCTREE)"
-  "$BIN/hy3d" shape "$LIFTED" -o "$HERO" --weights "$SHAPE_WEIGHTS" --seed "$SEED" --steps 30 --octree "$OCTREE"
+
+if [[ "$USE_MV" -eq 0 ]]; then
+  # Single-image shape: Hunyuan3D-2 v2-0 (30 steps), then shape-large (8 steps) if hy3d cannot load it.
+  # Steps go with the weights set.
+  V20="$ROOT/weights/tencent/Hunyuan3D-2/hunyuan3d-dit-v2-0"
+  LARGE="$ROOT/weights/shape-large"
+  SHAPED=0
+  if [[ -f "$V20/model.fp16.safetensors" ]]; then
+    echo "generate: hy3d shape v2-0 (30 steps, octree $OCTREE)"
+    if "$BIN/hy3d" shape "$LIFTED" -o "$HERO" --weights "$V20" --seed "$SEED" --steps 30 --octree "$OCTREE"; then
+      SHAPED=1; SHAPE_MODEL="hunyuan3d-dit-v2-0"; SHAPE_STEPS=30
+    fi
+  fi
+  if [[ "$SHAPED" -eq 0 ]]; then
+    [[ -d "$LARGE" ]] || { echo "generate: no single-image shape weights: run scripts/bootstrap.sh $QUALITY" >&2; exit 1; }
+    degrade shape v2_0_unavailable "hy3d could not run Hunyuan3D-2 v2-0; shape-large (8 steps) instead"
+    "$BIN/hy3d" shape "$LIFTED" -o "$HERO" --weights "$LARGE" --seed "$SEED" --steps 8 --octree "$OCTREE"
+    SHAPE_MODEL="shape-large"; SHAPE_STEPS=8
+  fi
+  ORIENT_VIEWS=(--view "$(view_of "$FACING")=$LIFTED")
 fi
 ls -lh "$HERO" || ls -l "$HERO"
-if [[ -n "$FACES" ]]; then
-  echo "generate: reduce to $FACES faces (--poly $POLY)"
-  "$PYTHON" "$ROOT/scripts/reduce_mesh.py" "$HERO" -o "$MESH" --faces "$FACES" --preset "$POLY"
-else
-  cp "$HERO" "$MESH"
+
+# Turn a multi-view shape so the canonical view sits at az 0 (where paint, retexture and psx expect the picture);
+# a single-image shape is already there and only gets its silhouette IoU recorded.
+ORIENT_CANON="$VIEWS_CANON"
+ORIENT_FLAGS=()
+if [[ "$USE_MV" -eq 0 ]]; then
+  ORIENT_CANON="$(view_of "$FACING")"
+  ORIENT_FLAGS=(--no-turn --min-iou 0)
+fi
+set +e
+"$PYTHON" "$ROOT/scripts/mv_orient.py" "$HERO" --canonical "$ORIENT_CANON" "${ORIENT_VIEWS[@]}" \
+  ${ORIENT_FLAGS[@]+"${ORIENT_FLAGS[@]}"} --json "$OUT/shape.json" \
+  --meta "model=$SHAPE_MODEL" --meta "steps=$SHAPE_STEPS" --meta "octree=$OCTREE" --meta "seed=$SEED" \
+  --meta "mode=$([[ "$USE_MV" -eq 1 ]] && echo multiview || echo single)" \
+  --meta "seconds=$(( $(date +%s) - SHAPE_T0 ))"
+ORC=$?
+set -e
+if [[ $ORC -eq 3 ]]; then
+  IOU="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["orient"]["iou"])' "$OUT/shape.json")"
+  degrade shape orient_low_iou "the shape's silhouettes match the views poorly (IoU $IOU < 0.5)"
+elif [[ $ORC -ne 0 ]]; then
+  degrade shape orient_failed "mv_orient.py exited $ORC; the shape was left as generated"
 fi
 
 stage reduce "Reducing the mesh"
+# reduce_mesh.py drops the pieces under 2% of the area (shape models leave floating crumbs) before it decimates.
+if [[ -n "$FACES" ]]; then
+  echo "generate: reduce to $FACES faces (--poly $POLY)"
+  "$PYTHON" "$ROOT/scripts/reduce_mesh.py" "$HERO" -o "$MESH" --faces "$FACES" --preset "$POLY" --min-piece 0.02
+else
+  "$PYTHON" "$ROOT/scripts/reduce_mesh.py" "$HERO" -o "$MESH" --min-piece 0.02
+fi
 echo "generate: reduce LODs"
 "$ROOT/scripts/reduce.sh" "$STEM"
 
@@ -218,21 +552,30 @@ FINAL="$MESH"
 if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   PAINT_MODEL="rgb"
   PAINT_WEIGHTS="$ROOT/weights/paint"
+  PAINT_UNET="$PAINT_WEIGHTS/hunyuan3d-paint-v2-0/unet/diffusion_pytorch_model.safetensors"
   if [[ "$QUALITY" == "pbr" ]]; then
     PAINT_MODEL="pbr"
-    PAINT_WEIGHTS="$ROOT/weights/paint"
+    PAINT_UNET="$PAINT_WEIGHTS/hunyuan3d-paintpbr-v2-1/unet/diffusion_pytorch_model.safetensors"
   fi
-  if [[ ! -d "$PAINT_WEIGHTS" ]]; then
-    echo "generate: paint weights missing, downloading"
-    "$ROOT/scripts/bootstrap.sh" "$QUALITY"
+  if [[ ! -f "$PAINT_UNET" ]]; then
+    echo "generate: paint weights missing ($PAINT_UNET): run scripts/bootstrap.sh $QUALITY" >&2
+    exit 1
   fi
   LOD="$OUT/mesh_lookdev.glb"
   [[ -f "$LOD" ]] || LOD="$OUT/mesh_lod.glb"
-  if [[ -x "$BIN/autoremesher" ]]; then
-    echo "generate: quad remesh before paint"
-    "$ROOT/scripts/quad_remesh.sh" "$LOD" "$OUT/mesh_quad.glb" 8000 \
-      || echo "generate: remesh failed (non-fatal)"
-    [[ -f "$OUT/mesh_quad.glb" ]] && LOD="$OUT/mesh_quad.glb"
+  if [[ -n "$REMESH" ]]; then
+    if [[ -x "$BIN/autoremesher" ]]; then
+      echo "generate: quad remesh ($REMESH quads) before paint"
+      if "$ROOT/scripts/quad_remesh.sh" "$LOD" "$OUT/mesh_quad.glb" "$REMESH"; then
+        LOD="$OUT/mesh_quad.glb"
+      else
+        degrade remesh failed "quad remesh failed; painted the triangle mesh"
+      fi
+    else
+      degrade remesh unavailable "bin/autoremesher is missing (run scripts/bootstrap.sh); painted the triangle mesh"
+    fi
+  else
+    echo "generate: remesh: off (opt-in)"
   fi
   TEXTURED="$OUT/textured.glb"
   [[ "$PAINT_MODEL" == "pbr" ]] && TEXTURED="$OUT/pbr.glb"
@@ -244,26 +587,44 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
     cp "$TEXTURED" "$OUT/textured.glb"
   fi
   ls -lh "$FINAL"
-  if [[ -d "$OUT/views/lifted" || "$WANT_PSX" -eq 1 ]]; then
-    stage retexture "Baking the photo on"
-    echo "generate: retexture from the photo and any turnaround views"
-    VIEW_ARGS=(--view "$LIFTED")
-    if [[ "$WANT_PSX" -eq 1 ]]; then
-      # Drop the cutout's edge ring; a side-on photo also goes, flipped, on the far side.
-      VIEW_ARGS+=(--erode 0.008)
-      [[ "$FACING" == "right" || "$FACING" == "left" ]] && VIEW_ARGS+=(--mirror)
-    fi
-    for v in "$OUT/views/lifted"/*.png; do
-      [[ -f "$v" ]] || continue
-      [[ "$(basename "$v")" == "$(basename "$LIFTED")" ]] && continue
-      VIEW_ARGS+=(--view "$v")
+
+  stage retexture "Baking the photo on"
+  # Every named view, canonical first, then the refs. --first-facing says where the first one looks;
+  # --mirror only when a side-on picture has no real opposite view.
+  VIEW_ARGS=()
+  NAMED=()
+  FIRST_FACING="$FACING"
+  if [[ "$USE_MV" -eq 1 ]]; then
+    FIRST_FACING="$(facing_of "$VIEWS_CANON")"
+    VIEW_ARGS+=(--view "$OUT/views/lifted/$VIEWS_CANON.png")
+    NAMED+=("$VIEWS_CANON")
+    for v in front right back left; do
+      [[ "$v" == "$VIEWS_CANON" || ! -f "$OUT/views/lifted/$v.png" ]] && continue
+      VIEW_ARGS+=(--view "$OUT/views/lifted/$v.png")
+      NAMED+=("$v")
     done
-    "$PYTHON" "$ROOT/scripts/retexture.py" "$TEXTURED" -o "$OUT/textured_photo.glb" "${VIEW_ARGS[@]}" \
-      || echo "generate: retexture failed (non-fatal)"
-    if [[ -f "$OUT/textured_photo.glb" ]]; then
-      FINAL="$OUT/textured_photo.glb"
-    fi
+  else
+    VIEW_ARGS+=(--view "$LIFTED")
+    NAMED+=("$(view_of "$FACING")")
   fi
+  for v in "$OUT/views/lifted"/ref-*.png; do
+    [[ -f "$v" ]] && VIEW_ARGS+=(--view "$v")
+  done
+  VIEW_ARGS+=(--first-facing "$FIRST_FACING")
+  OPPOSITE=""
+  case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac
+  if [[ -n "$OPPOSITE" && " ${NAMED[*]} " != *" $OPPOSITE "* ]]; then
+    VIEW_ARGS+=(--mirror)
+  fi
+  # Drop the cutout's edge ring at PS1 sizes.
+  [[ "$WANT_PSX" -eq 1 ]] && VIEW_ARGS+=(--erode 0.008)
+  echo "generate: retexture with ${NAMED[*]}${OPPOSITE:+ (mirror: $([[ " ${VIEW_ARGS[*]} " == *" --mirror "* ]] && echo on || echo off))}"
+  if "$PYTHON" "$ROOT/scripts/retexture.py" "$TEXTURED" -o "$OUT/textured_photo.glb" "${VIEW_ARGS[@]}"; then
+    [[ -f "$OUT/textured_photo.glb" ]] && FINAL="$OUT/textured_photo.glb"
+  else
+    degrade retexture failed "the photo bake failed; the painted texture is used as is"
+  fi
+
   if [[ "$WANT_PSX" -eq 1 ]]; then
     stage psx "Cutting down to PS1 low-poly"
     echo "generate: PSX low-poly ($PSX_FACES tris, ${PSX_ATLAS}px, facing $FACING, height $PSX_HEIGHT, up $PSX_UP)"
@@ -281,20 +642,25 @@ INSPECT="$OUT/inspect.json"
 stage inspect "Checking the model"
 echo "generate: inspecting $FINAL"
 "$PYTHON" "$ROOT/scripts/inspect_glb.py" "$FINAL" "$INSPECT"
+merge_degraded "$INSPECT"
 
 if [[ "$WANT_STACK" -eq 1 ]]; then
   stage stack "Slicing the sprite stack"
   echo "generate: sprite stack res=$STACK_RES from $(basename "$FINAL")"
   "$PYTHON" "$ROOT/scripts/sprite_stack.py" --stem "$STEM" --glb "$FINAL" --res "$STACK_RES" \
-    || echo "generate: sprite stack failed (non-fatal)"
+    || degrade stack failed "the sprite stack failed"
 fi
 
 if [[ -x "$BIN/preview-glb" ]]; then
   stage preview "Rendering the thumbnail"
   echo "generate: SceneKit preview"
-  "$PYTHON" -c "import trimesh; trimesh.load('$FINAL', force='mesh').export('$OUT/preview.obj')"
-  "$BIN/preview-glb" "$OUT/preview.obj" "$OUT/preview.png" || echo "generate: preview failed (non-fatal)"
+  if ! { "$PYTHON" -c "import sys, trimesh; trimesh.load(sys.argv[1], force='mesh').export(sys.argv[2])" \
+           "$FINAL" "$OUT/preview.obj" && "$BIN/preview-glb" "$OUT/preview.obj" "$OUT/preview.png"; }; then
+    degrade preview failed "the thumbnail failed to render"
+  fi
 fi
+stage_done
+merge_degraded "$INSPECT"
 
 # Last line is a machine-readable pointer for workflow agents.
 echo "GENERATE_RESULT $FINAL"

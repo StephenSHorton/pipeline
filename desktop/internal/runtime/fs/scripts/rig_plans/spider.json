@@ -1,0 +1,30 @@
+{
+  "id": "spider",
+  "version": 1,
+  "label": "Many legs",
+  "blurb": "Spiders, crabs, insects and mechs on many legs (the vendor spider template)",
+  "class": "multileg",
+  "aliases": ["multileg"],
+  "select": {"class": "multileg"},
+  "fixed_template": {
+    "rig": "rigs/rig-spider.glb",
+    "clips": ["animations/spider-animations.glb"],
+    "ref": "Idle",
+    "default": ["Idle", "Walk", "Attack", "Bite", "Hit", "Death"]
+  },
+  "builder": null,
+  "names": "rig-spider",
+  "side_suffix": ["_l", "_r"],
+  "frame": {"up": "+y", "forward": "+z", "left": "+x", "floor": 0.0},
+  "caps": {"legs": 8, "leg_kind": "arthropod", "neck": false, "tail": false, "wings": null, "flight": false, "beak": false, "jaw": true, "toes": false},
+  "ref": "Idle",
+  "clips": [
+    {"name": "Idle", "gen": "vendor"},
+    {"name": "Walk", "gen": "vendor"},
+    {"name": "Attack", "gen": "vendor"},
+    {"name": "Bite", "gen": "vendor"},
+    {"name": "Hit", "gen": "vendor"},
+    {"name": "Death", "gen": "vendor"}
+  ],
+  "default": ["Idle", "Walk", "Attack", "Bite", "Hit", "Death"]
+}

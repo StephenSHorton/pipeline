@@ -15,6 +15,7 @@ are the ones the stages already wrote.
       stack/            sheet.png (layers bottom to top), stack.json, preview.png
       3d/               model.glb, game.glb, proxy.glb, pixel.glb, rigged.glb, psx.glb
       3d/psx/           <name>.obj + .mtl + .png: the PS1 low-poly (Z up, +X front unless psx.axes says)
+      3d/rig/           <name>.fbx (+ .png): the rigged model with every clip, for s&box ModelDoc
 
 Engine writers (a Godot scene, a Unity prefab) can read asset.json later.
 """
@@ -45,7 +46,7 @@ MESHES: dict[str, tuple[str, ...]] = {
     "game": ("textured_game.glb", "mesh_game.glb"),
     "proxy": ("mesh_proxy.glb",),
     "pixel": ("pixel.glb",),
-    "rigged": ("m2m.glb", "anigen_keep.glb", "anigen.glb", "unirig.glb"),
+    "rigged": ("rigged.glb", "m2m.glb", "anigen_keep.glb", "anigen.glb", "unirig.glb"),
 }
 SAFE = re.compile(r"[^a-z0-9._-]+")
 
@@ -175,6 +176,18 @@ def mesh_section(asset: Path, out: Path) -> dict | None:
     psx = psx_entry(asset, out)
     if psx:
         section["psx"] = psx
+    rig = (_read(asset / "rig" / "rig.json") or {}) if "rigged" in section and section["rigged"]["from"] == "rigged.glb" else {}
+    if rig:
+        entry = section["rigged"]
+        entry.update({k: rig[k] for k in ("class", "clips", "joints") if k in rig})
+        fbx = asset / str(rig.get("fbx") or "")
+        if rig.get("fbx") and fbx.is_file():
+            entry["fbx"] = f"3d/rig/{fbx.name}"
+            _copy(fbx, out / entry["fbx"])
+            tex = fbx.with_suffix(".png")
+            if tex.is_file():
+                entry["fbx_texture"] = f"3d/rig/{tex.name}"
+                _copy(tex, out / entry["fbx_texture"])
     return section or None
 
 

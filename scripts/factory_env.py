@@ -2,6 +2,8 @@
 """Factory paths and generate argv."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import sys
@@ -9,6 +11,92 @@ from pathlib import Path
 from typing import Any
 
 STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+# The pictures 3D can start from (bin/lift-subject reads every one of them, .webp included).
+UPLOAD_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
+NO_PICTURE = "3D needs a picture. Draw or add one first."
+
+
+def require_picture(path: str | Path | None) -> Path:
+    """The path, when it is a picture 3D can start from: a known image suffix that PIL can open and verify.
+    Anything else (no path, a mesh, a text file renamed .jpg, a missing file) raises ValueError(NO_PICTURE)."""
+    if not path:
+        raise ValueError(NO_PICTURE)
+    p = Path(path)
+    if p.suffix.lower() not in UPLOAD_EXTS or not p.is_file():
+        raise ValueError(NO_PICTURE)
+    try:
+        from PIL import Image
+
+        with Image.open(p) as im:
+            im.verify()
+    except Exception:  # noqa: BLE001 - UnidentifiedImageError, truncated data, a decompression bomb: all "not a picture"
+        raise ValueError(NO_PICTURE) from None
+    return p
+
+
+def file_sha256(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# One grammar for every fallback, in the generate, rig and draw logs: "DEGRADED <stage> <code>: <message>".
+DEGRADED_RE = re.compile(r"^DEGRADED (\S+) (\S+): ?(.*)$")
+
+
+def degraded_entry(stage: str, code: str, message: str) -> dict[str, str]:
+    return {"stage": str(stage), "code": str(code), "message": str(message)}
+
+
+def degraded_line(entry: dict[str, str]) -> str:
+    return f"DEGRADED {entry['stage']} {entry['code']}: {entry['message']}"
+
+
+def parse_degraded(text: str) -> list[dict[str, str]]:
+    """Every DEGRADED line in a log, in order, without repeats."""
+    out: list[dict[str, str]] = []
+    for line in (text or "").splitlines():
+        m = DEGRADED_RE.match(line.strip())
+        if m:
+            add_degraded(out, degraded_entry(*m.groups()))
+    return out
+
+
+def coerce_degraded(item: Any) -> dict[str, str] | None:
+    """A degraded entry from a rig.json / views.json list: a dict {stage, code, message} or a DEGRADED-grammar string."""
+    if isinstance(item, dict):
+        stage, code = item.get("stage"), item.get("code")
+        if not stage and not code and not item.get("message"):
+            return None
+        return degraded_entry(stage or "unknown", code or "unknown", item.get("message") or "")
+    if isinstance(item, str) and item.strip():
+        text = item.strip()
+        m = DEGRADED_RE.match(text if text.startswith("DEGRADED ") else "DEGRADED " + text)
+        if m:
+            return degraded_entry(*m.groups())
+        return degraded_entry("unknown", "unknown", text)
+    return None
+
+
+def add_degraded(into: list[dict[str, str]], entry: dict[str, str] | None) -> None:
+    if entry and entry not in into:
+        into.append(entry)
+
+
+def json_degraded(path: str | Path) -> list[dict[str, str]]:
+    """The "degraded" list of a JSON file (rig/rig.json, flat/views.json); [] when it is missing or unreadable."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[dict[str, str]] = []
+    if isinstance(doc, dict) and isinstance(doc.get("degraded"), list):
+        for item in doc["degraded"]:
+            add_degraded(out, coerce_degraded(item))
+    return out
 
 LOD_FILES = {
     "mesh": ("mesh.glb",),
@@ -82,26 +170,37 @@ PSX_FACING = {"camera", "right", "left", "away"}
 
 
 def clean_psx(raw: dict[str, Any] | None) -> dict[str, str]:
-    """generate.sh --quality psx options from a request, checked; unknown or bad values are dropped."""
+    """generate.sh --quality psx options from a request, checked. A missing or empty value is left out (generate.sh
+    has a default: facing camera, and so on); an unknown key or a bad value raises ValueError instead of being
+    dropped, so a typo never builds a model quietly different from the one asked for."""
     out: dict[str, str] = {}
     for key, value in (raw or {}).items():
-        if key not in PSX_KEYS or value in (None, ""):
+        if value in (None, ""):
             continue
+        if key not in PSX_KEYS:
+            raise ValueError(f"unknown psx option {key!r} (one of {', '.join(PSX_KEYS)})")
         text = str(value).strip()
-        if key == "facing" and text in PSX_FACING:
-            out[key] = text
-        elif key == "up" and text in {"z", "y"}:
-            out[key] = text
-        elif key in {"faces", "atlas"} and text.isdigit() and 0 < int(text) <= 65536:
-            out[key] = text
+        if key == "facing":
+            if text not in PSX_FACING:
+                raise ValueError(f"facing must be one of {', '.join(sorted(PSX_FACING))} (the side of the picture "
+                                 f"the head points to), not {text!r}")
+        elif key == "up":
+            if text not in {"z", "y"}:
+                raise ValueError(f"up must be z or y, not {text!r}")
+        elif key in {"faces", "atlas"}:
+            if not (text.isdigit() and 0 < int(text) <= 65536):
+                raise ValueError(f"{key} must be a whole number from 1 to 65536, not {text!r}")
         elif key == "height":
             try:
-                if 0 < float(text) <= 100000:
-                    out[key] = text
+                ok = 0 < float(text) <= 100000
             except ValueError:
-                pass
-        elif key == "name" and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", text):
-            out[key] = text
+                ok = False
+            if not ok:
+                raise ValueError(f"height must be a number above 0 and up to 100000, not {text!r}")
+        elif key == "name":
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", text):
+                raise ValueError(f"name must be 1 to 64 letters, digits, _ or -, not {text!r}")
+        out[key] = text
     return out
 
 
@@ -116,6 +215,8 @@ def generate_argv(
     refs: list[Path] | None = None,
     prompt: str | None = None,
     psx: dict[str, Any] | None = None,
+    views_json: Path | None = None,
+    degraded: list[dict[str, str]] | None = None,
 ) -> list[str]:
     cmd = [
         str(generate_script(root)),
@@ -134,6 +235,13 @@ def generate_argv(
         cmd += ["--prompt", prompt]
     for ref in refs or []:
         cmd += ["--ref", str(ref)]
+    # The draw's four views (flat/views.json), only when the factory checked they belong to this picture.
+    if views_json:
+        cmd += ["--views-json", str(views_json)]
+    # Fallbacks the factory chose before the run (views stale or inconsistent): generate.sh records them in
+    # degraded.json and inspect.json beside its own.
+    for entry in degraded or []:
+        cmd += ["--degraded", f"{entry['stage']} {entry['code']}: {entry['message']}"]
     # --quality psx options: facing, height, faces, atlas, up, name.
     for key, value in (psx or {}).items():
         if value not in (None, ""):

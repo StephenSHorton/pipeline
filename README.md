@@ -1,4 +1,4 @@
-# ai-asset-pipeline
+# pipeline
 
 Local image-to-3D on Apple Silicon (MLX). No Meshy. See **[PLAN.md](PLAN.md)**.
 
@@ -61,6 +61,20 @@ HTTP (loopback, curl, no MCP): `.venv/bin/python scripts/factory_http.py` then t
 ## One flow
 
 Home asks **What are you making?**: a PS1 model, a 3D model, a sprite stack or a 2D sprite. Each shows only its own settings and a line saying what Make will do; the choice is saved with the asset (`out/<stem>/intent.json`), and the stages, canvas and Export screen follow it. The loading screen lists the factory's real stages (`STAGES`/`STAGE` lines from `generate.sh`, parsed by `/status`), with Cancel and Run in background. The desktop app runs every asset through **Ideas → Concept → 2D / 3D / Stack → Export**. A prompt with no picture draws a grid of ideas; **Use** one and it becomes the concept still that 2D, 3D and the stack start from. Each stage keeps takes in `out/<stem>/takes/` (listed in `flow.json`), so you can step back to an earlier still, sheet, mesh or stack from the bar above the tools. **Export** copies the picked 2D pieces and motion strips, sprite stack and 3D files into `out/<stem>/export/` with an `asset.json` that says what each file is. See **[docs/unified-pipeline.md](docs/unified-pipeline.md)**.
+
+## Rigging
+
+The **Rig** stage (after 3D) gives a model a skeleton and animation clips: pick a body plan (or let the local planner
+pick from the picture), press **Rig it**, and play the clips on the model. `scripts/rig.py` does the work:
+
+- Mesh2Motion's CC0 template for the body plan (person, four legs, many legs, bird), posed like generated models
+  stand and placed on the mesh (`vendor/mesh2motion-app`).
+- skin-tokens.cpp on Metal learns the skin weights onto that skeleton (`vendor/skin-tokens.cpp`, MIT weights).
+- The template's library clips are retargeted onto the rig and baked into `out/<stem>/rigged.glb`.
+- Blender writes `out/<stem>/rig/<name>.fbx` with every clip for s&box (FBX, at most 4 weights per vertex).
+
+`POST /rig/<stem>` runs it as a job. Busts, vehicles and props aren't rigged yet. Setup and measurements:
+**[docs/spikes-rigging.md](docs/spikes-rigging.md)**.
 
 ## 2D lane
 

@@ -991,36 +991,59 @@ class Flat2DTests(unittest.TestCase):
         self.assertFalse(body["available"])
 
 
-    def test_still_backend_prefers_qwen_and_falls_back_to_z_image(self) -> None:
+    def test_still_backend_is_licence_clean_and_nc_needs_an_opt_in(self) -> None:
         from unittest.mock import patch
 
-        saved = os.environ.pop("FLAT2D_STILL", None)
+        from flat2d.sheet import STILLS, still_degraded, still_info
+
+        keep = {k: os.environ.pop(k, None) for k in ("FLAT2D_STILL", "FLAT2D_ALLOW_NC")}
         try:
             with patch("flat2d.sheet.mflux_ready", return_value=False):
                 self.assertEqual(still_backend(), "")
-            with patch("flat2d.sheet.mflux_ready", return_value=True):
-                with patch("flat2d.sheet.qwen_ready", return_value=True):
-                    self.assertEqual(still_backend(), "qwen-image")
+            with patch("flat2d.sheet.mflux_ready", return_value=True), patch(
+                "flat2d.sheet.qwen_ready", return_value=True
+            ):
+                with patch("flat2d.sheet.q2512_ready", return_value=True):
+                    self.assertEqual(still_backend(), "qwen-2512")  # the default: Apache-2.0
+                    self.assertEqual(still_degraded(), [])
                     os.environ["FLAT2D_STILL"] = "z-image"
                     self.assertEqual(still_backend(), "z-image")
+                    self.assertEqual([(d["stage"], d["code"]) for d in still_degraded()], [("draw", "backend")])
+                    # Qwen-Image 2.1 Turbo is non-commercial: asking for it without the opt-in gets the default.
+                    os.environ["FLAT2D_STILL"] = "qwen-image"
+                    self.assertEqual(still_backend(), "qwen-2512")
+                    os.environ["FLAT2D_ALLOW_NC"] = "1"
+                    self.assertEqual(still_backend(), "qwen-image")
+                    self.assertIn(("licence", "nc"), [(d["stage"], d["code"]) for d in still_degraded()])
+                    os.environ.pop("FLAT2D_ALLOW_NC")
                     os.environ.pop("FLAT2D_STILL")
-                with patch("flat2d.sheet.qwen_ready", return_value=False):
-                    self.assertEqual(still_backend(), "z-image")
+                with patch("flat2d.sheet.q2512_ready", return_value=False):
+                    self.assertEqual(still_backend(), "z-image")  # the fallback never reaches the NC model
+            for name in ("qwen-2512", "z-image"):
+                self.assertEqual(STILLS[name]["licence"], "apache-2.0")
+            self.assertEqual(still_info("qwen-2512")["model"], "qwen-image-2512+lightning8")
         finally:
-            os.environ.pop("FLAT2D_STILL", None)
-            if saved is not None:
-                os.environ["FLAT2D_STILL"] = saved
+            for k, v in keep.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
 
     def test_still_image_routes_to_the_picked_model(self) -> None:
         from unittest.mock import patch
 
+        with patch("flat2d.optional.still_backend", return_value="qwen-2512"), patch(
+            "flat2d.optional.qwen2512_still", return_value="q5"
+        ) as q5, patch("flat2d.optional.qwen_still", return_value="q") as qwen:
+            from flat2d.optional import still_image
+
+            self.assertEqual(still_image("a tank", seed=3, width=1152, height=1152), "q5")
+            q5.assert_called_once_with("a tank", seed=3, width=1152, height=1152)
+            qwen.assert_not_called()
         with patch("flat2d.optional.still_backend", return_value="qwen-image"), patch(
             "flat2d.optional.qwen_still", return_value="q"
         ) as qwen, patch("flat2d.optional.zimage_still", return_value="z") as zimage:
-            from flat2d.optional import still_image
-
             self.assertEqual(still_image("a tank", seed=3), "q")
-            qwen.assert_called_once_with("a tank", seed=3)
+            qwen.assert_called_once_with("a tank", seed=3, width=1024, height=1024)
             zimage.assert_not_called()
         with patch("flat2d.optional.still_backend", return_value="z-image"), patch(
             "flat2d.optional.zimage_still", return_value="z"
@@ -1029,6 +1052,128 @@ class Flat2DTests(unittest.TestCase):
         with patch("flat2d.optional.still_backend", return_value=""):
             with self.assertRaises(FlatUnavailable):
                 still_image("a tank")
+
+    def test_models_run_on_one_thread_whichever_job_calls(self) -> None:
+        # MLX streams are per thread: a model built in one job's thread failed in the next job's.
+        import threading
+        from unittest.mock import patch
+
+        from flat2d.optional import DrawCancelled, still_image
+
+        seen = []
+
+        def qwen(prompt, seed=1, width=1024, height=1024):
+            seen.append(threading.get_ident())
+            if prompt == "stop":
+                raise DrawCancelled("Cancelled")
+            return "q"
+
+        with patch("flat2d.optional.still_backend", return_value="qwen-image"), patch(
+            "flat2d.optional.qwen_still", side_effect=qwen
+        ):
+            for _ in range(2):
+                t = threading.Thread(target=still_image, args=("a tank",))
+                t.start()
+                t.join()
+            with self.assertRaises(DrawCancelled):
+                still_image("stop")
+        self.assertEqual(len(seen), 3)
+        self.assertEqual(len(set(seen)), 1)
+        self.assertNotEqual(seen[0], threading.get_ident())
+
+    def test_mlx_cache_is_capped_before_the_build_and_emptied_after_each_draw(self) -> None:
+        # Uncapped, MLX's buffer cache settled at ~44 GiB beside Qwen-Image's ~22 GiB of weights.
+        import types
+        from unittest.mock import patch
+
+        import flat2d.turbo  # noqa: F401 - imported for real before mlx is faked below
+        from flat2d import optional
+        from flat2d.optional import DrawCancelled
+
+        order = []
+        mx = types.SimpleNamespace(
+            set_cache_limit=lambda n: order.append(("limit", n)),
+            clear_cache=lambda: order.append(("clear",)),
+        )
+
+        class QwenImage21:
+            def __init__(self, quantize, model_path):
+                order.append(("build",))
+                self.prompt_cache = {}
+                self.callbacks = types.SimpleNamespace(register=lambda relay: None)
+
+            def generate_image(self, seed, prompt, **kwargs):
+                self.prompt_cache[prompt] = "features"
+                order.append(("draw", prompt, len(self.prompt_cache)))
+                if prompt == "stop":
+                    latents = object()  # noqa: F841 - held by the traceback until the release empties it
+                    raise DrawCancelled("Cancelled")
+                return "image"
+
+        qwen_mod = types.ModuleType("mflux.models.qwen21.variants.txt2img.qwen_image_21")
+        qwen_mod.QwenImage21 = QwenImage21
+        mlx_pkg = types.ModuleType("mlx")
+        mlx_pkg.core = mx
+        with patch.dict(sys.modules, {"mlx": mlx_pkg, "mlx.core": mx, qwen_mod.__name__: qwen_mod}), patch.object(
+            optional, "_QWEN", None
+        ), patch.object(optional, "_QWEN_RELAY", None), patch("flat2d.turbo.load_grid", return_value=(1.0, 0.5)), patch(
+            "flat2d.turbo.TurboGrid", types.SimpleNamespace(NODES=())
+        ), patch.dict(
+            os.environ, {"FLAT2D_MLX_CACHE_GB": "2"}
+        ):
+            self.assertEqual(optional.qwen_still("a tank", seed=2), "image")
+            self.assertEqual(optional._QWEN.prompt_cache, {})
+            try:  # not assertRaises: it strips the traceback this checks
+                optional.qwen_still("stop")
+            except DrawCancelled as e:
+                tb = e.__traceback__
+            else:
+                self.fail("the cancel did not propagate")
+            self.assertEqual(optional._QWEN.prompt_cache, {})
+            self.assertIsNone(optional._QWEN_RELAY.prev)
+            while tb.tb_next is not None:
+                tb = tb.tb_next
+            self.assertEqual(tb.tb_frame.f_code.co_name, "generate_image")
+            self.assertNotIn("latents", tb.tb_frame.f_locals)
+            optional.qwen_still("a cow")
+        self.assertEqual(
+            order,
+            [("limit", 2 * 2**30), ("build",), ("draw", "a tank", 1), ("clear",),
+             ("draw", "stop", 1), ("clear",), ("draw", "a cow", 1), ("clear",)],
+        )
+
+    def test_zimage_cache_is_capped_and_emptied(self) -> None:
+        import types
+        from unittest.mock import patch
+
+        from flat2d import optional
+
+        order = []
+        mx = types.SimpleNamespace(
+            set_cache_limit=lambda n: order.append(("limit", n)),
+            clear_cache=lambda: order.append(("clear",)),
+        )
+
+        class ZImageTurbo:  # Z-Image keeps no prompt_cache
+            def __init__(self, quantize):
+                order.append(("build",))
+                self.callbacks = types.SimpleNamespace(register=lambda relay: None)
+
+            def generate_image(self, **kwargs):
+                order.append(("draw",))
+                raise RuntimeError("out of memory")
+
+        z_mod = types.ModuleType("mflux.models.z_image")
+        z_mod.ZImageTurbo = ZImageTurbo
+        mlx_pkg = types.ModuleType("mlx")
+        mlx_pkg.core = mx
+        env = {k: v for k, v in os.environ.items() if k != "FLAT2D_MLX_CACHE_GB"}
+        with patch.dict(sys.modules, {"mlx": mlx_pkg, "mlx.core": mx, "mflux.models.z_image": z_mod}), patch.object(
+            optional, "_ZIMAGE", None
+        ), patch.object(optional, "_ZIMAGE_RELAY", None), patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(RuntimeError):
+                optional.zimage_still("a tank")
+        self.assertEqual(order, [("limit", int(optional.MLX_CACHE_GB * 2**30)), ("build",), ("draw",), ("clear",)])
 
     def test_turbo_grid_reads_model_index_and_rejects_bad_values(self) -> None:
         self.assertEqual(read_grid({"sample_sigmas": [1.0, 0.8, 0.3]}), (1.0, 0.8, 0.3))

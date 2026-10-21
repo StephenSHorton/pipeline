@@ -21,17 +21,19 @@ from urllib.parse import unquote
 
 from factory_env import check_stem, stem_dir
 
-STAGES = ("ideas", "concept", "flat", "mesh", "stack", "export")
+STAGES = ("ideas", "concept", "flat", "mesh", "rig", "stack", "export")
 
 UPSTREAM: dict[str, tuple[str, ...]] = {
     "ideas": (),
     "concept": ("ideas",),
     "flat": ("concept",),
     "mesh": ("concept",),
+    # A rig is the mesh's skeleton, weights and baked clips (scripts/rig.py).
+    "rig": ("mesh",),
     # A stack is sliced from the mesh, or built straight from the concept still.
     "stack": ("mesh", "concept"),
     # The game folder: whatever 2D, stack and 3D files were picked when it was written.
-    "export": ("concept", "flat", "mesh", "stack"),
+    "export": ("concept", "flat", "mesh", "rig", "stack"),
 }
 
 # Contract files per stage, relative to out/<stem>/. Globs, matched with Path.glob.
@@ -47,6 +49,11 @@ FILES: dict[str, tuple[str, ...]] = {
         "flat/source.png",
         "flat/key.json",
         "flat/prompt.txt",
+        # The four-view sheet (flat2d/views.py): a concept take carries its views, so picking an older take never
+        # leaves a newer views.json beside another drawing's source.png (views.json also holds its sha256).
+        "flat/sheet.png",
+        "flat/views/*",
+        "flat/views.json",
     ),
     # flat/view.json (which picture is centered) is a view setting, not part of any take.
     "flat": (
@@ -70,10 +77,21 @@ FILES: dict[str, tuple[str, ...]] = {
         "lods.json",
         "inspect.json",
         "preview.png",
+        # What generate.sh made the mesh from and how: the orientation fit, its fallbacks, the isolated views.
+        "shape.json",
+        "degraded.json",
+        "views/lifted/*",
     ),
+    # rig/template/* is a template built for this model (rig.glb, clips.glb, its reports); of rig/preview/ only the
+    # contact sheet and frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be rendered again.
+    "rig": ("rigged.glb", "rig/*", "rig/template/*", "rig/preview/contact_sheet.png", "rig/preview/frames.json"),
     "stack": ("stack/*",),
     "export": ("export/**/*",),
 }
+
+# Paths a stage's globs reach that belong to another stage: views/lifted/ is generate.sh's (the mesh take), not
+# the concept's views/**.
+EXCLUDE: dict[str, tuple[str, ...]] = {"concept": ("views/lifted/",)}
 
 MANIFEST = "flow.json"
 TAKES = "takes"
@@ -91,19 +109,33 @@ def check_stage(stage: str) -> str:
 
 def stage_files(folder: Path, stage: str) -> list[str]:
     seen: set[str] = set()
-    for pattern in FILES[check_stage(stage)]:
+    skip = EXCLUDE.get(check_stage(stage), ())
+    for pattern in FILES[stage]:
         for p in folder.glob(pattern):
             if p.is_file() and not p.name.startswith("."):
-                seen.add(p.relative_to(folder).as_posix())
+                rel = p.relative_to(folder).as_posix()
+                if not rel.startswith(skip):
+                    seen.add(rel)
     return sorted(seen)
 
 
 INPUTS = ("input.png", "input.jpg", "input.jpeg", "input.webp")
+# Written about a rig, not part of it: checking a version again must not make it a new one.
+RIG_DERIVED = {"rig/inspect.json", "rig/summary.json", "rig/rig.log", "rig/render.log", "rig/frames_check.json"}
+# A contact sheet is a picture of the rig: rendering it again doesn't make a new version either.
+RIG_DERIVED_DIRS = ("rig/preview/",)
+
+
+def rig_derived(rel: str) -> bool:
+    return rel in RIG_DERIVED or rel.startswith(RIG_DERIVED_DIRS)
 
 
 def defining(stage: str, rels: list[str]) -> list[str]:
     """The files that say what a take is. A 3D run writes the cutout, and copies a
-    2D still to input.*; those ride along in the take but do not make a new one."""
+    2D still to input.*; those ride along in the take but do not make a new one. A rig's
+    checks and log are written about it, so they don't either."""
+    if stage == "rig":
+        return [r for r in rels if not rig_derived(r)] or rels
     if stage != "concept":
         return rels
     derived = {"lifted.png"}
@@ -175,6 +207,15 @@ def _stale(data: dict[str, Any], take: dict[str, Any] | None) -> list[str]:
     return sorted(s for s, tid in made_from.items() if data["stages"][s]["pick"] != tid)
 
 
+def _summary(path: Path) -> dict[str, Any] | None:
+    """A rig's rig/summary.json (the line the versions strip shows), or None."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def state(root: Path, stem: str) -> dict[str, Any]:
     folder = stem_dir(root, stem)
     if not folder.is_dir():
@@ -186,17 +227,23 @@ def state(root: Path, stem: str) -> dict[str, Any]:
         live = stage_files(folder, stage)
         mark = marks(folder, stage, live)
         picked = _find(entry, entry["pick"])
+        takes = entry["takes"]
+        extra: dict[str, Any] = {}
+        if stage == "rig":
+            takes = [{**t, "summary": _summary(folder / TAKES / "rig" / str(t.get("id")) / "rig" / "summary.json")} for t in takes]
+            extra["summary"] = _summary(folder / "rig" / "summary.json")
         stages.append(
             {
                 "stage": stage,
                 "pick": entry["pick"],
-                "takes": entry["takes"],
+                "takes": takes,
                 "live": bool(live),
                 "files": live,
                 # Files on disk that no take holds yet: a fresh generate, or an asset from before takes.
                 "unsaved": bool(live) and not any(t.get("print") in mark for t in entry["takes"]),
                 "stale": _stale(data, picked),
                 "upstream": list(UPSTREAM[stage]),
+                **extra,
             }
         )
     return {"ok": True, "stem": stem, "stages": stages}
@@ -222,14 +269,7 @@ def snapshot(
     created = take is None
     if take is not None and (take.get("files") != live or take.get("print") != mark):
         # Same take, new derived files (a fresh cutout): refresh its copy.
-        dest = folder / TAKES / stage / take["id"]
-        for rel in set(take.get("files") or []) - set(live):
-            (dest / rel).unlink(missing_ok=True)
-        for rel in live:
-            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(folder / rel, dest / rel)
-        take["files"] = live
-        take["print"] = mark
+        _copy_into(folder, stage, take, live)
     if take is None:
         nums = [str(t.get("id", ""))[1:] for t in entry["takes"]]
         n = 1 + max((int(x) for x in nums if x.isdigit()), default=0)
@@ -249,6 +289,34 @@ def snapshot(
     entry["pick"] = take["id"]
     write_manifest(folder, data)
     return {"ok": True, "stem": stem, "stage": stage, "take": take, "created": created}
+
+
+def _copy_into(folder: Path, stage: str, take: dict[str, Any], live: list[str]) -> None:
+    """Make a take's copy match the files on disk, and its file list and fingerprint with it."""
+    dest = folder / TAKES / stage / take["id"]
+    for rel in set(take.get("files") or []) - set(live):
+        (dest / rel).unlink(missing_ok=True)
+    for rel in live:
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(folder / rel, dest / rel)
+    take["files"] = live
+    take["print"] = fingerprint(folder, defining(stage, live))
+
+
+def resave(root: Path, stem: str, stage: str, take_id: str) -> dict[str, Any]:
+    """Refresh take_id's copy from the files on disk, in place (e.g. a rig checked again). Keeps id, made, note, from."""
+    folder = stem_dir(root, stem)
+    check_stage(stage)
+    live = stage_files(folder, stage)
+    if not live:
+        raise FlowError(f"nothing on disk for {stage}")
+    data = read_manifest(folder)
+    take = _find(data["stages"][stage], take_id)
+    if take is None:
+        raise FlowError(f"no take {take_id!r} in {stage}")
+    _copy_into(folder, stage, take, live)
+    write_manifest(folder, data)
+    return take
 
 
 def pick(root: Path, stem: str, stage: str, take_id: str) -> dict[str, Any]:

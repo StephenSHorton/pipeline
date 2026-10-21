@@ -291,7 +291,7 @@ func IsFactoryAPI(path string) bool {
 	if p == "health" || p == "assets" || p == "status" || p == "generate" || p == "upload" || p == "clean" || p == "2d" {
 		return true
 	}
-	for _, pre := range []string{"inspect/", "status/", "glb/", "stack/", "assets/", "paint/", "2d/", "flow/", "export/", "cancel/", "intent/"} {
+	for _, pre := range []string{"inspect/", "status/", "glb/", "stack/", "assets/", "paint/", "2d/", "flow/", "export/", "cancel/", "intent/", "rig/", "facing/"} {
 		if strings.HasPrefix(p, pre) {
 			return true
 		}

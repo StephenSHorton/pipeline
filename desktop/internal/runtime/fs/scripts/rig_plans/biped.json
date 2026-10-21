@@ -1,0 +1,32 @@
+{
+  "id": "biped",
+  "version": 1,
+  "label": "Two legs, two arms",
+  "blurb": "People and humanoid characters (the vendor human template)",
+  "class": "humanoid",
+  "aliases": ["humanoid", "human"],
+  "select": {"class": "humanoid"},
+  "fixed_template": {
+    "rig": "rigs/rig-human.glb",
+    "clips": ["animations/human-base-animations.glb", "animations/human-addon-animations.glb"],
+    "ref": "Idle_A",
+    "default": ["Idle_A", "Walk", "Jog", "Interact", "Farm_Watering", "Farm_Harvest", "Chop_Tree", "Death_D"]
+  },
+  "builder": null,
+  "names": "rig-human",
+  "side_suffix": ["_l", "_r"],
+  "frame": {"up": "+y", "forward": "+z", "left": "+x", "floor": 0.0},
+  "caps": {"legs": 2, "leg_kind": "plantigrade", "arms": 2, "neck": true, "tail": false, "wings": null, "flight": false, "beak": false, "jaw": false, "toes": false},
+  "ref": "Idle_A",
+  "clips": [
+    {"name": "Idle_A", "gen": "vendor"},
+    {"name": "Walk", "gen": "vendor"},
+    {"name": "Jog", "gen": "vendor"},
+    {"name": "Interact", "gen": "vendor"},
+    {"name": "Farm_Watering", "gen": "vendor"},
+    {"name": "Farm_Harvest", "gen": "vendor"},
+    {"name": "Chop_Tree", "gen": "vendor"},
+    {"name": "Death_D", "gen": "vendor"}
+  ],
+  "default": ["Idle_A", "Walk", "Jog", "Interact", "Farm_Watering", "Farm_Harvest", "Chop_Tree", "Death_D"]
+}

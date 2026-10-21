@@ -16,11 +16,18 @@ Axes. Hunyuan's +Z is the side the photo saw. --facing says where the subject lo
 portrait, the default), right or left (side-on, like the cow), away. The model is turned so the subject looks
 down glTF +Z. The .obj then follows --up: z (default) is Z up with that front turned to +X, which is what s&box
 wants (Source units, 1 unit = 1 inch); y keeps glTF axes. --height is in .obj units, feet on 0, centred.
+
+Facing gate. After the model is placed (head down +Z by --facing), facing.check_mesh votes on where the head
+really is: the toes, the narrow end and a red comb (rig_fit.geometric_cues) plus the vision model on four textured
+renders. If the toes AND the vision model both put the head at -Z, the model is turned a further 180 degrees (a
+re-place at +180: x and z negated) and psx.json records facing_check {flipped: true, why} and facing_source
+'cues'. --facing-check off (or PSX_FACING_CHECK=off) skips it; a failing check never fails the pass.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import struct
 import sys
 from io import BytesIO
@@ -31,6 +38,8 @@ import trimesh
 import xatlas
 from PIL import Image
 from scipy import ndimage
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # facing.py, rig*.py next to this file
 
 # Degrees about +Y (glTF up) that turn the subject to look down +Z, by where it looks in the photo.
 FACING = {"camera": 0.0, "right": -90.0, "left": 90.0, "away": 180.0}
@@ -234,6 +243,80 @@ def write_glb(path: Path, verts: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
     path.write_bytes(out)
 
 
+def turn_180(verts: np.ndarray) -> np.ndarray:
+    """The placed model turned 180 degrees about +Y: the same as place() at yaw + 180 (place centres x and z)."""
+    out = np.array(verts, dtype=np.float64, copy=True)
+    out[:, 0] *= -1
+    out[:, 2] *= -1
+    return out
+
+
+def drawn_facing(src: Path) -> dict:
+    """{facing, canonical, facing_source} from the asset's flat/key.json (the source GLB sits in out/<stem>/), for
+    when generate.sh does not pass --canonical / --facing-source. {} when there is none."""
+    try:
+        key = json.loads((Path(src).resolve().parent / "flat" / "key.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(key, dict) or not key.get("facing"):
+        return {}
+    canonical = bool(key.get("canonical"))
+    return {"facing": key["facing"], "canonical": canonical,
+            "facing_source": key.get("facing_source") or ("drawn" if canonical else None)}
+
+
+def subject_kind(src: Path) -> tuple[bool, str | None]:
+    """(is a creature, flat2d pose kind) from the asset's intent.json (the source GLB sits in out/<stem>/). With no
+    intent.json the subject is unknown and the gate runs (True, None); an intent that names no creature (a crate, a
+    tank, subject 'prop') is (False, None): its 'toes' and 'head' mean nothing, so the facing gate is skipped."""
+    try:
+        intent = json.loads((Path(src).resolve().parent / "intent.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True, None
+    if not isinstance(intent, dict):
+        return True, None
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from flat2d.pose import pose_for
+    except Exception:  # noqa: BLE001 - no pose table: keep the gate
+        return True, None
+    kind = pose_for({**intent, "output": intent.get("output") or "ps1"}, intent.get("prompt"))
+    return kind is not None, kind
+
+
+def facing_gate(verts, faces, uvs, png, name: str, cls: str, declared: str, work: Path, check=None) -> dict:
+    """Write a temporary GLB of the placed low model, run facing.check_mesh on it. Returns facing_check."""
+    if check is None:
+        import facing
+        check = facing.check_mesh
+    tmp = work / f".{name}_facing.glb"
+    try:
+        write_glb(tmp, verts, faces, uvs, png, name)
+        got = check(tmp, cls, declared)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return got
+
+
+def degrade(stage: str, code: str, message: str) -> dict:
+    """Print 'DEGRADED <stage> <code>: <message>' and record it in $DEGRADED_JSON when generate.sh sets it."""
+    row = {"stage": stage, "code": code, "message": message}
+    print(f"DEGRADED {stage} {code}: {message}", flush=True)
+    path = os.environ.get("DEGRADED_JSON")
+    if path:
+        p = Path(path)
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            data = {}
+        rows = data.get("degraded") or []
+        if row not in rows:
+            rows.append(row)
+        data["degraded"] = rows
+        p.write_text(json.dumps(data, indent=2) + "\n")
+    return row
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("src", type=Path, help="textured GLB (textured_photo.glb, textured.glb)")
@@ -247,6 +330,13 @@ def main() -> int:
     ap.add_argument("--yaw", type=float, default=0, help="extra turn about the up axis, degrees")
     ap.add_argument("--up", choices=("z", "y"), default="z", help=".obj axes: z = Z up, +X front (s&box); y = glTF")
     ap.add_argument("--glb", dest="glb_out", type=Path, default=None, help="also write the model as a GLB here")
+    ap.add_argument("--facing-source", choices=("drawn", "detected", "user", "cues"), default=None,
+                    help="where --facing came from (recorded in psx.json)")
+    ap.add_argument("--canonical", action="store_true", help="the picture is a pipeline-drawn canonical profile")
+    ap.add_argument("--cls", default="animal", help="class for the facing cues (humanoid skips the narrow-end cue)")
+    ap.add_argument("--facing-check", choices=("auto", "off"), default=None,
+                    help="check the placed model's head is at +Z and turn it if the toes and the VLM disagree "
+                         "(default auto; PSX_FACING_CHECK=off turns it off)")
     args = ap.parse_args()
 
     high, texture = load_textured(args.src)
@@ -254,6 +344,40 @@ def main() -> int:
     low = decimate(high, args.faces)
     verts, faces, uvs, image, used = bake(high, texture, low, args.atlas)
     png = crunch(image)
+
+    gate = args.facing_check or ("off" if (os.environ.get("PSX_FACING_CHECK") or "").lower() in {"off", "0", "no"}
+                                 else "auto")
+    facing_check: dict = {"skipped": True} if gate == "off" else {}
+    degraded: list[dict] = []
+    drawn = drawn_facing(args.src)
+    canonical = bool(args.canonical or (drawn.get("canonical") and drawn.get("facing") == args.facing))
+    source = args.facing_source or (drawn.get("facing_source") if drawn.get("facing") == args.facing else None)
+    creature, kind = subject_kind(args.src)
+    cls = "humanoid" if kind == "humanoid" else args.cls
+    if gate == "auto" and not creature and not canonical:
+        gate = "off"
+        facing_check = {"skipped": True, "why": "not a creature (intent.json): no head or toes to check"}
+    if gate == "auto":
+        try:
+            import facing
+            got = facing_gate(verts, faces, uvs, png, args.name, cls, args.facing, args.out)
+            facing_check = {"flipped": False, "agrees": got["agrees"], "head_axis": got["head_axis"],
+                            "votes": got["votes"], "vlm": got.get("vlm"), "declared": args.facing}
+            if got["flipped_needed"]:
+                verts = turn_180(verts)
+                facing_check["flipped"] = True
+                facing_check["why"] = facing.flip_why(args.facing)
+                facing_check["decided_by"] = "toes+vlm"
+                source = "cues"
+                print("psx_lowpoly: warning: " + facing_check["why"], file=sys.stderr)
+            else:
+                facing_check["decided_by"] = "declared" if (canonical and got["agrees"]) else (
+                    "agrees" if got["agrees"] else "declared (cues disagree, not both toes and VLM)")
+        except Exception as e:  # noqa: BLE001 - the check is advisory; the pass still writes the model
+            facing_check = {"error": f"{e.__class__.__name__}: {e}"}
+            print(f"psx_lowpoly: facing check failed: {e}", file=sys.stderr)
+            degraded.append(degrade("psx", "facing_check",
+                                    f"facing check failed ({e.__class__.__name__}: {e}); kept the declared facing"))
 
     obj = args.out / f"{args.name}.obj"
     tex = args.out / f"{args.name}.png"
@@ -276,6 +400,10 @@ def main() -> int:
         "glb_axes": "y-up, +z front (glTF), metres",
         "height": args.height,
         "facing": args.facing,
+        "facing_source": source,
+        "canonical": canonical,
+        "facing_check": facing_check,
+        "degraded": degraded,
         "size": [round(float(x), 1) for x in size.max(0) - size.min(0)],
     }
     (args.out / "psx.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

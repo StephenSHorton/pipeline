@@ -8,11 +8,14 @@ The host ships the viewer and `factory_http.py` and owns port 8766. It also list
 
 ```sh
 cd desktop
-node frontend/scripts/copy-viewer.mjs
+npm --prefix frontend ci            # once, or after package.json changes
+npm --prefix frontend run build     # React app -> frontend/dist (index.html, static/, legacy.html, public files)
 node frontend/scripts/copy-factory.mjs
 go build -o bin/pipeline
 ./bin/pipeline
 ```
+
+The window and `:8777` serve the React app at `/`. The old single-file page is still at `/legacy.html` (source: `frontend/index.html`, which tests pin) until every screen is ported. UI work without rebuilding the Go host: keep `./bin/pipeline` running and use `npm --prefix frontend run dev` (Vite on `127.0.0.1:9245`, proxying the host and factory routes to `:8777`). `npm --prefix frontend test` runs the vitest suite.
 
 From a factory checkout the host uses `.venv` / `python3`. The installed app extracts scripts into `~/Library/Application Support/Pipeline`. Do not point the installed app at the git checkout.
 

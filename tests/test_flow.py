@@ -34,6 +34,41 @@ class FlowTest(unittest.TestCase):
     def stage(self, name: str) -> dict:
         return next(s for s in flow.state(self.root, "radio")["stages"] if s["stage"] == name)
 
+    def test_concept_take_carries_the_views(self) -> None:
+        for rel in ("flat/sheet.png", "flat/views/front.png", "flat/views/right.png", "flat/views.json"):
+            write(self.asset / rel, "sheet one " + rel)
+        write(self.asset / "views" / "lifted" / "right.png", "isolated by generate.sh")
+        files = self.stage("concept")["files"]
+        for rel in ("flat/sheet.png", "flat/views/front.png", "flat/views/right.png", "flat/views.json"):
+            self.assertIn(rel, files)
+        self.assertNotIn("views/lifted/right.png", files)  # generate.sh's, the mesh take's
+        flow.snapshot(self.root, "radio", "concept")
+        # A newer sheet; then going back to t1 brings ITS views back with its source.png, never a mix.
+        write(self.asset / "flat" / "source.png", "still two")
+        write(self.asset / "flat" / "views.json", "sheet two")
+        (self.asset / "flat" / "views" / "front.png").unlink()
+        flow.snapshot(self.root, "radio", "concept")
+        flow.pick(self.root, "radio", "concept", "t1")
+        self.assertEqual((self.asset / "flat" / "source.png").read_text(), "still one")
+        self.assertEqual((self.asset / "flat" / "views.json").read_text(), "sheet one flat/views.json")
+        self.assertTrue((self.asset / "flat" / "views" / "front.png").is_file())
+        self.assertTrue((self.asset / "views" / "lifted" / "right.png").is_file())  # the concept pick leaves it
+
+    def test_a_single_still_concept_drops_newer_views_when_picked(self) -> None:
+        flow.snapshot(self.root, "radio", "concept")  # t1: a single still, no views
+        write(self.asset / "flat" / "source.png", "sheet canonical")
+        write(self.asset / "flat" / "views.json", "{}")
+        flow.snapshot(self.root, "radio", "concept")
+        flow.pick(self.root, "radio", "concept", "t1")
+        self.assertFalse((self.asset / "flat" / "views.json").exists())
+
+    def test_mesh_take_carries_shape_degraded_and_lifted_views(self) -> None:
+        for rel in ("shape.json", "degraded.json", "views/lifted/front.png", "views/lifted/left.png"):
+            write(self.asset / rel, rel)
+        files = self.stage("mesh")["files"]
+        for rel in ("mesh.glb", "shape.json", "degraded.json", "views/lifted/front.png", "views/lifted/left.png"):
+            self.assertIn(rel, files)
+
     def test_old_asset_reads_as_unsaved(self) -> None:
         self.assertTrue(self.stage("concept")["unsaved"])
         self.assertTrue(self.stage("mesh")["live"])
@@ -77,7 +112,8 @@ class FlowTest(unittest.TestCase):
         status, body, _ = flow.handle(self.root, "POST", "/flow/radio/snapshot", b'{"stage": "stack"}')
         self.assertEqual(status, 200, body)
         status, body, _ = flow.handle(self.root, "GET", "/flow/radio", b"")
-        self.assertEqual(json.loads(body)["stages"][4]["pick"], "t1")
+        stack = next(e for e in json.loads(body)["stages"] if e["stage"] == "stack")
+        self.assertEqual(stack["pick"], "t1")
         status, _, _ = flow.handle(self.root, "POST", "/flow/radio/pick", b'{"stage": "nope", "take": "t1"}')
         self.assertEqual(status, 400)
         status, _, _ = flow.handle(self.root, "GET", "/flow/missing", b"")
@@ -126,6 +162,82 @@ class FlowTest(unittest.TestCase):
         flow.write_manifest(self.asset, data)
         self.assertFalse(self.stage("concept")["unsaved"])
         self.assertFalse(flow.snapshot(self.root, "radio", "concept")["created"])
+
+    def rig_files(self) -> None:
+        write(self.asset / "rigged.glb", "rig one")
+        write(self.asset / "rig" / "rig.json", "{}")
+        write(self.asset / "rig" / "rig.log", "rig: log")
+
+    def test_checking_a_rig_again_keeps_its_version(self) -> None:
+        self.rig_files()
+        flow.snapshot(self.root, "radio", "rig")
+        write(self.asset / "rig" / "inspect.json", '{"version": 2, "longer": true}')
+        write(self.asset / "rig" / "summary.json", '{"line": "No tears"}')
+        rig = self.stage("rig")
+        self.assertFalse(rig["unsaved"])
+        self.assertEqual(rig["summary"], {"line": "No tears"})
+        self.assertIsNone(rig["takes"][0]["summary"])  # the saved copy has no summary until it is refreshed
+        flow.resave(self.root, "radio", "rig", "t1")
+        rig = self.stage("rig")
+        self.assertEqual([t["id"] for t in rig["takes"]], ["t1"])
+        self.assertEqual(rig["takes"][0]["summary"], {"line": "No tears"})
+        self.assertIn("rig/summary.json", rig["takes"][0]["files"])
+        self.assertFalse(rig["unsaved"])
+        self.assertNotIn("summary", flow.read_manifest(self.asset)["stages"]["rig"]["takes"][0])
+        write(self.asset / "rigged.glb", "rig two, longer")
+        self.assertTrue(self.stage("rig")["unsaved"])
+
+    def test_resave_drops_files_that_are_gone(self) -> None:
+        self.rig_files()
+        write(self.asset / "rig" / "old.fbx", "fbx")
+        flow.snapshot(self.root, "radio", "rig")
+        (self.asset / "rig" / "old.fbx").unlink()
+        take = flow.resave(self.root, "radio", "rig", "t1")
+        self.assertNotIn("rig/old.fbx", take["files"])
+        self.assertFalse((self.asset / "takes" / "rig" / "t1" / "rig" / "old.fbx").exists())
+        with self.assertRaises(flow.FlowError):
+            flow.resave(self.root, "radio", "rig", "t9")
+
+    def test_rig_take_keeps_template_and_preview(self) -> None:
+        self.rig_files()
+        write(self.asset / "rig" / "template" / "rig.glb", "built rig")
+        write(self.asset / "rig" / "template" / "clips_report.json", "{}")
+        write(self.asset / "rig" / "preview" / "contact_sheet.png", "sheet one")
+        write(self.asset / "rig" / "preview" / "blender" / "side.png", "parity")
+        write(self.asset / "rig" / "fbx_check.json", "{}")
+        write(self.asset / "rig" / "plan.json", "{}")
+        write(self.asset / "rig" / "preview" / "frames.json", "{}")
+        write(self.asset / "rig" / "preview" / "Walk_0.25_side_texture.png", "a frame")
+        files = flow.stage_files(self.asset, "rig")
+        for rel in ("rig/template/rig.glb", "rig/template/clips_report.json", "rig/preview/contact_sheet.png",
+                    "rig/preview/frames.json", "rig/fbx_check.json", "rig/plan.json"):
+            self.assertIn(rel, files)
+        # the per-frame pictures can be rendered again: a take holds only the sheet and frames.json
+        self.assertNotIn("rig/preview/blender/side.png", files)
+        self.assertNotIn("rig/preview/Walk_0.25_side_texture.png", files)
+        take = flow.snapshot(self.root, "radio", "rig")
+        self.assertIn("rig/template/rig.glb", flow.read_manifest(self.asset)["stages"]["rig"]["takes"][0]["files"])
+        self.assertTrue((self.asset / "takes" / "rig" / "t1" / "rig" / "template" / "rig.glb").is_file(), take)
+        # Rendering the sheet again is about the rig, not a new rig.
+        write(self.asset / "rig" / "preview" / "contact_sheet.png", "sheet two, longer")
+        write(self.asset / "rig" / "render.log", "rig_render: Rest")
+        write(self.asset / "rig" / "frames_check.json", "{}")  # rig_frames check: about the rig too
+        self.assertFalse(self.stage("rig")["unsaved"])
+        # A rebuilt template is.
+        write(self.asset / "rig" / "template" / "rig.glb", "built rig two")
+        self.assertTrue(self.stage("rig")["unsaved"])
+
+    def test_rig_takes_saved_before_still_match(self) -> None:
+        self.rig_files()
+        write(self.asset / "rig" / "inspect.json", "{}")
+        flow.snapshot(self.root, "radio", "rig")
+        data = flow.read_manifest(self.asset)
+        data["stages"]["rig"]["takes"][0]["print"] = flow.fingerprint(self.asset, flow.stage_files(self.asset, "rig"))
+        flow.write_manifest(self.asset, data)
+        self.assertFalse(self.stage("rig")["unsaved"])
+        self.assertFalse(flow.snapshot(self.root, "radio", "rig")["created"])
+        self.assertIsNone(self.stage("mesh").get("summary"))
+        self.assertNotIn("summary", self.stage("mesh"))
 
 
 class FactoryAutosaveTest(unittest.TestCase):
