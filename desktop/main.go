@@ -120,11 +120,14 @@ func main() {
 		Width:            1480,
 		Height:           920,
 		BackgroundColour: application.NewRGB(16, 17, 15),
-		URL:              "/?look=voxel",
+		URL:              "/",
 	})
 
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		go upd.AutoUpdate()
+		// A dev build can never be older than a release, so the check only adds a failed request to the log.
+		if version != "dev" {
+			go upd.AutoUpdate()
+		}
 	})
 
 	if err := app.Run(); err != nil {

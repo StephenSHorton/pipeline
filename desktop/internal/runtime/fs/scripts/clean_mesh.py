@@ -75,9 +75,16 @@ def delete_sphere(mesh: trimesh.Trimesh, center: np.ndarray, radius: float) -> t
     }
 
 
+def clean_name(source: str) -> str:
+    """Where a cleanup of `source` goes: psx*.glb -> psx_clean.glb, anything else -> mesh_clean.glb.
+    A cleaned file cleans into itself, so carves add up."""
+    return "psx_clean.glb" if source.startswith("psx") else "mesh_clean.glb"
+
+
 def patch_lods(asset: Path, filename: str = "mesh_clean.glb") -> None:
     path = asset / "lods.json"
-    item = {"id": "clean", "file": filename, "label": "Clean"}
+    lid, label = ("psx-clean", "PSX clean") if filename.startswith("psx") else ("clean", "Clean")
+    item = {"id": lid, "file": filename, "label": label}
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -85,7 +92,7 @@ def patch_lods(asset: Path, filename: str = "mesh_clean.glb") -> None:
             data = {"lods": []}
     else:
         data = {"lods": []}
-    lods = [x for x in data.get("lods") or [] if x.get("id") != "clean"]
+    lods = [x for x in data.get("lods") or [] if x.get("id") != lid]
     lods.insert(0, item)
     data["lods"] = lods
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

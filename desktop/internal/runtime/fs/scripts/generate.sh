@@ -100,13 +100,31 @@ fi
 OUT="$ROOT/out/$STEM"
 mkdir -p "$OUT"
 EXT="${IMAGE##*.}"
-cp "$IMAGE" "$OUT/input.$EXT"
+# A rebuild from this asset's own input.* must not copy the file onto itself.
+[[ "$IMAGE" -ef "$OUT/input.$EXT" ]] || cp "$IMAGE" "$OUT/input.$EXT"
 if [[ -n "$PROMPT" ]]; then
   printf '%s\n' "$PROMPT" > "$OUT/prompt.txt"
 fi
 
 LOG="$OUT/generate.log"
-exec > >(tee -a "$LOG") 2>&1
+# The factory writes this script's output to the log itself (one copy per line); run by hand, tee it.
+if [[ -z "${FACTORY_ROOT:-}" ]]; then
+  exec > >(tee -a "$LOG") 2>&1
+fi
+
+# Progress for the app: one STAGES line with the plan, then "STAGE <key> <label>" as each one starts.
+PLAN="isolate shape reduce"
+if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
+  PLAN="$PLAN paint"
+  { ((${#REFS[@]})) || [[ -d "$OUT/views/lifted" || "$WANT_PSX" -eq 1 ]]; } && PLAN="$PLAN retexture"
+  [[ "$WANT_PSX" -eq 1 ]] && PLAN="$PLAN psx"
+  PLAN="$PLAN lods"
+fi
+PLAN="$PLAN inspect"
+[[ "$WANT_STACK" -eq 1 ]] && PLAN="$PLAN stack"
+[[ -x "$BIN/preview-glb" ]] && PLAN="$PLAN preview"
+echo "STAGES $PLAN"
+stage() { echo "STAGE $1 $2"; }
 
 echo "generate: root=$ROOT"
 echo "generate: image=$IMAGE"
@@ -125,6 +143,7 @@ if [[ ! -x "$BIN/hy3d" || ! -x "$BIN/lift-subject" || ! -f "$BIN/mlx.metallib" ]
 fi
 
 LIFTED="$OUT/lifted.png"
+stage isolate "Cutting out the subject"
 echo "generate: lifting subject via Vision"
 "$BIN/lift-subject" "$IMAGE" "$LIFTED"
 isolate_one() { "$BIN/lift-subject" "$1" "$2"; }
@@ -162,6 +181,7 @@ if ((${#REFS[@]})); then
   echo "generate: wrote $OUT/views.json"
 fi
 
+stage shape "Building the shape"
 HERO="$OUT/mesh_hero.glb"
 MESH="$OUT/mesh.glb"
 USED_MV=0
@@ -190,6 +210,7 @@ else
   cp "$HERO" "$MESH"
 fi
 
+stage reduce "Reducing the mesh"
 echo "generate: reduce LODs"
 "$ROOT/scripts/reduce.sh" "$STEM"
 
@@ -215,6 +236,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   fi
   TEXTURED="$OUT/textured.glb"
   [[ "$PAINT_MODEL" == "pbr" ]] && TEXTURED="$OUT/pbr.glb"
+  stage paint "Painting the texture"
   echo "generate: hy3d paint ($PAINT_MODEL) on $(basename "$LOD")"
   "$BIN/hy3d" paint "$LOD" "$LIFTED" -o "$TEXTURED" --weights "$PAINT_WEIGHTS" --model "$PAINT_MODEL"
   FINAL="$TEXTURED"
@@ -223,6 +245,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   fi
   ls -lh "$FINAL"
   if [[ -d "$OUT/views/lifted" || "$WANT_PSX" -eq 1 ]]; then
+    stage retexture "Baking the photo on"
     echo "generate: retexture from the photo and any turnaround views"
     VIEW_ARGS=(--view "$LIFTED")
     if [[ "$WANT_PSX" -eq 1 ]]; then
@@ -242,27 +265,32 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
     fi
   fi
   if [[ "$WANT_PSX" -eq 1 ]]; then
+    stage psx "Cutting down to PS1 low-poly"
     echo "generate: PSX low-poly ($PSX_FACES tris, ${PSX_ATLAS}px, facing $FACING, height $PSX_HEIGHT, up $PSX_UP)"
     rm -rf "$OUT/psx"
     "$PYTHON" "$ROOT/scripts/psx_lowpoly.py" "$FINAL" --out "$OUT/psx" --name "${PSX_NAME:-$STEM}" --height "$PSX_HEIGHT" \
       --facing "$FACING" --faces "$PSX_FACES" --atlas "$PSX_ATLAS" --up "$PSX_UP" --glb "$OUT/psx.glb"
     FINAL="$OUT/psx.glb"
   fi
+  stage lods "Writing detail levels"
   echo "generate: refresh LODs with textured game"
   "$ROOT/scripts/reduce.sh" "$STEM"
 fi
 
 INSPECT="$OUT/inspect.json"
+stage inspect "Checking the model"
 echo "generate: inspecting $FINAL"
 "$PYTHON" "$ROOT/scripts/inspect_glb.py" "$FINAL" "$INSPECT"
 
 if [[ "$WANT_STACK" -eq 1 ]]; then
+  stage stack "Slicing the sprite stack"
   echo "generate: sprite stack res=$STACK_RES from $(basename "$FINAL")"
   "$PYTHON" "$ROOT/scripts/sprite_stack.py" --stem "$STEM" --glb "$FINAL" --res "$STACK_RES" \
     || echo "generate: sprite stack failed (non-fatal)"
 fi
 
 if [[ -x "$BIN/preview-glb" ]]; then
+  stage preview "Rendering the thumbnail"
   echo "generate: SceneKit preview"
   "$PYTHON" -c "import trimesh; trimesh.load('$FINAL', force='mesh').export('$OUT/preview.obj')"
   "$BIN/preview-glb" "$OUT/preview.obj" "$OUT/preview.png" || echo "generate: preview failed (non-fatal)"

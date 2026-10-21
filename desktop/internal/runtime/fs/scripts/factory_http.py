@@ -6,6 +6,8 @@ GET  /inspect/<stem>
 POST /generate
 GET  /status
 GET  /status/<job_id>
+POST /cancel/<job_id>
+POST /intent/<stem>
 GET  /glb/<stem>
 GET  /stack/<stem>
 POST /export/<stem>
@@ -19,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -50,6 +53,7 @@ from factory_env import (
     stem_dir,
 )
 from inspect_glb import inspect as inspect_glb
+from clean_mesh import clean_name
 
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 UPLOAD_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -79,6 +83,84 @@ def factory_features(root: Path) -> dict[str, Any]:
         "unirig": False,
         "remesh": remesh,
     }
+
+
+# What each generate.sh stage is called in the app (generate.sh prints "STAGES a b c" then "STAGE a <label>").
+STAGE_LABELS = {
+    "isolate": "Cut out the subject",
+    "shape": "Build the shape",
+    "reduce": "Reduce the mesh",
+    "paint": "Paint the texture",
+    "retexture": "Bake the photo on",
+    "psx": "PS1 low-poly",
+    "lods": "Detail levels",
+    "inspect": "Check the model",
+    "stack": "Sprite stack",
+    "preview": "Thumbnail",
+}
+SUB_PROGRESS = re.compile(r"\[\s*(\d{1,3})%\]")
+# What the asset is meant to be; the app picks its stages and Export card from this.
+OUTPUTS = ("ps1", "model", "stack", "sprite")
+
+
+def parse_progress(text: str) -> dict[str, Any] | None:
+    """Stage plan and position from a generate.log: STAGES/STAGE markers plus the last '[ 42%]' inside the stage."""
+    plan: list[str] = []
+    current = ""
+    sub = 0.0
+    for line in text.splitlines():
+        if line.startswith("STAGES "):
+            plan = line.split()[1:]
+            current, sub = "", 0.0
+        elif line.startswith("STAGE "):
+            bits = line.split(maxsplit=2)
+            if len(bits) >= 2:
+                current, sub = bits[1], 0.0
+        elif current:
+            m = SUB_PROGRESS.search(line)
+            if m:
+                sub = min(int(m.group(1)), 100) / 100.0
+    if not plan:
+        return None
+    index = plan.index(current) if current in plan else -1
+    return {
+        "stages": [{"key": k, "label": STAGE_LABELS.get(k, k)} for k in plan],
+        "stage": current or None,
+        "stage_index": index,
+        "stage_count": len(plan),
+        "sub": round(sub, 2),
+        "fraction": round(max(index, 0) / len(plan) + (sub / len(plan) if index >= 0 else 0), 3),
+    }
+
+
+def clean_intent(raw: Any) -> dict[str, Any] | None:
+    """The app's chosen output for an asset, checked: {"output": ps1|model|stack|sprite, ...settings}."""
+    if not isinstance(raw, dict) or raw.get("output") not in OUTPUTS:
+        return None
+    out: dict[str, Any] = {"output": raw["output"]}
+    psx = clean_psx({k: raw.get(k) for k in PSX_KEYS})
+    if psx:
+        out["psx"] = psx
+    if raw.get("poly") in ("high", "medium", "low"):
+        out["poly"] = raw["poly"]
+    steps = raw.get("steps")
+    if isinstance(steps, list):
+        out["steps"] = [str(x) for x in steps if x in ("pieces", "motion", "say", "sound")]
+    return out
+
+
+def write_intent(root: Path, stem: str, intent: dict[str, Any]) -> None:
+    path = stem_dir(root, stem) / "intent.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**intent, "made": int(time.time())}, indent=2) + "\n", encoding="utf-8")
+
+
+def read_intent(folder: Path) -> dict[str, Any] | None:
+    try:
+        doc = json.loads((folder / "intent.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) and doc.get("output") in OUTPUTS else None
 
 
 def _asset_shot(folder: Path, candidates: tuple[str, ...]) -> str | None:
@@ -205,6 +287,8 @@ class Factory:
                         "has_stack": has_stack,
                         "has_flat": has_flat,
                         "has_ideas": has_ideas,
+                        "has_psx": (d / "psx.glb").is_file(),
+                        "output": (read_intent(d) or {}).get("output"),
                         "input": _asset_shot(d, ("input.png", "input.jpg")),
                         "preview": preview,
                         "mtime": int(d.stat().st_mtime),
@@ -233,6 +317,14 @@ class Factory:
             "--op",
             op,
         ]
+        # Clean the file on screen (a name inside the asset folder), into its *_clean.glb.
+        source = str(body.get("from") or "")
+        out_name = "mesh_clean.glb"
+        if source:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.glb", source) or not (stem_dir(self.root, stem) / source).is_file():
+                raise ValueError(f"no such mesh: {source}")
+            out_name = clean_name(source)
+            argv += ["--glb", str(stem_dir(self.root, stem) / source), "--out-name", out_name]
         if op == "floaters":
             argv += ["--keep", str(int(body.get("keep") or 1))]
             if body.get("min_faces"):
@@ -253,7 +345,7 @@ class Factory:
             info = {"ok": True}
         info["ok"] = True
         info["stem"] = stem
-        info["file"] = "mesh_clean.glb"
+        info["file"] = out_name
         return info
 
     def rename_asset(self, stem: str, dest: str) -> dict[str, Any]:
@@ -288,6 +380,33 @@ class Factory:
         shutil.rmtree(d)
         return {"ok": True, "deleted": True, "stem": stem, "path": f"out/{stem}"}
 
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Stop a running generate (the whole process group) and mark it cancelled."""
+        with self._lock:
+            job = self._job
+            if not job or job.get("job_id") != job_id:
+                return {"ok": False, "error": "unknown job", "job_id": job_id}
+            if job.get("state") != "running":
+                return {"ok": True, "job_id": job_id, "state": job.get("state")}
+            job["cancel"] = True
+            pid = job.get("pid")
+        if pid:
+            try:
+                os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        return {"ok": True, "job_id": job_id, "state": "cancelling"}
+
+    def set_intent(self, stem: str, raw: Any) -> dict[str, Any]:
+        stem = check_stem(stem)
+        intent = clean_intent(raw)
+        if intent is None:
+            raise ValueError("intent needs output: " + " | ".join(OUTPUTS))
+        if not stem_dir(self.root, stem).is_dir():
+            raise FileNotFoundError(f"no asset {stem!r}")
+        write_intent(self.root, stem, intent)
+        return {"ok": True, "stem": stem, "intent": intent}
+
     def _snapshot(self) -> dict[str, Any] | None:
         with self._lock:
             return dict(self._job) if self._job else None
@@ -309,6 +428,7 @@ class Factory:
             try:
                 text = Path(log_path).read_text(encoding="utf-8", errors="replace")
                 out["log_tail"] = "\n".join(text.splitlines()[-40:])
+                out["progress"] = parse_progress(text)
             except OSError:
                 out["log_tail"] = ""
         return out
@@ -324,6 +444,7 @@ class Factory:
         images: list[str] | None = None,
         prompt: str | None = None,
         psx: dict[str, Any] | None = None,
+        intent: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if quality not in {"draft", "textured", "pbr", "stack", "psx"}:
             quality = "stack"
@@ -366,6 +487,7 @@ class Factory:
             "poly_label": poly_label(poly),
             "seed": str(seed),
             "psx": clean_psx(psx) if quality == "psx" else {},
+            "intent": clean_intent(intent),
             "started": time.time(),
             "glb_path": None,
             "returncode": None,
@@ -409,7 +531,12 @@ class Factory:
                 self._job["argv"] = argv
         env = os.environ.copy()
         env["FACTORY_ROOT"] = str(self.root)
-        with log_path.open("a", encoding="utf-8") as fh:
+        # One log per run: the previous one is kept as generate.prev.log so /status never shows an old run.
+        if log_path.is_file():
+            log_path.replace(log_path.with_name("generate.prev.log"))
+        if (self._snapshot() or {}).get("cancel"):
+            return -signal.SIGTERM  # cancelled before it started
+        with log_path.open("w", encoding="utf-8") as fh:
             proc = subprocess.Popen(
                 argv,
                 cwd=str(self.root),
@@ -417,10 +544,18 @@ class Factory:
                 stdout=fh,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
             with self._lock:
+                cancelled = False
                 if self._job and self._job.get("job_id") == spec["job_id"]:
                     self._job["pid"] = proc.pid
+                    cancelled = bool(self._job.get("cancel"))
+            if cancelled:  # Cancel arrived between the check above and the pid being known
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except OSError:
+                    pass
             return int(proc.wait())
 
     def _run_job(self, spec: dict[str, Any]) -> None:
@@ -428,7 +563,14 @@ class Factory:
             # Keep what this run is about to overwrite.
             if stem_dir(self.root, spec["stem"]).is_dir():
                 autosave(self.root, spec["stem"], ("concept", "mesh", "stack"))
-            rc = self._runner(spec)
+            if spec.get("intent"):
+                write_intent(self.root, spec["stem"], spec["intent"])
+            rc = -signal.SIGTERM if (self._snapshot() or {}).get("cancel") else self._runner(spec)
+            if (self._snapshot() or {}).get("cancel"):
+                with self._lock:
+                    if self._job and self._job.get("job_id") == spec["job_id"]:
+                        self._job.update({"state": "cancelled", "returncode": rc, "finished": time.time(), "error": "Cancelled"})
+                return
             glb = pick_glb(self.root, spec["stem"])
             report = inspect_glb(str(glb)) if glb else {"ok": False, "error": "no GLB"}
             state = "ok" if rc == 0 and report.get("ok") else "error"
@@ -544,6 +686,8 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
                     "POST /generate",
                     "GET /status",
                     "GET /status/<job_id>",
+                    "POST /cancel/<job_id>",
+                    "POST /intent/<stem>",
                     "GET /glb/<stem>",
                     "GET /stack/<stem>",
                     "POST /stack/<stem>",
@@ -758,6 +902,21 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             traceback.print_exc()
             return _json_bytes({"ok": False, "error": str(e)}, 500)
 
+    if method == "POST" and len(parts) == 2 and parts[0] == "cancel":
+        result = factory.cancel(parts[1])
+        return _json_bytes(result, 200 if result.get("ok") else 404)
+
+    if method == "POST" and len(parts) == 2 and parts[0] == "intent":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.set_intent(parts[1], raw))
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+
     if method == "POST" and path == "/generate":
         payload: dict[str, Any] = {}
         for k, v in query.items():
@@ -783,6 +942,7 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
                 images=[str(p) for p in raw_images],
                 prompt=str(payload.get("prompt") or "") or None,
                 psx={k: payload.get(k if k == "facing" else f"psx_{k}") for k in PSX_KEYS},
+                intent=payload.get("intent") if isinstance(payload.get("intent"), dict) else None,
             )
             return _json_bytes(result, 202)
         except FileNotFoundError as e:

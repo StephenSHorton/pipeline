@@ -98,6 +98,7 @@ export function createPixelLook({ THREE, renderer, scene, camera, controls, subj
     shadows: true,
     levels: 0,
     dither: false,
+    lines: 0, // > 0: a fixed internal height (240 for the PS1 look) instead of screen size / pixelSize
     ...defaults,
   };
 
@@ -252,8 +253,8 @@ export function createPixelLook({ THREE, renderer, scene, camera, controls, subj
     fitShadow();
     renderer.getDrawingBufferSize(_size);
     const px = Math.max(1, state.pixelSize);
-    const lw = Math.max(32, Math.floor(_size.x / px));
-    const lh = Math.max(32, Math.floor(_size.y / px));
+    const lh = state.lines > 0 ? state.lines : Math.max(32, Math.floor(_size.y / px));
+    const lw = state.lines > 0 ? Math.max(32, Math.round((_size.x / Math.max(1, _size.y)) * lh)) : Math.max(32, Math.floor(_size.x / px));
     ensureTargets(lw, lh);
     uniforms.lowRes.value.set(lw, lh);
 
@@ -380,6 +381,8 @@ export function bindPixelLookUi(looks, doc = document) {
     if (pxVal) pxVal.textContent = String(look.state.pixelSize);
     if (levels) levels.value = String(Math.max(1, look.state.levels));
     if (levelsVal) levelsVal.textContent = look.state.levels > 1 ? String(look.state.levels) : "off";
+    $("game-240")?.setAttribute("aria-pressed", String(!!look.state.on && look.state.lines === 240));
+    if (pxVal && look.state.lines > 0) pxVal.textContent = `${look.state.lines}p`;
   }
   for (const [id, k] of Object.entries(toggles)) {
     $(id)?.addEventListener("click", () => {
@@ -388,8 +391,17 @@ export function bindPixelLookUi(looks, doc = document) {
       save();
     });
   }
+  // PS1 240p: what the game's PSX shader targets. A perspective camera, 240 lines whatever the window,
+  // no outlines or soft shadows. Pressing it again goes back to the size-based look.
+  const ps1 = $("game-240");
+  const PS1 = { on: true, lines: 240, iso: false, outline: false, shadows: false };
+  ps1?.addEventListener("click", () => {
+    look.set(look.state.on && look.state.lines === 240 ? { lines: 0, iso: true, outline: true, shadows: true } : PS1);
+    show();
+    save();
+  });
   px?.addEventListener("input", () => {
-    look.set({ pixelSize: Math.max(1, Math.min(8, Number(px.value) || 4)) });
+    look.set({ pixelSize: Math.max(1, Math.min(8, Number(px.value) || 4)), lines: 0 });
     show();
     save();
   });
