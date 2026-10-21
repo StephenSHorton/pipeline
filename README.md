@@ -60,7 +60,7 @@ HTTP (loopback, curl, no MCP): `.venv/bin/python scripts/factory_http.py` then t
 
 ## One flow
 
-The desktop app runs every asset through **Ideas → Concept → 2D / 3D / Stack → Export**. A prompt with no picture draws a grid of ideas; **Use** one and it becomes the concept still that 2D, 3D and the stack start from. Each stage keeps takes in `out/<stem>/takes/` (listed in `flow.json`), so you can step back to an earlier still, sheet, mesh or stack from the bar above the tools. **Export** copies the picked 2D pieces and motion strips, sprite stack and 3D files into `out/<stem>/export/` with an `asset.json` that says what each file is. See **[docs/unified-pipeline.md](docs/unified-pipeline.md)**.
+Home asks **What are you making?**: a PS1 model, a 3D model, a sprite stack or a 2D sprite. Each shows only its own settings and a line saying what Make will do; the choice is saved with the asset (`out/<stem>/intent.json`), and the stages, canvas and Export screen follow it. The loading screen lists the factory's real stages (`STAGES`/`STAGE` lines from `generate.sh`, parsed by `/status`), with Cancel and Run in background. The desktop app runs every asset through **Ideas → Concept → 2D / 3D / Stack → Export**. A prompt with no picture draws a grid of ideas; **Use** one and it becomes the concept still that 2D, 3D and the stack start from. Each stage keeps takes in `out/<stem>/takes/` (listed in `flow.json`), so you can step back to an earlier still, sheet, mesh or stack from the bar above the tools. **Export** copies the picked 2D pieces and motion strips, sprite stack and 3D files into `out/<stem>/export/` with an `asset.json` that says what each file is. See **[docs/unified-pipeline.md](docs/unified-pipeline.md)**.
 
 ## 2D lane
 

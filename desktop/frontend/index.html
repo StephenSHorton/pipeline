@@ -109,6 +109,50 @@
       scrollbar-color: rgba(240, 234, 220, 0.35) transparent;
     }
     .gen-overlay-log::-webkit-scrollbar { width: 3px; }
+    .job-card { text-align: left; }
+    .job-card .gen-overlay-kicker, .job-card .gen-overlay-title, .job-card .gen-overlay-step { text-align: left; }
+    .job-card[data-state="error"] .gen-overlay-kicker { color: #e07a5a; }
+    .job-card[data-state="error"] .gen-overlay-bar > i { background: #c45c3a; }
+    .job-card[data-state="cancelled"] .gen-overlay-bar > i { background: var(--mute); }
+    .job-stages { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+    .job-stages li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; color: var(--mute); }
+    .job-stages li::before { content: "○"; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; }
+    .job-stages li.is-done { color: var(--ink); }
+    .job-stages li.is-done::before { content: "✓"; color: var(--olive); }
+    .job-stages li.is-now { color: var(--accent); }
+    .job-stages li.is-now::before { content: "●"; animation: job-pulse 1.2s ease-in-out infinite; }
+    .job-stages li .sub { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; }
+    @keyframes job-pulse { 50% { opacity: 0.35; } }
+    @media (prefers-reduced-motion: reduce) { .job-stages li.is-now::before { animation: none; } }
+    .job-card .gen-overlay-pct { text-align: left; }
+    .job-log { margin-top: 12px; }
+    .job-log summary { cursor: pointer; font: 11px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); }
+    .job-log .gen-overlay-log { margin-top: 8px; }
+    .job-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .job-actions:empty { display: none; }
+    .job-actions .is-primary, #toast-act { background: var(--accent); color: #141510; border-color: var(--accent); font-weight: 600; }
+    .job-chip { font: 11px/1 "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.04em; padding: 6px 10px; border-color: rgba(212, 180, 58, 0.55); color: var(--accent); white-space: nowrap; }
+    .job-chip[data-state="error"] { color: #e07a5a; border-color: rgba(224, 122, 90, 0.6); }
+    .job-chip[data-state="ok"] { color: var(--ink); }
+    .home-job { justify-self: start; }
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 72px;
+      transform: translateX(-50%);
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: calc(100% - 32px);
+      padding: 10px 12px 10px 16px;
+      background: #1c1d18;
+      border: 1px solid rgba(212, 180, 58, 0.55);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+      font-size: 13px;
+    }
+    .toast[hidden] { display: none; }
+    #toast-close { border: 0; background: transparent; color: var(--mute); padding: 2px 6px; }
     .gen-overlay-log::-webkit-scrollbar-thumb { background: rgba(240, 234, 220, 0.32); }
     .asset-chip {
       display: inline-flex;
@@ -222,28 +266,6 @@
     .field.is-required > .fname::after {
       content: "";
     }
-    .levers-required {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: flex-end;
-      gap: 10px 14px;
-    }
-    .levers-required .gen-poly-field { flex: 1 1 100%; min-width: 0; }
-    .levers-required .gen-look-field { flex: 1 1 100%; min-width: 0; }
-    .look-picks { grid-template-columns: 1fr 1fr; }
-    .gen-psx {
-      flex: 1 1 100%;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px 14px;
-      font-size: 11px;
-      color: var(--mute);
-    }
-    .gen-psx[hidden] { display: none; }
-    .gen-psx label { display: inline-flex; align-items: center; gap: 6px; }
-    .gen-psx select, .gen-psx input { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); padding: 4px 6px; }
-    .gen-psx input { width: 64px; }
     .poly-picks {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
@@ -314,30 +336,83 @@
       letter-spacing: 0.1em;
       text-transform: uppercase;
     }
-    .workflow {
-      display: inline-flex;
-      border: 1px solid var(--line);
-    }
-    .workflow button {
-      border: 0;
-      background: transparent;
-      color: var(--mute);
-      padding: 6px 12px;
+    /* Home: "What are you making?" picks the output; each output shows only its own options. */
+    .make { border: 0; padding: 0; margin: 0; min-width: 0; }
+    .make-legend {
+      padding: 0;
+      margin-bottom: 10px;
       font-family: "IBM Plex Mono", ui-monospace, monospace;
       font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    .make-picks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .make-card {
+      position: relative;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      grid-template-rows: auto auto;
+      column-gap: 10px;
+      row-gap: 2px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      background: #121310;
+      cursor: pointer;
+    }
+    .make-card input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .make-glyph { grid-row: 1 / 3; width: 34px; height: 28px; color: var(--mute); }
+    .make-card strong { font-size: 14px; font-weight: 600; color: var(--ink); }
+    .make-card em { font-style: normal; font-size: 11px; line-height: 1.35; color: var(--mute); }
+    .make-card:hover { border-color: rgba(240, 234, 220, 0.3); }
+    .make-card:has(input:checked) { border-color: var(--accent); background: #1c1b12; }
+    .make-card:has(input:checked) .make-glyph { color: var(--accent); }
+    .make-card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .make-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 10px; align-items: start; }
+    #gen .make-opt { display: none; gap: 8px; min-width: 0; border: 0; padding: 0; margin: 0; }
+    #gen[data-output="ps1"] .make-opt[data-for~="ps1"],
+    #gen[data-output="model"] .make-opt[data-for~="model"],
+    #gen[data-output="stack"] .make-opt[data-for~="stack"],
+    #gen[data-output="sprite"] .make-opt[data-for~="sprite"] { display: grid; }
+    .opt-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .opt-label {
+      min-width: 74px;
+      padding: 0;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 10px;
       letter-spacing: 0.12em;
       text-transform: uppercase;
+      color: var(--mute);
     }
-    .workflow button[aria-pressed="true"] {
-      background: var(--accent);
-      color: #141510;
+    .opt-hint { margin: 0; font-size: 12px; color: var(--mute); }
+    .seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); }
+    .seg label { position: relative; }
+    .seg input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .seg span { display: block; padding: 6px 10px; font-size: 12px; color: var(--mute); cursor: pointer; }
+    .seg label + label span { border-left: 1px solid var(--line); }
+    .seg input:checked + span { background: var(--accent); color: #141510; }
+    .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .opt-num { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--mute); }
+    #gen-psx-height, #gen-psx-name {
+      background: #0e0f0c;
+      color: var(--ink);
+      border: 1px solid rgba(240, 234, 220, 0.12);
+      padding: 6px 8px;
+      font: 13px/1.3 "IBM Plex Sans", sans-serif;
     }
-    body.is-2d .levers-required { display: none; }
-    .gen-steps { display: none; }
-    body.is-2d .gen-steps {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
+    #gen-psx-height { width: 64px; }
+    #gen-psx-name { width: min(240px, 100%); }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chips button { font-size: 11px; padding: 4px 8px; background: transparent; color: var(--mute); border-color: var(--line); }
+    .chips button:hover, .chips button[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); }
+    .gen-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .gen-route { margin: 0; flex: 1; min-width: 0; font-size: 13px; line-height: 1.45; color: var(--ink); }
+    .gen-route b { color: var(--accent); font-weight: 500; }
+    .gen-route[data-state="need"] { color: var(--mute); }
+    @media (max-width: 980px) {
+      .make-picks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .make-inputs { grid-template-columns: minmax(0, 1fr); }
     }
     .gen-step-picks { display: flex; flex-wrap: wrap; gap: 6px; }
     .gen-step-picks button[aria-pressed="true"] {
@@ -455,7 +530,16 @@
       border: 1px solid var(--line);
     }
     .takes-note.is-stale { color: #d9774a; }
+    .takes-label { align-self: center; padding: 0 4px; font: 10px "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); }
     .takes > button.takes-act { align-self: center; }
+    .takes > button.takes-act.is-primary { background: var(--accent); color: #141510; border-color: var(--accent); font-weight: 600; }
+    /* One pane per stage when the asset doesn't need both (data-solo is set by renderFlow). */
+    body[data-solo="mesh"] .workspace,
+    body[data-solo="stack"] .workspace { grid-template-columns: minmax(0, 1fr); }
+    body[data-solo="mesh"] #stack-pane,
+    body[data-solo="stack"] #mesh-pane { display: none; }
+    body[data-solo="mesh"] #step-bar [data-step="stack-look"],
+    body[data-solo="stack"] #step-bar [data-step="mesh"] { display: none; }
     #ideas-stage, .ideas-more { display: none; }
     body.is-ideas .workspace { display: block; height: 100%; overflow: hidden; }
     body.is-ideas #ideas-stage {
@@ -523,6 +607,18 @@
     .export-card img { width: 100%; max-height: 180px; object-fit: contain; background: #1b1c18; margin-bottom: 8px; }
     .export-card ul { margin: 0; padding: 0; list-style: none; font: 12px/1.5 "IBM Plex Mono", ui-monospace, monospace; }
     .export-card.is-missing { color: var(--mute); border-style: dashed; }
+    .export-card.is-hero { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); gap: 6px 18px; border-color: rgba(212, 180, 58, 0.5); }
+    .export-card.is-hero h3 { grid-column: 1 / -1; color: var(--accent); }
+    .export-card.is-hero { align-items: start; }
+    .export-card.is-hero figure { margin: 0; }
+    .export-card.is-hero figcaption { font: 11px "IBM Plex Mono", ui-monospace, monospace; color: var(--mute); }
+    .export-card.is-hero img { max-height: 220px; image-rendering: pixelated; }
+    .export-card .hero-text { display: grid; gap: 6px; align-content: start; }
+    .export-card .facts { margin: 0; font-size: 13px; color: var(--ink); }
+    .export-card ol { margin: 4px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.55; color: var(--mute); }
+    .export-card ol b, .export-card code { color: var(--ink); font-weight: 500; }
+    .export-card code { font: 11px "IBM Plex Mono", ui-monospace, monospace; }
+    @media (max-width: 760px) { .export-card.is-hero { grid-template-columns: minmax(0, 1fr); } .export-card.is-hero img { grid-row: auto; } }
     body.is-2d .workspace {
       display: block;
       height: 100%;
@@ -762,7 +858,8 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      /* safe: when the content is taller than the window, start at the top instead of clipping the logo */
+      justify-content: safe center;
       padding: clamp(20px, 3vh, 44px) clamp(24px, 5vw, 80px);
       overflow: auto;
     }
@@ -875,12 +972,31 @@
     }
     .home-suggest button:hover { color: var(--ink); border-color: var(--accent); }
     .home-library {
-      flex: 0 1 auto;
+      flex: 0 0 auto;
       width: 100%;
       margin-top: 0;
-      max-height: min(28vh, 300px);
-      overflow: auto;
     }
+    .lib-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 12px; }
+    .lib-bar h3 { margin: 0 !important; }
+    #lib-search { margin-left: auto; width: min(240px, 100%); background: #0e0f0c; color: var(--ink); border: 1px solid rgba(240, 234, 220, 0.12); padding: 6px 10px; font: 13px "IBM Plex Sans", sans-serif; }
+    .home-card { position: relative; }
+    .home-card[hidden] { display: none; }
+    .card-kind {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 1;
+      padding: 2px 6px;
+      font: 10px/1.4 "IBM Plex Mono", ui-monospace, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #141510;
+      background: var(--ink);
+      pointer-events: none;
+    }
+    .card-kind[data-kind="ps1"] { background: var(--accent); }
+    .card-kind[data-kind="ideas"] { background: var(--mute); }
+    .card-when { font: 10px "IBM Plex Mono", ui-monospace, monospace; color: var(--mute); }
     .home-library h3 {
       margin: 0 0 12px;
       font-size: 11px;
@@ -892,8 +1008,9 @@
     }
     .home-assets {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 12px;
+      /* Few, wide columns: the preview is what you scan for. */
+      grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+      gap: 16px;
     }
     .home-card {
       display: flex;
@@ -912,17 +1029,22 @@
       text-align: left;
       padding: 0;
     }
+    /* The name gets its own line (up to two), with Open / Use / Delete on the row below. */
     .home-card .home-card-name {
       border: 0;
       background: transparent;
-      flex: 1;
+      flex: 1 1 100%;
       min-width: 0;
-      width: auto;
+      width: 100%;
       text-align: left;
       padding: 0;
+      font-size: 14px;
+      line-height: 1.3;
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
     }
     .home-card.is-picked { border-color: var(--accent); }
     .home-card .asset-use,
@@ -941,17 +1063,21 @@
     .home-card .asset-use:hover,
     .home-card .asset-use[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
     .home-card img {
+      display: block;
       width: 100%;
-      height: clamp(120px, 16vh, 180px);
-      object-fit: contain;
+      aspect-ratio: 4 / 3;
+      height: auto;
+      /* Renders are square with wide margins: fill the frame rather than letterbox it. */
+      object-fit: cover;
       background: #10110f;
     }
     .home-card .home-card-meta {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      justify-content: space-between;
-      gap: 8px;
+      gap: 6px 4px;
     }
+    .home-card .home-card-meta .asset-del { margin-left: auto; }
     .home-card .asset-del {
       flex: 0 0 auto;
       padding: 4px 8px;
@@ -1013,8 +1139,9 @@
     }
     .pane-stats {
       position: absolute;
-      left: 16px;
-      bottom: 12px;
+      right: 16px;
+      top: 34px;
+      text-align: right;
       z-index: 2;
       pointer-events: none;
       font-family: "IBM Plex Mono", ui-monospace, monospace;
@@ -1464,6 +1591,7 @@
       <button type="button" data-stage="stack" aria-pressed="false">Stack</button>
       <button type="button" data-stage="export" aria-pressed="false">Export</button>
     </div>
+    <button type="button" id="job-chip" class="job-chip" hidden></button>
     <button type="button" id="home-btn" class="home-btn" title="Back to the prompt page">Home</button>
     <button type="button" id="cubby-hide-all" class="home-btn cubby-hide-all" title="Hide every cubby">Hide panels</button>
     <div class="cubby-tray" id="cubby-tray" hidden></div>
@@ -1498,51 +1626,79 @@
         <div class="home-float" aria-label="Choose a workflow and describe the asset">
           <div id="gen-mount-home">
         <form class="gen" id="gen" autocomplete="off">
-          <div class="workflow" id="home-workflow" role="group" aria-label="Workflow">
-            <button type="button" data-workflow="3d" aria-pressed="true">3D</button>
-            <button type="button" data-workflow="2d" aria-pressed="false">2D</button>
-          </div>
-          <div class="gen-prompt-row">
-            <label class="field is-required gen-prompt-field">
-              <span class="fname">Prompt</span>
-              <textarea id="gen-prompt" rows="1" placeholder="Describe one object…" title="One object per picture. Make each piece of a set as its own asset."></textarea>
-            </label>
-            <button type="submit" id="gen-go" title="Run this.">Generate</button>
-          </div>
-          <div class="gen-steps" id="gen-steps">
-            <div class="gen-step-picks" role="group" aria-label="Also do">
-              <button type="button" data-gen-step="pieces" aria-pressed="false">Pieces</button>
-              <button type="button" data-gen-step="motion" aria-pressed="false">Motion</button>
-              <button type="button" data-gen-step="say" aria-pressed="false">Say</button>
-              <button type="button" data-gen-step="sound" aria-pressed="false">Sound</button>
-            </div>
-            <div class="gen-step-line" data-for="pieces" hidden>
-              <input id="gen-pieces" type="text" placeholder="Name the pieces… (optional)" spellcheck="false" />
-            </div>
-            <div class="gen-step-line" data-for="motion" hidden>
-              <input id="gen-motion" type="text" placeholder="Name the motion… (optional)" spellcheck="false" />
-              <label class="gen-clip">
-                <span id="gen-clip-name">Clip</span>
-                <input id="gen-clip" type="file" accept="video/mp4,video/webm,image/png,image/jpeg,image/webp" multiple />
+          <fieldset class="make" id="gen-make">
+            <legend class="make-legend">What are you making?</legend>
+            <div class="make-picks" role="radiogroup">
+              <label class="make-card" title="A PS1-era low-poly model wearing your photo: about 1,200 flat triangles and a 256 px texture, as .obj + .png for the game.">
+                <input type="radio" name="gen-output" value="ps1" />
+                <svg class="make-glyph" viewBox="0 0 40 32" aria-hidden="true"><path d="M6 26 18 4l16 8-6 16z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M18 4l2 12 14-4M20 16l-14 10M20 16l8 12" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".6"/></svg>
+                <strong>PS1 model</strong>
+                <em>Low-poly, wearing your photo</em>
+              </label>
+              <label class="make-card" title="A painted 3D mesh with detail levels for the game.">
+                <input type="radio" name="gen-output" value="model" />
+                <svg class="make-glyph" viewBox="0 0 40 32" aria-hidden="true"><path d="M20 3 34 10v13L20 30 6 23V10z M6 10l14 7 14-7 M20 17v13" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+                <strong>3D model</strong>
+                <em>Painted mesh, detail levels</em>
+              </label>
+              <label class="make-card" title="Stacked flat slices that draw as a 3D-looking object in a 2D engine. Built from a 3D model of your picture.">
+                <input type="radio" name="gen-output" value="stack" />
+                <svg class="make-glyph" viewBox="0 0 40 32" aria-hidden="true"><path d="M6 24h22l6-5H12z M6 18h22l6-5H12z M6 12h22l6-5H12z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+                <strong>Sprite stack</strong>
+                <em>Voxel slices for 2D engines</em>
+              </label>
+              <label class="make-card" title="A flat picture you can cut into pieces, animate from a clip, voice and give sounds.">
+                <input type="radio" name="gen-output" value="sprite" />
+                <svg class="make-glyph" viewBox="0 0 40 32" aria-hidden="true"><rect x="7" y="4" width="26" height="24" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 22l6-7 4 4 3-3 4 6z" fill="currentColor" opacity=".7"/></svg>
+                <strong>2D sprite</strong>
+                <em>Picture, pieces, motion, sound</em>
               </label>
             </div>
-            <div class="gen-step-line" data-for="say" hidden>
-              <input id="gen-say" type="text" placeholder="What it says… (optional)" spellcheck="false" />
+          </fieldset>
+          <div class="make-inputs">
+            <div class="gen-refs">
+              <span class="gen-file">
+                <input id="gen-file" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+                <span id="gen-file-label">Add a photo</span>
+              </span>
+              <div class="gen-thumbs" id="gen-thumbs"></div>
             </div>
-            <div class="gen-step-line" data-for="sound" hidden>
-              <input id="gen-sound" type="text" placeholder="The sound it makes… (optional)" spellcheck="false" />
+            <div class="gen-prompt-row">
+              <label class="field gen-prompt-field">
+                <span class="fname">Prompt</span>
+                <textarea id="gen-prompt" rows="1" placeholder="Or describe it, and we'll draw it first…" title="One object per picture. Make each piece of a set as its own asset."></textarea>
+              </label>
             </div>
           </div>
-          <div class="gen-refs">
-            <span class="gen-file">
-              <input id="gen-file" type="file" accept="image/jpeg,image/png,image/webp" multiple />
-              <span id="gen-file-label">Attach reference images</span>
-            </span>
-            <div class="gen-thumbs" id="gen-thumbs"></div>
-          </div>
-          <div class="levers-required">
-            <fieldset class="field is-required gen-poly-field">
-              <legend class="fname">Poly</legend>
+          <div class="make-options">
+            <div class="make-opt" data-for="ps1">
+              <div class="opt-row">
+                <span class="opt-label" id="gen-facing-label">Facing</span>
+                <div class="seg" role="radiogroup" aria-labelledby="gen-facing-label" id="gen-psx-facing">
+                  <label><input type="radio" name="gen-facing" value="camera" checked /><span>At the camera</span></label>
+                  <label><input type="radio" name="gen-facing" value="left" /><span>Side, facing left</span></label>
+                  <label><input type="radio" name="gen-facing" value="right" /><span>Side, facing right</span></label>
+                  <label><input type="radio" name="gen-facing" value="away" /><span>Away</span></label>
+                </div>
+              </div>
+              <p class="opt-hint" id="gen-facing-hint">Where the subject looks in the photo. A side-on photo is also mirrored onto the far side.</p>
+              <div class="opt-row">
+                <label class="opt-label" for="gen-psx-height">Height</label>
+                <span class="opt-num"><input id="gen-psx-height" type="number" min="1" step="1" value="48" /><span>in</span></span>
+                <div class="chips" id="gen-height-chips">
+                  <button type="button" data-height="72">Person 72</button>
+                  <button type="button" data-height="58">Animal 58</button>
+                  <button type="button" data-height="30">Bust 30</button>
+                  <button type="button" data-height="24">Prop 24</button>
+                </div>
+              </div>
+              <div class="opt-row">
+                <label class="opt-label" for="gen-psx-name">File name</label>
+                <input id="gen-psx-name" type="text" placeholder="from the photo" spellcheck="false" />
+              </div>
+            </div>
+            <fieldset class="make-opt field gen-poly-field" data-for="model stack">
+              <legend class="opt-label">Detail</legend>
               <div class="poly-picks" id="gen-poly">
                 <label>
                   <input type="radio" name="gen-poly" value="high" />
@@ -1561,38 +1717,38 @@
                 </label>
               </div>
             </fieldset>
-            <fieldset class="field gen-look-field">
-              <legend class="fname">Look</legend>
-              <div class="poly-picks look-picks" id="gen-look">
-                <label title="Painted mesh and sprite stack.">
-                  <input type="radio" name="gen-look" value="stack" checked />
-                  <strong>Standard</strong>
-                  <em>Painted mesh<br>+ sprite stack</em>
-                </label>
-                <label title="PS1 low-poly wearing the photo itself: ~1,200 flat triangles, 256 px atlas, .obj + .png for the game.">
-                  <input type="radio" name="gen-look" value="psx" />
-                  <strong>PSX photo</strong>
-                  <em>PS1 low-poly<br>real photo texture</em>
+            <div class="make-opt gen-steps" data-for="sprite" id="gen-steps">
+              <span class="opt-label">After the picture</span>
+              <div class="gen-step-picks" role="group" aria-label="After the picture">
+                <button type="button" data-gen-step="pieces" aria-pressed="false">Pieces</button>
+                <button type="button" data-gen-step="motion" aria-pressed="false" title="Animate from a video or frames you attach. Frames are not drawn from the text.">Motion</button>
+                <button type="button" data-gen-step="say" aria-pressed="false">Say</button>
+                <button type="button" data-gen-step="sound" aria-pressed="false">Sound</button>
+              </div>
+              <div class="gen-step-line" data-for="pieces" hidden>
+                <input id="gen-pieces" type="text" placeholder="Name the pieces… (optional)" spellcheck="false" />
+              </div>
+              <div class="gen-step-line" data-for="motion" hidden>
+                <input id="gen-motion" type="text" placeholder="Name the motion, e.g. walk (needs a clip →)" spellcheck="false" />
+                <label class="gen-clip">
+                  <span id="gen-clip-name">Attach clip</span>
+                  <input id="gen-clip" type="file" accept="video/mp4,video/webm,image/png,image/jpeg,image/webp" multiple />
                 </label>
               </div>
-            </fieldset>
-            <div class="gen-psx" id="gen-psx" hidden>
-              <label title="Where the subject looks in the photo. Side-on photos are also mirrored onto the far side.">Facing
-                <select id="gen-psx-facing">
-                  <option value="camera">At the camera</option>
-                  <option value="right">Right (side-on)</option>
-                  <option value="left">Left (side-on)</option>
-                  <option value="away">Away</option>
-                </select>
-              </label>
-              <label title="Height in game units (s&amp;box: inches). A person ~72, a cow ~58, a bust ~30.">Height
-                <input id="gen-psx-height" type="number" min="1" step="1" value="48" />
-              </label>
+              <div class="gen-step-line" data-for="say" hidden>
+                <input id="gen-say" type="text" placeholder="What it says… (optional)" spellcheck="false" />
+              </div>
+              <div class="gen-step-line" data-for="sound" hidden>
+                <input id="gen-sound" type="text" placeholder="The sound it makes… (optional)" spellcheck="false" />
+              </div>
             </div>
           </div>
           <div class="gen-actions">
-            <span class="gen-status" id="gen-status">factory…</span>
+            <p class="gen-route" id="gen-route" aria-live="polite"></p>
+            <button type="submit" id="gen-go">Make</button>
           </div>
+          <span class="gen-status" id="gen-status">Starting the factory…</span>
+          <button type="button" id="home-job" class="job-chip home-job" hidden></button>
         </form>
           </div>
         </div>
@@ -1603,7 +1759,18 @@
         </div>
       </div>
       <section class="home-library" aria-label="Assets">
-        <h3>Assets</h3>
+        <div class="lib-bar">
+          <h3>Assets</h3>
+          <div class="chips" id="lib-filter" role="group" aria-label="Show">
+            <button type="button" data-kind="" aria-pressed="true">All</button>
+            <button type="button" data-kind="ps1" aria-pressed="false">PS1</button>
+            <button type="button" data-kind="model" aria-pressed="false">3D</button>
+            <button type="button" data-kind="stack" aria-pressed="false">Stack</button>
+            <button type="button" data-kind="sprite" aria-pressed="false">2D</button>
+            <button type="button" data-kind="ideas" aria-pressed="false">Ideas</button>
+          </div>
+          <input id="lib-search" type="search" placeholder="Search assets" spellcheck="false" aria-label="Search assets" />
+        </div>
         <div class="home-assets" id="home-assets"></div>
       </section>
       </div>
@@ -1691,8 +1858,8 @@
         </div>
         <div class="cubby is-collapsed" data-cubby="mesh" data-side="left">
           <div class="cubby-bar">
-            <button type="button" class="cubby-toggle" aria-expanded="false">Mesh view</button>
-            <button type="button" class="cubby-hide" title="Hide Mesh view" aria-label="Hide Mesh view">×</button>
+            <button type="button" class="cubby-toggle" aria-expanded="false">View</button>
+            <button type="button" class="cubby-hide" title="Hide View" aria-label="Hide View">×</button>
           </div>
           <div class="cubby-body">
         <div class="rail-block">
@@ -1761,12 +1928,12 @@
         </div>
         <div class="cubby is-collapsed" data-cubby="lods" data-side="left">
           <div class="cubby-bar">
-            <button type="button" class="cubby-toggle" aria-expanded="false">LODs</button>
-            <button type="button" class="cubby-hide" title="Hide LODs" aria-label="Hide LODs">×</button>
+            <button type="button" class="cubby-toggle" aria-expanded="false">Detail levels</button>
+            <button type="button" class="cubby-hide" title="Hide Detail levels" aria-label="Hide Detail levels">×</button>
           </div>
           <div class="cubby-body">
         <div class="rail-block">
-          <span class="hint">Swap the left mesh. High is the sculpt; Game is the reduced one.</span>
+          <span class="hint">Show another version of the model. PSX is the PS1 low-poly; Hero is the full sculpt; Game is the reduced one.</span>
           <div class="lods" id="lods"></div>
           <div class="clips" id="clips"></div>
         </div>
@@ -1774,7 +1941,7 @@
           </div>
         </div>
       </div>
-      <div class="tag">Generated mesh</div>
+      <div class="tag" id="mesh-tag">Generated mesh</div>
       <div class="pane-stats" id="stats">Loading mesh…</div>
       <div id="status">Loading mesh…</div>
     </section>
@@ -1804,8 +1971,8 @@
       <div class="cubby-rail cubby-rail-right" id="stack-dock">
         <div class="cubby" data-cubby="stack-look" data-side="right">
           <div class="cubby-bar">
-            <button type="button" class="cubby-toggle" aria-expanded="true">Look</button>
-            <button type="button" class="cubby-hide" title="Hide Look" aria-label="Hide Look">×</button>
+            <button type="button" class="cubby-toggle" aria-expanded="true">Sprite stack</button>
+            <button type="button" class="cubby-hide" title="Hide Sprite stack" aria-label="Hide Sprite stack">×</button>
           </div>
           <div class="cubby-body">
         <p class="blurb">Voxel cubes are the asset. Round welds neighbors into one surface. Pixel is the screen-space look. Plane and Contour stay parked.</p>
@@ -1871,11 +2038,12 @@
     <div class="takes" id="takes" aria-label="Takes"></div>
     <div class="workspace-bar">
       <div class="step-bar" id="step-bar">
-        <button type="button" class="step-3d" data-step="mesh">Look</button>
+        <button type="button" class="step-3d" data-step="mesh">View</button>
         <button type="button" class="step-3d" data-step="stack-look">Sprite stack</button>
         <button type="button" class="step-3d" data-step="paint">Paint</button>
         <button type="button" class="step-3d" data-step="audio">Audio</button>
-        <button type="button" class="step-3d" id="game-look-bar" aria-pressed="false" title="Game look: render both panes small with crisp pixels, iso camera and shadows. Settings are under Look.">Pixel</button>
+        <button type="button" class="step-3d" id="game-look-bar" aria-pressed="false" title="Game look: render both panes small with crisp pixels, iso camera and shadows. Settings are under View.">Pixel</button>
+        <button type="button" class="step-3d" id="game-240" aria-pressed="false" title="Preview at 240 lines with a perspective camera, the way the game's PSX shader draws it." hidden>PS1 240p</button>
         <button type="button" class="step-2d" data-mode="picture" aria-pressed="true">Picture</button>
         <button type="button" class="step-2d" data-mode="motion">Motion</button>
         <button type="button" class="step-2d" data-mode="pieces">Pieces</button>
@@ -1888,7 +2056,7 @@
         <button type="submit" id="ideas-go" title="Draw four more from this prompt.">More ideas</button>
       </form>
       <form class="flat-revise" id="flat-revise" autocomplete="off">
-        <input id="flat-revise-prompt" type="text" placeholder="Describe a change…" spellcheck="false" />
+        <input id="flat-revise-prompt" type="text" placeholder="Redraw from a new prompt…" spellcheck="false" />
         <label class="flat-clip" id="flat-clip-label">
           <span id="flat-clip-name">Clip</span>
           <input id="flat-clip" type="file" accept="video/mp4,video/webm,image/png,image/jpeg,image/webp" multiple />
@@ -1914,17 +2082,24 @@
       </div>
     </div>
     <div id="gen-overlay" hidden>
-      <div class="gen-overlay-card">
+      <div class="gen-overlay-card job-card" role="dialog" aria-modal="true" aria-labelledby="gen-overlay-title">
         <div class="gen-overlay-kicker" id="gen-overlay-kicker">Factory</div>
         <h2 class="gen-overlay-title" id="gen-overlay-title">Generating</h2>
         <div class="gen-overlay-step" id="gen-overlay-step"></div>
+        <ol class="job-stages" id="job-stages"></ol>
         <div class="gen-overlay-bar" aria-hidden="true"><i id="gen-overlay-fill"></i></div>
-        <div class="gen-overlay-pct" id="gen-overlay-pct">0%</div>
-        <pre class="gen-overlay-log" id="gen-overlay-log"></pre>
+        <div class="gen-overlay-pct" id="gen-overlay-pct" aria-live="polite">0%</div>
+        <details class="job-log" id="job-log"><summary>Details</summary><pre class="gen-overlay-log" id="gen-overlay-log"></pre></details>
+        <div class="job-actions" id="job-actions"></div>
       </div>
     </div>
+    <div class="toast" id="toast" role="status" hidden>
+      <span id="toast-text"></span>
+      <button type="button" id="toast-act"></button>
+      <button type="button" id="toast-close" aria-label="Dismiss">×</button>
+    </div>
   </div>
-  <script src="/wails/runtime.js"></script>
+  <script type="module" src="/wails/runtime.js"></script>
   <script type="module">
     import * as THREE from "three";
     import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -1937,7 +2112,6 @@
     let asset = params.get("asset") || "";
     const FACTORY = "";
     const WAILS_UPLOAD = "github.com/StephenSHorton/pipeline/desktop/internal/factory.Service.SaveUpload";
-    const WAILS_GENERATE = "github.com/StephenSHorton/pipeline/desktop/internal/factory.Service.StartGenerate";
     const WAILS_CHECK = "github.com/StephenSHorton/pipeline/desktop/internal/update.Service.CheckForUpdate";
     const WAILS_INSTALL = "github.com/StephenSHorton/pipeline/desktop/internal/update.Service.DownloadAndInstall";
     const WAILS_VERSION = "github.com/StephenSHorton/pipeline/desktop/internal/update.Service.GetVersion";
@@ -1966,19 +2140,19 @@
         throw new Error("could not read image");
       }
       const b64 = arrayBufferToBase64(buf);
-      const viaWails = wailsByName(WAILS_UPLOAD, file.name, b64);
-      if (viaWails) {
+      try {
+        return await factoryJson(`/upload?name=${encodeURIComponent(file.name)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: file.name, data: b64 }),
+        });
+      } catch (err) {
+        const viaWails = wailsByName(WAILS_UPLOAD, file.name, b64);
+        if (!viaWails) throw err;
         const res = await viaWails;
-        if (!res || !res.ok || !res.path) {
-          throw new Error((res && res.error) || "upload failed");
-        }
+        if (!res || !res.ok || !res.path) throw new Error((res && res.error) || "upload failed");
         return res;
       }
-      return factoryJson(`/upload?name=${encodeURIComponent(file.name)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: file.name, data: b64 }),
-      });
     }
 
     function selectedPoly() {
@@ -1986,26 +2160,193 @@
       return picked ? picked.value : "medium";
     }
 
-    // Look: "stack" (painted mesh + sprite stack) or "psx" (PS1 low-poly wearing the photo).
-    function selectedLook() {
-      const picked = document.querySelector('input[name="gen-look"]:checked');
-      return picked ? picked.value : "stack";
+    // Home: what the asset is meant to be. Each output picks the factory route and its own options,
+    // and is saved with the asset (intent.json) so the workspace and Export follow it.
+    const OUTPUTS = {
+      ps1: { name: "PS1 model", verb: "Make PS1 model", workflow: "3d" },
+      model: { name: "3D model", verb: "Make 3D model", workflow: "3d" },
+      stack: { name: "sprite stack", verb: "Make sprite stack", workflow: "3d" },
+      sprite: { name: "2D sprite", verb: "Make 2D sprite", workflow: "2d" },
+    };
+    const FACING_WORDS = { camera: "facing the camera", left: "side-on, facing left", right: "side-on, facing right", away: "facing away" };
+    let facingTouched = false;
+    let nameTouched = false;
+    // Set by "Change settings": Make rebuilds this asset instead of starting a new one.
+    let remakeStem = "";
+
+    function selectedOutput() {
+      const picked = document.querySelector('input[name="gen-output"]:checked');
+      return picked && OUTPUTS[picked.value] ? picked.value : "ps1";
     }
 
-    function lookSpec() {
-      if (selectedLook() !== "psx") return { quality: "stack" };
-      const height = Number(document.getElementById("gen-psx-height").value);
-      return {
-        quality: "psx",
-        facing: document.getElementById("gen-psx-facing").value,
-        psx_height: height > 0 ? height : 48,
+    function selectedFacing() {
+      const picked = document.querySelector('input[name="gen-facing"]:checked');
+      return picked ? picked.value : "camera";
+    }
+
+    function psxHeight() {
+      const h = Number(document.getElementById("gen-psx-height").value);
+      return h > 0 ? h : 48;
+    }
+
+    // The model's file name: what was typed, else the photo's name (shown as the placeholder).
+    function psxName() {
+      const field = document.getElementById("gen-psx-name");
+      const typed = slugStem(field.value).replace(/-/g, "_");
+      if (typed) return typed;
+      return field.placeholder && field.placeholder !== "from the photo" ? field.placeholder : "";
+    }
+
+    // The /generate fields for an output (a stored intent, or the home form).
+    function lookSpec(intent) {
+      const want = intent || readIntent();
+      if (want.output === "ps1") {
+        const p = want.psx || {};
+        const spec = { quality: "psx", facing: p.facing || "camera", psx_height: Number(p.height) || 48 };
+        if (p.name) spec.psx_name = p.name;
+        return spec;
+      }
+      // A 3D model skips the sprite stack; a sprite stack is sliced from the mesh.
+      return { quality: want.output === "model" ? "textured" : "stack" };
+    }
+
+    function readIntent() {
+      const output = selectedOutput();
+      const intent = { output };
+      if (output === "ps1") {
+        intent.psx = { facing: selectedFacing(), height: psxHeight() };
+        if (psxName()) intent.psx.name = psxName();
+      } else if (output === "model" || output === "stack") {
+        intent.poly = selectedPoly();
+      } else {
+        intent.steps = pickedGenSteps();
+      }
+      return intent;
+    }
+
+    // The flat form /intent and /generate take: {output, facing, height, name, poly, steps}.
+    function intentBody(intent) {
+      const body = { output: intent.output };
+      if (intent.psx) Object.assign(body, intent.psx);
+      if (intent.poly) body.poly = intent.poly;
+      if (intent.steps) body.steps = intent.steps;
+      return body;
+    }
+
+    async function saveIntent(stem, intent) {
+      try {
+        await factoryJson("/intent/" + encodeURIComponent(stem), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(intentBody(intent)),
+        });
+      } catch (err) {
+        console.warn("intent", err);
+      }
+    }
+
+    function setOutput(output) {
+      const next = OUTPUTS[output] ? output : "ps1";
+      const radio = document.querySelector(`input[name="gen-output"][value="${next}"]`);
+      if (radio) radio.checked = true;
+      document.getElementById("gen").dataset.output = next;
+      try { localStorage.setItem("make-output", next); } catch {}
+      updateRoute();
+    }
+
+    // One line under the form says exactly what Make will do, and the button says it too.
+    function updateRoute() {
+      const route = document.getElementById("gen-route");
+      const go = document.getElementById("gen-go");
+      const promptEl = document.getElementById("gen-prompt");
+      if (!route || !go || !promptEl) return;
+      const output = selectedOutput();
+      const o = OUTPUTS[output];
+      const pics = (typeof refs !== "undefined" ? refs : []);
+      const photo = pics[0] ? (pics[0].kind === "file" ? pics[0].file.name : pics[0].name) : "";
+      const typed = promptEl.value.trim();
+      const more = pics.length > 1 ? ` (+${pics.length - 1} more view${pics.length > 2 ? "s" : ""})` : "";
+      let html = "";
+      let state = "ok";
+      let label = o.verb;
+      if (output === "sprite") {
+        const steps = pickedGenSteps();
+        const after = steps.length ? `, then <b>${steps.join(", ")}</b>` : "";
+        if (photo) html = `Open <b>${esc(photo)}</b> as a 2D sprite${after}.`;
+        else if (typed) html = `Draw one picture from your prompt${after}. About a minute.`;
+        else { html = "Add a picture, or describe one to draw."; state = "need"; }
+        if (steps.includes("motion") && !document.getElementById("gen-clip").files.length) html += " Motion needs a clip.";
+      } else if (photo) {
+        if (output === "ps1") {
+          const name = psxName() || slugStem(photo).replace(/-/g, "_") || "model";
+          html = `Make a <b>PS1 model</b> from <b>${esc(photo)}</b>${more}, ${FACING_WORDS[selectedFacing()]}, <b>${psxHeight()} in</b> tall: about 1,200 triangles and a 256 px texture, saved as <b>${esc(name)}.obj</b> + .png. A few minutes.`;
+        } else if (output === "model") {
+          html = `Make a painted <b>3D model</b> from <b>${esc(photo)}</b>${more} at ${selectedPoly()} detail. A few minutes.`;
+        } else {
+          html = `Build a 3D model from <b>${esc(photo)}</b>${more}, then slice it into a <b>sprite stack</b>. A few minutes.`;
+        }
+      } else if (typed) {
+        html = `Draw <b>3 concept pictures</b> from your prompt first. Pick one, and it becomes your ${o.name}.`;
+        label = "Draw concepts";
+      } else {
+        html = output === "ps1" ? "Add a photo of one object, side-on or facing the camera. Or describe it to draw one first." : "Add a picture of one object, or describe one to draw first.";
+        state = "need";
+      }
+      if (remakeStem && photo && state === "ok") {
+        html = `Remake <b>${esc(displayStem(remakeStem))}</b>: ` + html.replace(/^Make an? /, "a ").replace(/^Build /, "build ");
+        label = "Remake";
+      }
+      route.innerHTML = html;
+      route.dataset.state = state;
+      if (!go.dataset.busy) go.textContent = label;
+      go.disabled = !!go.dataset.busy || state === "need";
+      promptEl.placeholder = photo ? "Describe it (optional)…" : "Or describe it, and we'll draw it first…";
+    }
+
+    function esc(text) {
+      return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    // A wide photo is usually side-on; the file name is a good default for the model's name.
+    function suggestFromPhoto(file) {
+      if (!file) return;
+      if (!nameTouched) document.getElementById("gen-psx-name").placeholder = slugStem(file.name).replace(/-/g, "_") || "from the photo";
+      if (facingTouched || typeof file.arrayBuffer !== "function") { updateRoute(); return; }
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const wide = img.naturalWidth / Math.max(1, img.naturalHeight) > 1.3;
+        const hint = document.getElementById("gen-facing-hint");
+        if (wide && selectedFacing() === "camera") {
+          document.querySelector('input[name="gen-facing"][value="right"]').checked = true;
+          if (hint) hint.textContent = "The photo is wide, so it's probably side-on: set to facing right. Change it if the subject faces left.";
+        }
+        URL.revokeObjectURL(url);
+        updateRoute();
       };
+      img.onerror = () => URL.revokeObjectURL(url);
+      img.src = url;
     }
 
-    document.querySelectorAll('input[name="gen-look"]').forEach((el) => {
-      el.addEventListener("change", () => {
-        document.getElementById("gen-psx").hidden = selectedLook() !== "psx";
-      });
+    document.querySelectorAll('input[name="gen-output"]').forEach((el) => el.addEventListener("change", () => setOutput(el.value)));
+    document.querySelectorAll('input[name="gen-facing"]').forEach((el) => el.addEventListener("change", () => {
+      facingTouched = true;
+      const hint = document.getElementById("gen-facing-hint");
+      if (hint) hint.textContent = "Where the subject looks in the photo. A side-on photo is also mirrored onto the far side.";
+      updateRoute();
+    }));
+    document.querySelectorAll('input[name="gen-poly"]').forEach((el) => el.addEventListener("change", updateRoute));
+    document.getElementById("gen-psx-height").addEventListener("input", () => {
+      document.querySelectorAll("#gen-height-chips button").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.height) === psxHeight())));
+      updateRoute();
+    });
+    document.getElementById("gen-psx-name").addEventListener("input", () => { nameTouched = true; updateRoute(); });
+    document.getElementById("gen-height-chips").addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-height]");
+      if (!chip) return;
+      const field = document.getElementById("gen-psx-height");
+      field.value = chip.dataset.height;
+      field.dispatchEvent(new Event("input"));
     });
 
     let workflow = "3d";
@@ -2022,10 +2363,6 @@
       document.querySelectorAll("[data-workflow]").forEach((btn) => {
         btn.setAttribute("aria-pressed", String(btn.getAttribute("data-workflow") === workflow));
       });
-      const prompt = document.getElementById("gen-prompt");
-      const fileLabel = document.getElementById("gen-file-label");
-      if (prompt) prompt.placeholder = "Describe the thing…";
-      if (fileLabel) fileLabel.textContent = workflow === "2d" ? "Attach a flat picture" : "Attach reference images";
       if (workflow === "2d") setFlatMode(document.body.dataset.flatMode || "picture");
       if (typeof syncGalleryPick === "function") syncGalleryPick();
       // openAsset passes skipAudio. load() awaits loadAudio, and a second call can showStage after the packed center.
@@ -2035,9 +2372,6 @@
       }
     }
 
-    document.querySelectorAll("[data-workflow]").forEach((btn) => {
-      btn.addEventListener("click", () => setWorkflow(btn.getAttribute("data-workflow")));
-    });
 
     // Stages and takes. The factory saves a take after each run; the rail steps between stages
     // and the strip steps back to an earlier take of the open stage. See docs/unified-pipeline.md.
@@ -2057,6 +2391,9 @@
       export: [/^export\/stack\/preview\.png$/, /^export\/concept\.(png|jpe?g|webp)$/],
     };
     let flowStage = "";
+    // What the open asset is meant to be (out/<stem>/intent.json), or null for older assets.
+    let assetIntent = null;
+    let lastJobSpec = null;
     let exporting = false;
     let exportDoc = null;
     let exportStem = "";
@@ -2110,14 +2447,36 @@
       if (flowStage === "export" && exportStem !== asset) await loadExport();
     }
 
+    // The stages an output needs; other stages show only when they already hold something.
+    const OUTPUT_STAGES = {
+      ps1: ["concept", "mesh", "export"],
+      model: ["concept", "mesh", "export"],
+      stack: ["concept", "stack", "export"],
+      sprite: ["concept", "flat", "export"],
+    };
+
     function renderFlow() {
+      const want = assetIntent && OUTPUT_STAGES[assetIntent.output];
+      const liveStage = (stage) => !!(flowEntry(stage) || {}).live;
+      let solo = "";
+      if (asset && flowStage === "stack") solo = "stack";
+      else if (asset && flowStage === "mesh" && ((assetIntent && assetIntent.output !== "stack") || !liveStage("stack"))) solo = "mesh";
+      if (document.body.dataset.solo !== solo) {
+        document.body.dataset.solo = solo;
+        requestAnimationFrame(() => { sizeMesh(); stackLab.resize(); });
+      }
       document.querySelectorAll("#stage-rail [data-stage]").forEach((btn) => {
+        const stage = btn.dataset.stage;
+        btn.hidden = !!want && !want.includes(stage) && !liveStage(stage) && stage !== flowStage;
         const entry = flowEntry(btn.dataset.stage);
         btn.setAttribute("aria-pressed", String(btn.dataset.stage === flowStage));
         btn.classList.toggle("has-files", !!(entry && entry.live));
         btn.classList.toggle("is-stale", !!(entry && entry.stale.length));
         const n = entry ? entry.takes.length : 0;
-        btn.title = n ? `${n} take${n === 1 ? "" : "s"}` : "Nothing yet";
+        const versions = n ? ` · ${n} saved version${n === 1 ? "" : "s"}` : "";
+        btn.title = !entry || !entry.live
+          ? "Nothing yet"
+          : entry.stale.length ? `Ready · built from an older ${entry.stale.join(" and ")}${versions}` : `Ready${versions}`;
       });
       document.body.classList.toggle("is-ideas", !!asset && flowStage === "ideas");
       document.body.classList.toggle("is-export", !!asset && flowStage === "export");
@@ -2132,16 +2491,26 @@
         el.textContent = text;
         takesEl.appendChild(el);
       };
-      const act = (text, title, fn) => {
+      const act = (text, title, fn, primary) => {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "takes-act";
+        btn.className = "takes-act" + (primary ? " is-primary" : "");
         btn.textContent = text;
         btn.title = title;
         btn.addEventListener("click", fn);
         takesEl.appendChild(btn);
       };
-      entry.takes.forEach((take, i) => {
+      // Saved versions of this stage. One version has nothing to switch to, so the strip only shows
+      // from two (or when what is on screen differs from the saved one).
+      const showVersions = entry.takes.length > 1 || (entry.takes.length && entry.unsaved);
+      if (showVersions) {
+        const label = document.createElement("span");
+        label.className = "takes-label";
+        label.textContent = "Versions";
+        label.title = "Each build is kept. Click one to go back to it; nothing is deleted.";
+        takesEl.appendChild(label);
+      }
+      if (showVersions) entry.takes.forEach((take, i) => {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "take";
@@ -2162,11 +2531,11 @@
         label.textContent = String(i + 1);
         btn.appendChild(label);
         const when = take.made ? new Date(take.made * 1000).toLocaleString() : "";
-        btn.title = [take.note, when].filter(Boolean).join(" · ") || take.id;
+        btn.title = [`Version ${i + 1}`, take.note, when].filter(Boolean).join(" · ");
         btn.addEventListener("click", () => pickTake(flowStage, take.id));
         takesEl.appendChild(btn);
       });
-      if (entry.unsaved) act("Save", "Keep what is on screen as a take you can come back to.", () => saveTake(flowStage));
+      if (entry.unsaved) act("Keep this version", "Save what is on screen as a version you can come back to.", () => saveTake(flowStage));
       if (entry.stale.length) {
         const from = entry.stale.map((s) => STAGE_VIEW[s] ? STAGE_VIEW[s].name : s).join(" and ");
         note(`Made from an older ${from}.`, true);
@@ -2180,17 +2549,34 @@
         }
         if (entry.live && !exporting) act("Show in Finder", "Open the export folder.", openExport);
         renderExport();
+      } else if (flowStage === "concept" && conceptStill()) {
+        const still = conceptStill();
+        const want = (assetIntent && assetIntent.output) || "";
+        const mesh = flowEntry("mesh");
+        const order = want ? [want, ...Object.keys(OUTPUTS).filter((k) => k !== want)] : Object.keys(OUTPUTS);
+        note(want ? "Next:" : "Make from this picture:");
+        for (const out of order) {
+          const built = out !== "sprite" && mesh && mesh.live && want === out;
+          const label = out === "sprite" ? "2D sprite" : `${built ? "Rebuild" : "Build"} ${OUTPUTS[out].name}`;
+          act(label, out === "sprite" ? "Cut this picture into pieces, add motion and sound." : `Make the ${OUTPUTS[out].name} from this picture.`,
+            () => buildFromConcept(still, out), out === want);
+        }
       } else if (flowStage === "mesh" || flowStage === "stack") {
         const mesh = flowEntry("mesh");
         const still = conceptStill();
+        const want = (assetIntent && assetIntent.output) || (flowStage === "stack" ? "stack" : "model");
         if (flowStage === "stack" && still) {
           if (stackingPicture) note("Stacking the picture…");
           else act("Stack from picture", "Build the sprite stack straight from the concept picture. No 3D needed.", stackFromPicture);
         }
         if (still && (!mesh || !mesh.live || mesh.stale.length)) {
-          act(mesh && mesh.live ? "Rebuild 3D" : "Build 3D", "Make the mesh and sprite stack from the picked concept.", () => buildFromConcept(still));
+          const name = OUTPUTS[want] ? OUTPUTS[want].name : "3D model";
+          act(`${mesh && mesh.live ? "Rebuild" : "Build"} ${name}`, `Make the ${name} from the picked concept.`, () => buildFromConcept(still, want), true);
         } else if (!mesh || !mesh.live) {
           note("No concept picture yet.");
+        }
+        if (still && mesh && mesh.live && flowStage === "mesh") {
+          act("Change settings & remake…", "Open the Make form with this asset's settings and picture, and rebuild it with changes.", () => remakeAsset(still));
         }
       } else if (!entry.live && !entry.takes.length) {
         note(flowStage === "concept" ? "No picture yet." : "Use a step below to start the 2D sheet.");
@@ -2198,6 +2584,31 @@
     }
 
     let stackingPicture = false;
+
+    // Back to the Make form with this asset's output, settings and picture; Make rebuilds it in place.
+    function remakeAsset(still) {
+      const stem = asset;
+      const intent = assetIntent || { output: "model" };
+      clearView();
+      showHome();
+      setOutput(intent.output);
+      const p = intent.psx || {};
+      if (p.facing) {
+        const r = document.querySelector(`input[name="gen-facing"][value="${p.facing}"]`);
+        if (r) { r.checked = true; facingTouched = true; }
+      }
+      if (p.height) document.getElementById("gen-psx-height").value = p.height;
+      if (p.name) { document.getElementById("gen-psx-name").value = p.name; nameTouched = true; }
+      if (intent.poly) {
+        const r = document.querySelector(`input[name="gen-poly"][value="${intent.poly}"]`);
+        if (r) r.checked = true;
+      }
+      refs = [{ kind: "asset", id: stem, path: still, name: still.split("/").pop(), url: `/${still}` }];
+      remakeStem = stem;
+      renderRefThumbs();
+      refreshAssets("");
+      document.getElementById("gen-psx-height").dispatchEvent(new Event("input"));
+    }
 
     async function stackFromPicture() {
       if (!asset || stackingPicture) return;
@@ -2213,7 +2624,7 @@
         if (stem === asset) await stackLab.load(stem);
       } catch (err) {
         if (stem === asset) status.textContent = err.message || String(err);
-        alert(err.message || String(err));
+        toast(err.message || String(err));
       } finally {
         stackingPicture = false;
         if (stem === asset) await refreshFlow();
@@ -2231,13 +2642,10 @@
         await loadExport();
         return;
       }
-      if (view.workflow === "2d") {
-        setWorkflow("2d");
-        setFlatMode(view.mode);
-      } else {
-        setWorkflow("3d", { skipAudio: true });
-      }
+      if (view.workflow === "2d") setWorkflow("2d");
+      else setWorkflow("3d", { skipAudio: true });
       showViewer();
+      if (view.workflow === "2d") setFlatMode(view.mode);
       renderFlow();
       if (stage === "ideas") await loadIdeas();
       // The mesh pane only loads while 3D is showing.
@@ -2273,7 +2681,7 @@
           exportStem = stem;
         }
       } catch (err) {
-        alert(err.message || String(err));
+        toast(err.message || String(err));
       } finally {
         exporting = false;
         if (stem === asset) await refreshFlow();
@@ -2291,7 +2699,7 @@
         const r = await fetch("/open-export?stem=" + encodeURIComponent(asset), { method: "POST" });
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       } catch (err) {
-        alert(`The export is in out/${asset}/export/. ${err.message || err}`);
+        toast(`Could not open Finder. The export is in out/${asset}/export/.`);
       }
     }
 
@@ -2323,12 +2731,14 @@
         el.appendChild(ul);
         body.appendChild(el);
       };
+      const want = assetIntent && OUTPUT_STAGES[assetIntent.output];
+      const wanted = (stage) => !want || want.includes(stage) || !!(flowEntry(stage) || {}).live;
       if (!doc || !entry || !entry.live) {
-        lead.textContent = "Export copies the picked 2D sheet, sprite stack and 3D files into one folder a game can load, with asset.json saying what each file is.";
+        lead.textContent = "Export copies what this asset made into one folder a game can load, with asset.json saying what each file is. Press Export below.";
         const has = (s) => !!(flowEntry(s) || {}).live;
-        card("2D sheet", [has("flat") ? "Ready" : "Nothing yet"], "", !has("flat"));
-        card("Sprite stack", [has("stack") ? "Ready" : "Nothing yet"], "", !has("stack"));
-        card("3D", [has("mesh") ? "Ready" : "Nothing yet"], "", !has("mesh"));
+        if (wanted("flat")) card("2D sheet", [has("flat") ? "Ready" : "Nothing yet"], "", !has("flat"));
+        if (wanted("stack")) card("Sprite stack", [has("stack") ? "Ready" : "Nothing yet"], "", !has("stack"));
+        if (wanted("mesh")) card(assetIntent && assetIntent.output === "ps1" ? "PS1 model" : "3D", [has("mesh") ? "Ready" : "Nothing yet"], "", !has("mesh"));
         return;
       }
       const base = `/out/${encodeURIComponent(asset)}/export/`;
@@ -2342,16 +2752,46 @@
         for (const [name, m] of Object.entries(flat.motions || {})) lines.push(`${name}: ${m.frames} frames at ${m.fps} fps`);
         const shot = (flat.parts || [])[0];
         card("2D sheet", lines.length ? lines : ["empty"], shot ? base + shot.image + v : "");
-      } else card("2D sheet", ["Not in this export"], "", true);
+      } else if (wanted("flat")) card("2D sheet", ["Not in this export"], "", true);
       const stack = doc.stack;
       if (stack) {
         card("Sprite stack", [`${stack.layers} layers of ${stack.resolution}×${stack.resolution}`, stack.maker === "picture" ? "built from the picture" : "sliced from the mesh"], stack.preview ? base + stack.preview + v : "");
-      } else card("Sprite stack", ["Not in this export"], "", true);
+      } else if (wanted("stack")) card("Sprite stack", ["Not in this export"], "", true);
       const mesh = doc["3d"];
       if (mesh) {
-        const lines = Object.entries(mesh).map(([role, m]) => `${role}.glb${m.faces ? ` · ${Number(m.faces).toLocaleString()} faces` : ""}`);
-        card("3D", lines);
-      } else card("3D", ["Not in this export"], "", true);
+        // Plain names for the 3D roles; the PS1 model gets its own card above.
+        const ROLE = { model: "Full detail", game: "Game detail", proxy: "Collision proxy", pixel: "Pixel", rigged: "Rigged" };
+        const lines = Object.entries(mesh).filter(([role]) => role !== "psx").map(([role, m]) =>
+          `${ROLE[role] || role}: ${m.file.split("/").pop()}${m.faces ? ` · ${Number(m.faces).toLocaleString()} faces` : ""}`);
+        if (lines.length) card(mesh.psx ? "Other 3D files" : "3D", lines);
+      } else if (!want || want.includes("mesh")) card("3D", ["Not in this export"], "", true);
+      if (mesh && mesh.psx) psxCard(mesh.psx, base, v);
+    }
+
+    // The PS1 model: the files, the facts and how to bring it into s&box.
+    function psxCard(p, base, v) {
+      const body = document.getElementById("export-body");
+      const el = document.createElement("div");
+      el.className = "export-card is-hero";
+      const name = (p.obj || "model.obj").split("/").pop().replace(/\.obj$/, "");
+      const axes = (p.axes && p.axes.obj) || "z-up, +x front";
+      const size = Array.isArray(p.size) ? p.size.map((n) => Math.round(n)).join(" × ") : "";
+      el.innerHTML = `
+        <h3>PS1 model · ready for the game</h3>
+        <figure><img alt="The model's texture" src="${base}${esc(p.texture || "")}${v}" /><figcaption>${esc(name)}.png · the ${esc(p.atlas || 256)} px texture</figcaption></figure>
+        <div class="hero-text">
+        <p class="facts"><b>${esc(name)}.obj</b> + <b>${esc(name)}.png</b> + ${esc(name)}.mtl · ${Number(p.triangles || 0).toLocaleString()} triangles · ${esc(p.atlas || 256)} px texture</p>
+        <p class="facts">${esc(p.height || "")} in tall${size ? ` (${esc(size)})` : ""} · ${esc(axes)} · nearest sampling, no mips</p>
+        <div>
+          <strong>Into s&amp;box</strong>
+          <ol>
+            <li>Show in Finder and copy <code>3d/psx/</code> into your project's Assets folder.</li>
+            <li>Right-click <b>${esc(name)}.obj</b> → <b>Create Model</b>. It is already in inches, Z up, facing +X.</li>
+            <li>Give it a material on <b>psx.shader</b> with <b>${esc(name)}.png</b> as TextureColor, point filtering, no mips.</li>
+          </ol>
+        </div>
+        </div>`;
+      body.prepend(el);
     }
 
     async function pickTake(stage, takeId) {
@@ -2386,20 +2826,28 @@
       await refreshFlow();
     }
 
-    async function buildFromConcept(still) {
-      genWatching = true;
-      genProgressMax = 0;
+    // Build from the picked concept, as the asset's saved intent says (or as `output` asks).
+    async function buildFromConcept(still, output) {
+      let intent = assetIntent && (!output || assetIntent.output === output) ? assetIntent : null;
+      if (!intent) {
+        intent = { output: output || "model" };
+        if (intent.output === "ps1") intent.psx = { facing: "camera", height: 48 };
+      }
+      if (intent.output === "sprite") return enterStage("flat");
       clearStage("Generating");
-      showOverlay({ title: `Building 3D · ${asset}`, step: "Queued on the factory…", kicker: "Working" });
+      if (!assetIntent || assetIntent.output !== intent.output) {
+        assetIntent = intent;
+        await saveIntent(asset, intent);
+      }
       try {
-        const job = await startGenerateJob({
+        await runJob({
           image: still,
           images: [still],
           stem: asset,
-          ...lookSpec(),
-          poly: selectedPoly(),
-        });
-        await pollJob(job.job_id, job.stem || asset);
+          ...lookSpec(intent),
+          poly: intent.poly || selectedPoly(),
+          intent: intentBody(intent),
+        }, { title: `Building the ${OUTPUTS[intent.output].name} · ${displayStem(asset)}` });
       } catch (err) {
         showOverlay({ title: "Could not start", step: err.message || String(err), kicker: "Error" });
       }
@@ -2515,6 +2963,9 @@
       drawIdeas(ideasPrompt.value, 4).catch(console.error);
     });
     document.getElementById("ideas-clear").addEventListener("click", async () => {
+      const unkept = ((ideasData && ideasData.items) || []).filter((item) => !item.keep && !item.used).length;
+      if (!unkept) { ideasSay("Every idea here is kept or in use."); return; }
+      if (!(await askConfirm(`Delete the ${unkept} idea${unkept === 1 ? "" : "s"} you did not keep?`, "Delete"))) return;
       try {
         ideasData = await flatPost("/2d/clear", { stem: asset });
         renderIdeas();
@@ -2532,7 +2983,7 @@
     }
 
     // Home with a prompt and no picture: start a new asset on the Ideas grid.
-    async function startIdeas(prompt) {
+    async function startIdeas(prompt, intent) {
       const stem = await freshStem(flatName(prompt, null));
       const label = genGo.textContent;
       genGo.disabled = true;
@@ -2548,6 +2999,7 @@
         genGo.textContent = label;
       }
       setGenStatus("", "ok");
+      await saveIntent(stem, intent);
       if (ideasPrompt) ideasPrompt.value = prompt;
       await openAsset(stem);
       await enterStage("ideas");
@@ -2703,9 +3155,15 @@
         strip.hidden = true;
         strip.removeAttribute("src");
       }
+      const still = !hasSource && conceptStill();
       if (hasSource && img) {
         img.hidden = false;
         img.src = `/2d/${encodeURIComponent(asset)}/source?t=${Date.now()}`;
+        if (empty) empty.hidden = true;
+      } else if (still && img) {
+        // A photo-based asset: its concept is the photo the factory cut out.
+        img.hidden = false;
+        img.src = `/${still}`;
         if (empty) empty.hidden = true;
       } else if (img) {
         img.hidden = true;
@@ -2801,7 +3259,15 @@
     }
 
     async function startFlatJob() {
-      const files = refs.filter((item) => item.kind === "file").map((item) => item.file);
+      const intent = readIntent();
+      const files = [];
+      for (const item of refs) {
+        if (item.kind === "file") files.push(item.file);
+        else if (item.kind === "asset") {
+          const blob = await fetch(item.url).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
+          if (blob) files.push(new File([blob], `${item.id}.png`, { type: blob.type || "image/png" }));
+        }
+      }
       if (!files.length) files.push(...Array.from(genFile.files || []));
       const prompt = (genPrompt.value || "").trim();
       const file = files[0];
@@ -2809,7 +3275,7 @@
         setGenStatus("describe the thing or attach a picture", "error");
         return;
       }
-      const stem = flatName(prompt, file);
+      const stem = await freshStem(flatName(prompt, file));
       const label = genGo.textContent;
       genGo.disabled = true;
       genGo.dataset.busy = "1";
@@ -2837,6 +3303,7 @@
           });
         }
         const extra = await runPickedSteps(stem, prompt);
+        await saveIntent(stem, intent);
         asset = stem;
         await openAsset(stem);
         if (typeof extra.center === "string" && extra.center) showStage(true, extra.center);
@@ -2858,7 +3325,7 @@
     }
 
     const FLAT_MODES = {
-      picture: "Describe a change…",
+      picture: "Redraw from a new prompt…",
       motion: "Name the motion…",
       pieces: "Name the pieces…",
       say: "What it says…",
@@ -2905,8 +3372,9 @@
       const prompt = (field.value || "").trim();
       const btn = e.target.querySelector("button");
       if (mode === "picture") {
-        if (!prompt) { flatSay("Describe the change first."); return; }
+        if (!prompt) { flatSay("Describe the new picture first."); return; }
         const hadParts = flatParts.length > 0;
+        if (!(await askConfirm("Draw a new picture from this prompt? It replaces the current one.", "Redraw"))) return;
         btn.disabled = true;
         btn.textContent = "Generating…";
         flatSay("Drawing the still. This can take a minute.");
@@ -3027,18 +3495,11 @@
     });
 
     async function startGenerateJob(spec) {
-      try {
-        return await factoryJson("/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(spec),
-        });
-      } catch (err) {
-        if ((spec.images || []).length > 1 || spec.prompt) throw err;
-        const viaWails = wailsByName(WAILS_GENERATE, spec.image, spec.stem, spec.quality, spec.poly);
-        if (viaWails) return viaWails;
-        throw err;
-      }
+      return factoryJson("/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(spec),
+      });
     }
 
     async function factoryJson(path, opts) {
@@ -3273,7 +3734,7 @@
         await openAsset(dest, { preferLod: currentLod || "lookdev" });
       } catch (err) {
         titleEl.value = displayStem(old);
-        alert(err.message || String(err));
+        toast(err.message || String(err));
       } finally {
         titleBusy = false;
       }
@@ -3338,12 +3799,14 @@
       document.querySelectorAll(`[data-asset-id="${id}"]`).forEach((el) => el.remove());
     }
 
-    function askConfirm(message) {
+    function askConfirm(message, yesLabel = "Delete") {
       const pop = document.getElementById("ask");
       const text = document.getElementById("ask-text");
       const yes = document.getElementById("ask-yes");
       const no = document.getElementById("ask-no");
       text.textContent = message;
+      yes.textContent = yesLabel;
+      pop.querySelector(".gen-overlay-kicker").textContent = yesLabel === "Delete" ? "Delete" : "Confirm";
       pop.hidden = false;
       return new Promise((resolve) => {
         const finish = (value) => {
@@ -3424,12 +3887,23 @@
           img.src = `/out/${a.id}/${shot}`;
           cardOpen.appendChild(img);
         }
+        const kind = assetKind(a);
+        card.dataset.kind = kind;
+        card.dataset.search = `${a.id} ${a.title || ""} ${KIND_LABEL[kind] || ""}`.toLowerCase();
+        if (kind) {
+          const badge = document.createElement("span");
+          badge.className = "card-kind";
+          badge.dataset.kind = kind;
+          badge.textContent = KIND_LABEL[kind];
+          card.appendChild(badge);
+        }
         const meta = document.createElement("div");
         meta.className = "home-card-meta";
         const name = document.createElement("button");
         name.type = "button";
         name.className = "home-card-name";
         name.textContent = a.title || a.id;
+        name.title = a.mtime ? `${a.id} · ${new Date(a.mtime * 1000).toLocaleString()}` : a.id;
         const cardDel = document.createElement("button");
         cardDel.type = "button";
         cardDel.className = "asset-del";
@@ -3443,11 +3917,10 @@
           use.type = "button";
           use.className = "asset-use";
           use.textContent = "Use";
-          use.title = "Use this picture for a 3D generation";
+          use.title = "Use this picture for the next thing you make";
           use.addEventListener("click", (ev) => {
             ev.stopPropagation();
             ev.preventDefault();
-            if (workflow !== "3d") setWorkflow("3d");
             toggleAssetRef(a, shot);
           });
           meta.append(name, use, cardDel);
@@ -3474,8 +3947,15 @@
         name.addEventListener("click", open);
         name.title = "Open";
         card.append(cardOpen, meta);
+        if (a.mtime) {
+          const when = document.createElement("span");
+          when.className = "card-when";
+          when.textContent = relativeTime(a.mtime);
+          card.appendChild(when);
+        }
         homeAssetsEl.appendChild(card);
       }
+      filterLibrary();
       if (homeAssetsEl && !assets.length) {
         const empty = document.createElement("p");
         empty.className = "home-empty";
@@ -3484,6 +3964,55 @@
       }
       syncGalleryPick();
     }
+
+    const KIND_LABEL = { ps1: "PS1", model: "3D", stack: "Stack", sprite: "2D", ideas: "Ideas" };
+
+    // What a gallery asset is: its saved intent, or a guess from the files it has.
+    function assetKind(a) {
+      if (a.output && KIND_LABEL[a.output]) return a.output;
+      if (a.has_psx) return "ps1";
+      if (a.has_flat && !a.has_mesh) return "sprite";
+      if (a.has_stack && !a.has_mesh) return "stack";
+      if (a.has_mesh) return "model";
+      return a.has_ideas ? "ideas" : "";
+    }
+
+    function relativeTime(sec) {
+      const d = Date.now() / 1000 - sec;
+      if (d < 3600) return `${Math.max(1, Math.round(d / 60))} min ago`;
+      if (d < 86400) return `${Math.round(d / 3600)} h ago`;
+      if (d < 86400 * 14) return `${Math.round(d / 86400)} days ago`;
+      return new Date(sec * 1000).toLocaleDateString();
+    }
+
+    let libKind = "";
+    function filterLibrary() {
+      const q = (document.getElementById("lib-search")?.value || "").trim().toLowerCase();
+      let shown = 0;
+      document.querySelectorAll(".home-card").forEach((card) => {
+        const ok = (!libKind || card.dataset.kind === libKind) && (!q || card.dataset.search.includes(q));
+        card.hidden = !ok;
+        if (ok) shown += 1;
+      });
+      let none = document.getElementById("lib-none");
+      if (!shown && document.querySelector(".home-card")) {
+        if (!none) {
+          none = document.createElement("p");
+          none.id = "lib-none";
+          none.className = "home-empty";
+          homeAssetsEl.appendChild(none);
+        }
+        none.textContent = "Nothing matches.";
+      } else if (none) none.remove();
+    }
+    document.getElementById("lib-search")?.addEventListener("input", filterLibrary);
+    document.getElementById("lib-filter")?.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-kind]");
+      if (!b) return;
+      libKind = b.dataset.kind;
+      document.querySelectorAll("#lib-filter [data-kind]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+      filterLibrary();
+    });
 
     function syncGalleryPick() {
       document.querySelectorAll(".home-card").forEach((card) => {
@@ -3496,17 +4025,16 @@
           use.setAttribute("aria-pressed", String(on));
         }
         const open = card.querySelector(".home-card-open");
-        if (open) {
-          open.title = workflow === "3d" && open.querySelector("img")
-            ? "Use this picture for a 3D generation"
-            : "Open";
-        }
+        if (open) open.title = "Open";
       });
     }
     let texturedMats = [];
     let clayMats = [];
     let framedOnce = false;
     let currentLod = startLod || "";
+    // The file the left pane shows (no query string), and whether cleanup already asked for this asset.
+    let currentFile = "";
+    let cleanAsked = "";
     let mixer = null;
     let actions = {};
     let pieceHandles = [];
@@ -3801,7 +4329,12 @@
       });
       texBtn.setAttribute("aria-pressed", String(hasMap));
       texBtn.disabled = !hasMap;
-      const file = glbUrl.split("/").pop();
+      const file = new URL(glbUrl, location.href).pathname.split("/").pop();
+      currentFile = /\.glb$/.test(file) ? file : "";
+      const tag = document.getElementById("mesh-tag");
+      if (tag) tag.textContent = /^psx/.test(file) ? "PS1 model" : file === "textured_photo.glb" ? "Photo bake" : "3D model";
+      const ps1Btn = document.getElementById("game-240");
+      if (ps1Btn) ps1Btn.hidden = !(/^psx/.test(file) || (assetIntent && assetIntent.output === "ps1"));
       const isPixel = String(currentLod).startsWith("pixel") || /pixel/i.test(file) || /^psx/.test(file) || currentLod === "psx";
       renderer.toneMapping = isPixel ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = isPixel ? 1.0 : 1.05;
@@ -3856,7 +4389,7 @@
       status.dataset.ready = "true";
       status.textContent = "Ready — drag to orbit";
       for (const btn of lodsEl.querySelectorAll("button")) {
-        btn.setAttribute("aria-pressed", String(btn.dataset.file === file));
+        btn.setAttribute("aria-pressed", String(btn.dataset.id === currentLod));
       }
     }
 
@@ -3901,6 +4434,11 @@
       await fillTurnaround();
       await refreshAssets(asset);
       setTitleState(asset, { editable: true });
+      {
+        const stem = asset;
+        const doc = await fetch(`/out/${encodeURIComponent(stem)}/intent.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+        if (stem === asset) assetIntent = doc && OUTPUTS[doc.output] ? doc : null;
+      }
       const bust = Date.now();
       const manifest = await fetch(`/out/${asset}/lods.json?t=${bust}`)
         .then((r) => (r.ok ? r.json() : null))
@@ -3919,7 +4457,7 @@
           if (item.kind === "stack" || String(item.id).startsWith("pixel")) continue;
           btn.addEventListener("click", () => {
             currentLod = item.id;
-            loadFrom(meshUrls(asset, item.id).concat([`/out/${asset}/${item.file}?t=${Date.now()}`]), true).catch(console.error);
+            loadFrom([`/out/${asset}/${item.file}?t=${Date.now()}`, ...meshUrls(asset, item.id)], true).catch(console.error);
           });
           lodsEl.appendChild(btn);
         }
@@ -3965,17 +4503,28 @@
       controls.enableRotate = !carveOn;
       carveBall.visible = false;
     });
+    // Cleanup writes a cleaned copy of the mesh on screen (psx.glb -> psx_clean.glb, else mesh_clean.glb)
+    // and keeps cutting that copy, so carves add up and the original stays.
+    async function cleanAllowed() {
+      if (cleanAsked === asset) return true;
+      const into = /^psx/.test(currentFile) ? "psx_clean.glb" : "mesh_clean.glb";
+      if (!(await askConfirm(`Cleanup cuts a copy of ${currentFile || "the mesh"} and saves it as ${into}. The original stays.`, "Cut a copy"))) return false;
+      cleanAsked = asset;
+      return true;
+    }
+
     cleanBtn.addEventListener("click", async () => {
+      if (!(await cleanAllowed())) return;
       cleanBtn.disabled = true;
       try {
         const r = await factoryJson("/clean", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stem: asset, op: "floaters", keep: 1 }),
+          body: JSON.stringify({ stem: asset, op: "floaters", keep: 1, from: currentFile }),
         });
         await loadFrom([`/out/${asset}/${r.file || "mesh_clean.glb"}?t=${Date.now()}`], true);
       } catch (err) {
-        alert(err.message);
+        toast(err.message || String(err));
       } finally {
         cleanBtn.disabled = false;
       }
@@ -3998,8 +4547,9 @@
       e.preventDefault();
       const local = hit.object.worldToLocal(hit.point.clone());
       const scale = hit.object.getWorldScale(new THREE.Vector3()).x || 1;
+      if (!(await cleanAllowed())) return;
       try {
-        await factoryJson("/clean", {
+        const r = await factoryJson("/clean", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -4007,11 +4557,12 @@
             op: "sphere",
             center: [local.x, local.y, local.z],
             radius: worldCarveRadius() / scale,
+            from: currentFile,
           }),
         });
-        await loadFrom([`/out/${asset}/mesh_clean.glb?t=${Date.now()}`], true);
+        await loadFrom([`/out/${asset}/${r.file || "mesh_clean.glb"}?t=${Date.now()}`], true);
       } catch (err) {
-        alert(err.message);
+        toast(err.message || String(err));
       }
     });
 
@@ -4153,7 +4704,7 @@
           }
         }
       } catch (err) {
-        alert(err.message);
+        toast(err.message || String(err));
       } finally {
         paintSaveBtn.disabled = false;
       }
@@ -4397,11 +4948,11 @@
 
     const CUBBY_LABELS = {
       generate: "Generate",
-      mesh: "Mesh",
+      mesh: "View",
       cleanup: "Cleanup",
       paint: "Paint",
-      lods: "LODs",
-      "stack-look": "Look",
+      lods: "Detail levels",
+      "stack-look": "Sprite stack",
       "stack-sliders": "Stack",
       "stack-palette": "Palette",
       audio: "Audio",
@@ -4465,8 +5016,9 @@
       const already = box && !box.classList.contains("is-collapsed");
       document.querySelectorAll(".cubby").forEach((c) => setCubbyCollapsed(c, true));
       if (box && !already) setCubbyCollapsed(box, false);
+      const parent = { cleanup: "mesh", lods: "mesh", "stack-sliders": "stack-look", "stack-palette": "stack-look" }[name] || name;
       document.querySelectorAll("#step-bar [data-step]").forEach((btn) => {
-        btn.setAttribute("aria-pressed", String(!already && btn.dataset.step === name));
+        btn.setAttribute("aria-pressed", String(!already && btn.dataset.step === parent));
       });
     }
 
@@ -4477,6 +5029,7 @@
       btn.setAttribute("aria-pressed", String(on));
       const line = document.querySelector(`.gen-step-line[data-for="${btn.dataset.genStep}"]`);
       if (line) line.hidden = !on;
+      updateRoute();
       if (on) {
         const field = line && line.querySelector("input[type='text']");
         if (field) field.focus();
@@ -4485,7 +5038,8 @@
     document.getElementById("gen-clip")?.addEventListener("change", () => {
       const files = Array.from(document.getElementById("gen-clip").files || []);
       const name = document.getElementById("gen-clip-name");
-      if (name) name.textContent = files.length ? files[0].name : "Clip";
+      if (name) name.textContent = files.length ? files[0].name : "Attach clip";
+      updateRoute();
     });
 
     document.addEventListener("click", (e) => {
@@ -4601,6 +5155,12 @@
     });
     fitPrompt();
     let refs = [];
+    genPrompt.addEventListener("input", updateRoute);
+    {
+      let saved = "";
+      try { saved = localStorage.getItem("make-output") || ""; } catch {}
+      setOutput(OUTPUTS[saved] ? saved : "ps1");
+    }
 
     function toggleAssetRef(entry, shot) {
       const path = `out/${entry.id}/${shot}`;
@@ -4629,22 +5189,29 @@
         drop.title = "Remove this reference";
         drop.addEventListener("click", () => {
           refs.splice(i, 1);
+          if (!refs.length) remakeStem = "";
           renderRefThumbs();
         });
         fig.append(img, drop);
         genThumbs.appendChild(fig);
       });
-      const counted = workflow === "2d" ? refs.filter((item) => item.kind === "file") : refs;
-      genLabel.textContent = counted.length
-        ? `${counted.length} ${workflow === "2d" ? "picture" : "reference image"}${counted.length === 1 ? "" : "s"}`
-        : (workflow === "2d" ? "Attach a flat picture" : "Attach reference images");
+      const one = selectedOutput() === "sprite" ? "picture" : "photo";
+      genLabel.textContent = refs.length
+        ? `${refs.length} ${one}${refs.length === 1 ? "" : "s"} · add another view`
+        : (selectedOutput() === "sprite" ? "Add a picture" : "Add a photo");
       syncGalleryPick();
+      const first = refs[0];
+      if (!nameTouched) {
+        const base = first ? slugStem(first.kind === "file" ? first.file.name : first.id).replace(/-/g, "_") : "";
+        document.getElementById("gen-psx-name").placeholder = base || "from the photo";
+      }
+      if (first && first.kind === "file") suggestFromPhoto(first.file);
+      else updateRoute();
     }
     const genOverlay = document.getElementById("gen-overlay");
     const genOverlayLog = document.getElementById("gen-overlay-log");
     const genOverlayFill = document.getElementById("gen-overlay-fill");
     const genOverlayPct = document.getElementById("gen-overlay-pct");
-    let genProgressMax = 0;
 
     function setGenStatus(text, state) {
       genStatus.textContent = text;
@@ -4658,54 +5225,274 @@
       return h.gpu || "idle";
     }
 
-    function inferProgress(log, step) {
-      const t = `${log || ""}\n${step || ""}`.toLowerCase();
-      const stages = [
-        [/upload/, 8, "Upload"],
-        [/lifting subject/, 18, "Isolate"],
-        [/shape|octree|mini-turbo/, 40, "Shape"],
-        [/reduce/, 55, "Reduce"],
-        [/paint|retexture/, 78, "Paint"],
-        [/psx low-poly/, 84, "PSX low-poly"],
-        [/inspect/, 88, "Inspect"],
-        [/sprite stack/, 95, "Sprite stack"],
-        [/generate_result|stack_result|opening inspector|ready ·/, 100, "Done"],
-      ];
-      let p = 4;
-      let label = "Starting";
-      for (const [re, pct, name] of stages) {
-        if (re.test(t)) {
-          p = pct;
-          label = name;
-        }
-      }
-      return { p, label };
-    }
-
+    // One factory job at a time. The overlay shows it while you watch (genWatching); otherwise the job chip
+    // in the top bar and on Home tracks it, and you can reopen the overlay from there.
     let genWatching = false;
+    let job = null; // { id, stem, title, state, progress, error, log, spec }
 
     function abandonGenerateWatch() {
+      // Leaving the overlay never drops the job: it keeps running and the chip keeps tracking it.
       genWatching = false;
       hideOverlay();
+      renderJobChip();
     }
 
-    function showOverlay({ title, step, log, kicker, progress }) {
+    function jobStageText(p) {
+      if (!p || p.stage_index < 0) return "Starting";
+      const st = p.stages[p.stage_index];
+      return `${st ? st.label : p.stage} ${p.stage_index + 1}/${p.stage_count}`;
+    }
+
+    // Overlay for a running/finished job, or a plain message ({title, step, kicker}) before a job exists.
+    function showOverlay({ title, step, log, kicker, progress, state, actions }) {
       if (!genWatching) return;
       genOverlay.hidden = false;
+      const card = genOverlay.querySelector(".job-card");
+      card.dataset.state = state || "running";
       document.getElementById("gen-overlay-kicker").textContent = kicker || "Factory";
       document.getElementById("gen-overlay-title").textContent = title || "Generating";
-      const inferred = inferProgress(log, step);
-      const pct = Math.max(genProgressMax, progress ?? inferred.p);
-      genProgressMax = pct;
-      document.getElementById("gen-overlay-step").textContent = step || inferred.label;
+      document.getElementById("gen-overlay-step").textContent = step || "";
+      const list = document.getElementById("job-stages");
+      list.innerHTML = "";
+      let pct = 2;
+      if (progress && progress.stages) {
+        progress.stages.forEach((st, i) => {
+          const li = document.createElement("li");
+          const done = i < progress.stage_index || state === "ok";
+          const now = i === progress.stage_index && state !== "ok";
+          li.className = done ? "is-done" : now ? (state === "running" ? "is-now" : "") : "";
+          li.innerHTML = `<span>${esc(st.label)}</span><span class="sub">${now && progress.sub ? Math.round(progress.sub * 100) + "%" : ""}</span>`;
+          list.appendChild(li);
+        });
+        pct = state === "ok" ? 100 : Math.max(2, Math.round((progress.fraction || 0) * 100));
+      }
       genOverlayFill.style.width = pct + "%";
-      genOverlayPct.textContent = `${inferred.label} · ${pct}%`;
+      genOverlayPct.textContent = state === "running" || !state
+        ? (progress ? `${jobStageText(progress)} · ${pct}%` : "Starting…")
+        : state === "ok" ? "Done" : state === "cancelled" ? "Cancelled" : "Stopped";
       genOverlayLog.textContent = log || "";
       genOverlayLog.scrollTop = genOverlayLog.scrollHeight;
+      const logBox = document.getElementById("job-log");
+      if (state === "error") logBox.open = true;
+      const bar = document.getElementById("job-actions");
+      bar.innerHTML = "";
+      for (const a of actions || []) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = a.label;
+        if (a.primary) b.className = "is-primary";
+        b.addEventListener("click", a.run);
+        bar.appendChild(b);
+      }
     }
 
     function hideOverlay() {
       genOverlay.hidden = true;
+    }
+
+    function renderJobChip() {
+      for (const el of [document.getElementById("job-chip"), document.getElementById("home-job")]) {
+        if (!el) continue;
+        if (!job || (genWatching && job.state === "running")) { el.hidden = true; continue; }
+        el.hidden = false;
+        el.dataset.state = job.state;
+        const name = displayStem(job.stem);
+        el.textContent = job.state === "running"
+          ? `Making ${name} · ${jobStageText(job.progress)} · Show`
+          : job.state === "ok" ? `${name} is ready · Open`
+            : job.state === "cancelled" ? `${name} cancelled · Dismiss` : `${name} failed · Details`;
+      }
+    }
+
+    function onJobChip() {
+      if (!job) return;
+      if (job.state === "running" || job.state === "error") {
+        genWatching = true;
+        drawJob();
+        return;
+      }
+      const stem = job.stem;
+      const ok = job.state === "ok";
+      job = null;
+      renderJobChip();
+      if (ok) openAsset(stem).catch(console.error);
+    }
+    document.getElementById("job-chip")?.addEventListener("click", onJobChip);
+    document.getElementById("home-job")?.addEventListener("click", onJobChip);
+
+    async function cancelJob() {
+      if (!job || job.state !== "running") return;
+      try {
+        await factoryJson(`/cancel/${job.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        document.getElementById("gen-overlay-step").textContent = "Stopping…";
+      } catch (err) {
+        document.getElementById("gen-overlay-step").textContent = err.message || String(err);
+      }
+    }
+
+    function drawJob() {
+      if (!job) return;
+      const name = displayStem(job.stem);
+      const tail = (job.log || "").trim();
+      const lines = tail.split("\n").filter((l) => l && !/^STAGES? /.test(l));
+      if (job.state === "running") {
+        showOverlay({
+          title: job.title || `Making ${name}`,
+          step: lines.pop() || "Queued on the factory…",
+          log: lines.slice(-30).join("\n"),
+          kicker: "Working",
+          progress: job.progress,
+          state: "running",
+          actions: [
+            { label: "Run in background", run: () => abandonGenerateWatch() },
+            { label: "Cancel", run: cancelJob },
+          ],
+        });
+      } else if (job.state === "error" || job.state === "cancelled") {
+        const failed = job.state === "error";
+        showOverlay({
+          title: failed ? `Couldn't make ${name}` : `Stopped ${name}`,
+          step: failed ? (job.error || "The factory stopped.") : "Nothing after the last finished step was written.",
+          log: lines.slice(-40).join("\n"),
+          kicker: failed ? "Error" : "Cancelled",
+          progress: job.progress,
+          state: job.state,
+          actions: [
+            ...(job.spec ? [{ label: "Try again", primary: true, run: () => runJob(job.spec, { title: job.title }) }] : []),
+            { label: "Back to Home", run: () => { job = null; genWatching = false; hideOverlay(); renderJobChip(); clearView(); showHome(); refreshAssets(""); } },
+            { label: "Close", run: () => { job = null; abandonGenerateWatch(); } },
+          ],
+        });
+      }
+      renderJobChip();
+    }
+
+    // Start a generate and follow it. A 409 means one is already running: follow that one instead.
+    // Make stays locked while a job runs, whatever else changes on the form.
+    function holdGo(busy) {
+      genGo.dataset.busy = busy ? "1" : "";
+      genGo.disabled = busy;
+      if (!busy) updateRoute();
+    }
+
+    async function runJob(spec, opts) {
+      genWatching = true;
+      holdGo(true);
+      lastJobSpec = spec;
+      showOverlay({ title: (opts && opts.title) || "Starting", step: "Queued on the factory…", kicker: "Working", state: "running" });
+      let started;
+      try {
+        started = await startGenerateJob(spec);
+      } catch (err) {
+        if (err.status === 409) {
+          const h = await factoryJson("/health").catch(() => null);
+          if (h && h.job_id) return followJob(h.job_id, "", { watch: true });
+        }
+        holdGo(false);
+        job = { id: "", stem: spec.stem || "asset", state: "error", error: err.message || String(err), spec, title: opts && opts.title };
+        drawJob();
+        setGenStatus(err.message || String(err), "error");
+        return;
+      }
+      return followJob(started.job_id, started.stem || spec.stem || "asset", { watch: true, spec, title: opts && opts.title });
+    }
+
+    async function followJob(jobId, stem, opts) {
+      job = { id: jobId, stem, state: "running", progress: null, log: "", spec: opts && opts.spec, title: opts && opts.title };
+      if (opts && opts.watch) genWatching = true;
+      if (stem) setTitleState(stem, { editable: false });
+      drawJob();
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1200));
+        if (!job || job.id !== jobId) return;
+        let st;
+        try {
+          st = await factoryJson(`/status/${jobId}`);
+        } catch (err) {
+          job.state = "error";
+          job.error = `Lost the factory: ${err.message || err}`;
+          holdGo(false);
+          drawJob();
+          return;
+        }
+        job.stem = st.stem || job.stem;
+        job.progress = st.progress || job.progress;
+        job.log = st.log_tail || "";
+        if (st.state === "running") {
+          setGenStatus(`Making ${displayStem(job.stem)} · ${jobStageText(job.progress)}`, "running");
+          drawJob();
+          continue;
+        }
+        holdGo(false);
+        if (st.state === "ok") return finishJob();
+        job.state = st.state === "cancelled" ? "cancelled" : "error";
+        job.error = st.error || "";
+        setGenStatus(job.state === "cancelled" ? "Cancelled." : (st.error || "Failed."), job.state === "cancelled" ? "" : "error");
+        drawJob();
+        return;
+      }
+    }
+
+    // Done: open the asset if you were watching, and say what was made and what is next.
+    async function finishJob() {
+      const stem = job.stem;
+      job.state = "ok";
+      setGenStatus("", "ok");
+      const intent = await fetch(`/out/${encodeURIComponent(stem)}/intent.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      let facts = "";
+      if (intent && intent.output === "ps1") {
+        const psx = await fetch(`/out/${encodeURIComponent(stem)}/psx/psx.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+        if (psx) facts = ` · ${Number(psx.triangles).toLocaleString()} triangles, ${psx.atlas} px texture`;
+      }
+      const what = intent && OUTPUTS[intent.output] ? OUTPUTS[intent.output].name : "asset";
+      const text = `${what[0].toUpperCase()}${what.slice(1)} ready: ${displayStem(stem)}${facts}`;
+      if (genWatching) {
+        showOverlay({ title: `Opening ${displayStem(stem)}`, step: "Loading the model…", kicker: "Done", progress: job.progress, state: "ok" });
+        try {
+          await openAsset(stem, { keepOverlay: true });
+          job = null;
+          genWatching = false;
+          hideOverlay();
+          renderJobChip();
+          toast(text, "Export →", () => enterStage("export"));
+        } catch (err) {
+          if (!job) { toast(`${displayStem(stem)} finished, but the model did not load: ${err.message || err}`); return; }
+          job.state = "error";
+          job.error = `It finished, but the model did not load: ${err.message || err}`;
+          drawJob();
+        }
+        return;
+      }
+      renderJobChip();
+      toast(text, "Open", () => { job = null; renderJobChip(); openAsset(stem).catch(console.error); });
+      refreshAssets(asset).catch(() => {});
+    }
+
+    let toastTimer = 0;
+    function toast(text, actLabel, act) {
+      const el = document.getElementById("toast");
+      document.getElementById("toast-text").textContent = text;
+      const btn = document.getElementById("toast-act");
+      btn.hidden = !actLabel;
+      btn.textContent = actLabel || "";
+      btn.onclick = () => { el.hidden = true; if (act) act(); };
+      el.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { el.hidden = true; }, 12000);
+    }
+    document.getElementById("toast-close")?.addEventListener("click", () => { document.getElementById("toast").hidden = true; });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || genOverlay.hidden) return;
+      if (job && job.state === "running") abandonGenerateWatch();
+      else if (job) { job = null; abandonGenerateWatch(); }
+      else hideOverlay();
+    });
+
+    // Back from a reload or a crash: pick up the job the factory is running.
+    async function reattachJob(h) {
+      if (!h || !h.busy || !h.job_id || job) return;
+      const st = await factoryJson(`/status/${h.job_id}`).catch(() => null);
+      followJob(h.job_id, (st && st.stem) || "", { watch: false });
     }
 
     function clearStage(msg) {
@@ -4744,63 +5531,6 @@
       genDropHost.classList.remove("is-drop");
       addRefFiles(e.dataTransfer?.files);
     });
-
-    async function pollJob(jobId, stem) {
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1500));
-        let st;
-        try {
-          st = await factoryJson(`/status/${jobId}`);
-        } catch (err) {
-          setGenStatus(err.message, "error");
-          showOverlay({ title: "Factory lost", step: err.message, kicker: "Error" });
-          genGo.disabled = false;
-          return;
-        }
-        const tail = (st.log_tail || "").trim();
-        const last = tail.split("\n").filter(Boolean).pop() || st.state || "running";
-        if (st.state === "running") {
-          setGenStatus(last, "running");
-          showOverlay({
-            title: `Generating ${stem}`,
-            step: last,
-            log: tail,
-            kicker: "Working",
-          });
-          continue;
-        }
-        if (st.state === "ok") {
-          setGenStatus("done — opening " + stem, "ok");
-          if (!genWatching) {
-            genGo.disabled = false;
-            await refreshAssets(asset);
-            return;
-          }
-          showOverlay({ title: `Ready · ${stem}`, step: "Loading mesh…", kicker: "Done" });
-          try {
-            await openAsset(stem, { preferLod: "lookdev", keepOverlay: true });
-            hideOverlay();
-            genWatching = false;
-            genGo.disabled = false;
-            setGenStatus("ready", "ok");
-          } catch (err) {
-            showOverlay({
-              title: "Mesh did not load",
-              step: err.message || String(err),
-              kicker: "Error",
-            });
-            genGo.disabled = false;
-            setGenStatus(err.message || String(err), "error");
-          }
-          return;
-        }
-        const errText = st.error || st.state || "failed";
-        setGenStatus(errText, "error");
-        showOverlay({ title: "Generate failed", step: errText, log: tail, kicker: "Error" });
-        genGo.disabled = false;
-        return;
-      }
-    }
 
     function applyVersion(label) {
       if (!label) return;
@@ -4967,10 +5697,9 @@
     (async () => {
       try {
         const h = await factoryJson("/health");
-        setGenStatus(healthLabel(h));
-        if (h.features && h.features.shape_mv === false) {
-          genStatus.title = "Extra refs isolate and photo-bake; geometry stays single-image mini.";
-        }
+        setGenStatus(h.busy ? "The factory is busy with another job." : "Ready.", h.busy ? "running" : "");
+        genStatus.title = `Factory: ${healthLabel(h)}` + (h.features && h.features.shape_mv === false ? ". Extra views photo-bake; the shape still comes from the first picture." : "");
+        await reattachJob(h);
       } catch (err) {
         setGenStatus(err.message, "error");
       }
@@ -4980,12 +5709,13 @@
       e.preventDefault();
       const hasPicture = refs.length > 0 || (genFile.files || []).length > 0;
       const typed = (genPrompt.value || "").trim();
-      if (!hasPicture && typed) {
-        await startIdeas(typed);
+      const intent = readIntent();
+      if (intent.output === "sprite") {
+        await startFlatJob();
         return;
       }
-      if (workflow === "2d") {
-        await startFlatJob();
+      if (!hasPicture && typed) {
+        await startIdeas(typed, intent);
         return;
       }
       const queue = refs.slice();
@@ -4994,49 +5724,37 @@
       }
       const prompt = (genPrompt.value || "").trim();
       if (!queue.length) {
-        setGenStatus("attach at least one reference image", "error");
+        setGenStatus("Add a photo first, or describe the object to draw it.", "error");
         return;
       }
-      genGo.disabled = true;
-      genProgressMax = 0;
-      genWatching = false;
-      setTitleState("", { editable: false });
-      setGenStatus("uploading…", "running");
+      holdGo(true);
+      setGenStatus(queue.length > 1 ? `Uploading ${queue.length} pictures…` : "Uploading the photo…", "running");
+      const paths = [];
       try {
-        const paths = [];
         for (const item of queue) {
           if (item.kind === "asset") paths.push(item.path);
           else paths.push((await uploadImage(item.file)).path);
         }
-        setGenStatus("Queued on the factory…", "running");
-        const job = await startGenerateJob({
-          image: paths[0],
-          images: paths,
-          prompt,
-          ...lookSpec(),
-          poly: selectedPoly(),
-        });
-        const stem = job.stem || "asset";
-        if (!document.body.classList.contains("is-home")) {
-          genGo.disabled = false;
-          return;
-        }
-        setTitleState(stem, { editable: false });
-        genWatching = true;
-        showViewer();
-        hideAllCubbies();
-        clearStage("Generating");
-        showOverlay({ title: `Generating ${stem}`, step: "Job " + job.job_id, kicker: "Working" });
-        await pollJob(job.job_id, stem);
       } catch (err) {
-        setGenStatus(err.message || String(err), "error");
-        showOverlay({
-          title: "Could not start",
-          step: err.message || String(err),
-          kicker: "Error",
-        });
-        genGo.disabled = false;
+        holdGo(false);
+        setGenStatus(`Upload failed: ${err.message || err}`, "error");
+        return;
       }
+      setGenStatus("", "");
+      showViewer();
+      hideAllCubbies();
+      clearStage("Generating");
+      const into = remakeStem;
+      remakeStem = "";
+      await runJob({
+        image: paths[0],
+        images: paths,
+        prompt,
+        ...(into ? { stem: into } : {}),
+        ...lookSpec(intent),
+        poly: selectedPoly(),
+        intent: intentBody(intent),
+      }, { title: into ? `Remaking ${displayStem(into)}` : `Making the ${OUTPUTS[intent.output].name}` });
     });
   </script>
 </body>

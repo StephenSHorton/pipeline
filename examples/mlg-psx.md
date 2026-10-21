@@ -16,7 +16,19 @@ point sampling and dither, so the model itself stays plain.
 The cow is side-on, so the shape is a guess from one side; the farmers are head-and-shoulders portraits, so they
 come out as busts (the game puts them on simple bodies).
 
-## Run
+## In the app
+
+1. On Home, pick **PS1 model** under *What are you making?*
+2. **Add a photo**: `in/mlg/cow.jpg`. A wide photo sets Facing to *Side, facing right*; check it.
+3. Set **Height**: the *Animal 58* chip for the cow, *Bust 30* for the farmers. File name defaults to the photo's name.
+4. The line above the button says what will happen. Press **Make PS1 model**.
+5. The loading screen lists each stage as it runs; *Run in background* and *Cancel* are there. When it's done the
+   cow opens full width. Press **PS1 240p** to see it the way the game draws it.
+6. **Export** lists `cow.obj` + `cow.png` + `cow.mtl` with the s&box import steps. To tweak Facing or Height,
+   use **Change settings…** on the 3D stage and press **Remake**.
+
+## Run from the command line
+
 
 ```bash
 scripts/generate.sh --image in/mlg/cow.jpg        --quality psx --stem mlg-cow        --facing right  --psx-height 58 --psx-name cow

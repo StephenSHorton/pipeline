@@ -70,7 +70,13 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn("HandleUploadHTTP", MAIN)
 
     def test_home_is_prompt_page(self) -> None:
-        self.assertIn("Describe the thing…", DESKTOP_HTML)
+        # Home asks what you're making first; each output shows its own options and a route line.
+        self.assertIn("What are you making?", DESKTOP_HTML)
+        for output in ("ps1", "model", "stack", "sprite"):
+            self.assertIn(f'name="gen-output" value="{output}"', DESKTOP_HTML)
+        self.assertIn('id="gen-route"', DESKTOP_HTML)
+        self.assertIn("function updateRoute", DESKTOP_HTML)
+        self.assertIn('id="lib-search"', DESKTOP_HTML)
         self.assertIn("home-life", DESKTOP_HTML)
         self.assertIn("life-dots", DESKTOP_HTML)
         self.assertIn("home-logo", DESKTOP_HTML)
@@ -78,7 +84,7 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn("home-suggest", DESKTOP_HTML)
         self.assertIn('id="gen-prompt"', DESKTOP_HTML)
         self.assertIn("multiple", DESKTOP_HTML)
-        self.assertIn("Attach reference images", DESKTOP_HTML)
+        self.assertIn("Add a photo", DESKTOP_HTML)
         self.assertIn('id="home-assets"', DESKTOP_HTML)
         self.assertIn("body.is-home", DESKTOP_HTML)
         self.assertIn("function showHome", DESKTOP_HTML)
@@ -87,7 +93,7 @@ class DesktopShellTests(unittest.TestCase):
         self.assertNotIn("home-wrap", DESKTOP_HTML)
         self.assertIn("home-cluster", DESKTOP_HTML)
         self.assertIn("min(1280px, 74vw)", DESKTOP_HTML)
-        self.assertIn("clamp(120px, 16vh, 180px)", DESKTOP_HTML)
+        self.assertIn("aspect-ratio: 4 / 3", DESKTOP_HTML)
         self.assertIn("translateX(58vw)", DESKTOP_HTML)
         self.assertIn("background: #0e0f0c", DESKTOP_HTML)
         self.assertIn("life-line l4", DESKTOP_HTML)
@@ -123,7 +129,7 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn('data-cubby="stack-look"', DESKTOP_HTML)
         self.assertIn('data-cubby="stack-sliders"', DESKTOP_HTML)
         self.assertIn('data-cubby="stack-palette"', DESKTOP_HTML)
-        self.assertIn("levers-required", DESKTOP_HTML)
+        self.assertIn("make-options", DESKTOP_HTML)
         self.assertIn("is-required", DESKTOP_HTML)
         self.assertIn("function hideAllCubbies", DESKTOP_HTML)
         self.assertIn("hideAllCubbies()", DESKTOP_HTML)
@@ -136,6 +142,20 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn("function hideAllCubbies", viewer)
         self.assertIn("cubby-rail-left", viewer)
         self.assertIn('data-cubby="stack-look"', viewer)
+
+    def test_jobs_show_stages_cancel_and_reattach(self) -> None:
+        # Progress comes from the factory's stage list, not from guessing at log text.
+        self.assertNotIn("function inferProgress", DESKTOP_HTML)
+        self.assertIn('id="job-stages"', DESKTOP_HTML)
+        self.assertIn("progress.stages", DESKTOP_HTML)
+        self.assertIn("`/cancel/${job.id}`", DESKTOP_HTML)
+        self.assertIn('label: "Run in background"', DESKTOP_HTML)
+        self.assertIn('label: "Try again"', DESKTOP_HTML)
+        self.assertIn("async function reattachJob", DESKTOP_HTML)
+        self.assertIn('id="job-chip"', DESKTOP_HTML)
+        # The native StartGenerate drops PS1 settings, so the page never calls it.
+        self.assertNotIn("WAILS_GENERATE", DESKTOP_HTML)
+        self.assertIn('<script type="module" src="/wails/runtime.js"></script>', DESKTOP_HTML)
 
     def test_delete_clears_list_and_view(self) -> None:
         self.assertIn("function deleteAsset", DESKTOP_HTML)
@@ -176,13 +196,16 @@ class DesktopShellTests(unittest.TestCase):
         http = (ROOT / "scripts" / "factory_http.py").read_text(encoding="utf-8")
         self.assertIn("def factory_features", http)
 
-    def test_generate_is_stack_only_and_renames_in_inspector(self) -> None:
+    def test_generate_quality_follows_output_and_renames_in_inspector(self) -> None:
         self.assertNotIn('id="gen-quality"', DESKTOP_HTML)
         self.assertNotIn('id="gen-stem"', DESKTOP_HTML)
         self.assertNotIn('<option value="draft">', DESKTOP_HTML)
         self.assertNotIn('<option value="textured">', DESKTOP_HTML)
         self.assertNotIn('<option value="pbr">', DESKTOP_HTML)
-        self.assertIn('quality: "stack"', DESKTOP_HTML)
+        # The output decides the factory quality; there is no quality picker.
+        self.assertIn('quality: "psx"', DESKTOP_HTML)
+        self.assertIn('want.output === "model" ? "textured" : "stack"', DESKTOP_HTML)
+        self.assertIn("intent: intentBody(intent)", DESKTOP_HTML)
         self.assertIn("function commitRename", DESKTOP_HTML)
         self.assertIn("function setTitleState", DESKTOP_HTML)
         self.assertIn('method: "PATCH"', DESKTOP_HTML)

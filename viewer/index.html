@@ -1823,7 +1823,7 @@
       });
       texBtn.setAttribute("aria-pressed", String(hasMap));
       texBtn.disabled = !hasMap;
-      const file = glbUrl.split("/").pop();
+      const file = new URL(glbUrl, location.href).pathname.split("/").pop();
       const isPixel = String(currentLod).startsWith("pixel") || /pixel/i.test(file) || /^psx/.test(file) || currentLod === "psx";
       renderer.toneMapping = isPixel ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = isPixel ? 1.0 : 1.05;
@@ -1878,7 +1878,7 @@
       status.dataset.ready = "true";
       status.textContent = "Ready — drag to orbit";
       for (const btn of lodsEl.querySelectorAll("button")) {
-        btn.setAttribute("aria-pressed", String(btn.dataset.file === file));
+        btn.setAttribute("aria-pressed", String(btn.dataset.id === currentLod));
       }
     }
 

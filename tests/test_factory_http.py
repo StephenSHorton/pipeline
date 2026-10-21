@@ -578,5 +578,70 @@ class FactoryHttpTests(unittest.TestCase):
         self.assertGreater((last.get("inspect") or {}).get("faces") or 0, 0)
 
 
+    def test_progress_from_stage_markers(self) -> None:
+        log = "\n".join([
+            "generate: root=/x quality=textured octree=128",
+            "STAGES isolate shape reduce paint retexture psx lods inspect",
+            "STAGE isolate Cutting out the subject",
+            "STAGE shape Building the shape",
+            "STAGE reduce Reducing the mesh",
+            "STAGE paint Painting the texture",
+            "  [ 50%] Painting (7/15)",
+        ])
+        p = factory_http.parse_progress(log)
+        self.assertEqual([s["key"] for s in p["stages"]][-3:], ["psx", "lods", "inspect"])
+        self.assertEqual(p["stage"], "paint")
+        self.assertEqual(p["stage_index"], 3)
+        self.assertEqual(p["sub"], 0.5)
+        self.assertAlmostEqual(p["fraction"], (3 + 0.5) / 8, places=2)
+        self.assertEqual(p["stages"][5]["label"], "PS1 low-poly")
+        # The config line and a prompt that says "paint" no longer move anything.
+        self.assertIsNone(factory_http.parse_progress("generate: prompt=scuffed paint octree=128"))
+
+    def test_intent_is_checked_and_written(self) -> None:
+        self.assertIsNone(factory_http.clean_intent({"output": "rocket"}))
+        intent = factory_http.clean_intent({"output": "ps1", "facing": "right", "height": 58, "name": "cow", "up": "q"})
+        self.assertEqual(intent, {"output": "ps1", "psx": {"facing": "right", "height": "58", "name": "cow"}})
+        status, payload = http_json(self.base + "/intent/radio", method="POST", data={"output": "stack"})
+        self.assertEqual(status, 200)
+        doc = json.loads((self.root / "out" / "radio" / "intent.json").read_text())
+        self.assertEqual(doc["output"], "stack")
+        status, assets = http_json(self.base + "/assets")
+        self.assertEqual(next(a for a in assets["assets"] if a["id"] == "radio")["output"], "stack")
+        status, _ = http_json(self.base + "/intent/radio", method="POST", data={"output": "nope"})
+        self.assertEqual(status, 400)
+        status, _ = http_json(self.base + "/intent/missing", method="POST", data={"output": "ps1"})
+        self.assertEqual(status, 404)
+
+    def test_cancel_stops_the_job(self) -> None:
+        import subprocess as sp
+
+        started = threading.Event()
+
+        def runner(spec: dict) -> int:
+            proc = sp.Popen(["sleep", "30"], start_new_session=True)
+            with self.factory._lock:
+                self.factory._job["pid"] = proc.pid
+            started.set()
+            return proc.wait()
+
+        self.factory._runner = runner
+        status, first = http_json(self.base + "/generate", method="POST", data={"image": "in/radio-concept.jpg", "stem": "radio"})
+        self.assertEqual(status, 202)
+        self.assertTrue(started.wait(timeout=3))
+        status, payload = http_json(self.base + f"/cancel/{first['job_id']}", method="POST", data={})
+        self.assertEqual(status, 200)
+        deadline = time.time() + 5
+        last = {}
+        while time.time() < deadline:
+            _, last = http_json(self.base + f"/status/{first['job_id']}")
+            if last.get("state") != "running":
+                break
+            time.sleep(0.05)
+        self.assertEqual(last.get("state"), "cancelled")
+        status, _ = http_json(self.base + "/cancel/nope", method="POST", data={})
+        self.assertEqual(status, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
