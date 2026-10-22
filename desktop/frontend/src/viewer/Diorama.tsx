@@ -7,6 +7,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { ClayCameraRig, ClayGround, Lights, PostFX, RoundCyl, SceneCanvas, applyLook, lookDefaults, setViewHome, useLook } from "mokei/clay";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { AnimationMixer, LoopOnce, LoopRepeat, type AnimationAction, type AnimationClip, type Group } from "three";
+import { setClipPlayer } from "./clipSeek";
 import { PixelPass } from "./PixelPass";
 import type { PixelLook } from "./pixelLook";
 import type { PreparedModel } from "./prepareModel";
@@ -120,7 +121,10 @@ function Animator({ model, clips, clip, playing }: { model: PreparedModel; clips
       actions.current[c.name] = a;
     }
     current.current = null;
+    // The Rig check holds a clip still at its worst moment (./clipSeek.ts).
+    setClipPlayer({ mixer: m, actions: actions.current });
     return () => {
+      setClipPlayer(null);
       m.stopAllAction();
       m.uncacheRoot(model.scene);
       mixer.current = null;
