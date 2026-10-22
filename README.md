@@ -41,7 +41,9 @@ scripts/m2m_bind.py out/operator/textured.glb -o out/operator/m2m.glb
 
 Grok workflow: `/ai-asset-pipeline` with `args.image` and `args.quality`, run from the repository root (`args.factory_root` points it elsewhere).
 
-HTTP (loopback, curl, no MCP): `.venv/bin/python scripts/factory_http.py` then the copy-paste commands in **[examples/curl.md](examples/curl.md)** (`/health`, `/inspect/radio`, `POST /generate`, `/glb/radio`).
+HTTP (loopback, curl): `.venv/bin/python scripts/factory_http.py` then the copy-paste commands in **[examples/curl.md](examples/curl.md)** (`/health`, `/inspect/radio`, `POST /generate`, `/glb/radio`). `POST /generate` also takes `"mesh"` (a `.glb` under `out/<stem>/`, used as the shape instead of hy3d's) and `"paint": false` (unwrap instead of paint; only the photo bakes).
+
+MCP: the agent workbench, where Claude makes, measures and fixes assets, lives in `scripts/workbench/` as its own server, a client of the factory.
 
 ## Layout
 

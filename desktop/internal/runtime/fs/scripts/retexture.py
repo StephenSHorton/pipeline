@@ -4,7 +4,8 @@
 Hunyuan/AniGen paint is a hallucination in a fragmented atlas. This pass overwrites
 texels the camera actually saw with the input photo. Occluded texels keep the
 generated atlas. Multiple --view images (front/back/top) stack. --mirror also bakes a side-on
-photo, flipped, onto the far side.
+photo, flipped, onto the far side. --first-wins puts the first --view (a real photo) over the
+others instead of averaging it in: the rest (drawn views) fill only where it did not reach.
 """
 from __future__ import annotations
 
@@ -278,6 +279,9 @@ def main() -> int:
     ap.add_argument("--first-facing", choices=sorted(FACING_OFFSET), default=None,
                     help="which way the subject faces in the first --view when its name does not say "
                          "(camera = front view; right/left = side-on, head toward image right/left; away = back)")
+    ap.add_argument("--first-wins", action="store_true",
+                    help="the first --view bakes over the others, which fill only where it did not land "
+                         "(a real photo over drawn views); a weak camera fit for it is averaged in as usual")
     args = ap.parse_args()
     # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
     # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
@@ -287,6 +291,7 @@ def main() -> int:
         offsets[0] = FACING_OFFSET[args.first_facing]
     side = next((i for i, o in enumerate(offsets) if o is not None and abs(o) == 90.0), 0)
     order = [side] + [i for i in range(len(args.view)) if i != side]
+    top = order.index(0) if args.first_wins else -1  # where the first --view landed in the fit order
     views = [args.view[i] for i in order]
     offsets = [offsets[i] for i in order]
     first_off = offsets[0] or 0.0
@@ -326,9 +331,11 @@ def main() -> int:
     weight = np.zeros((th, tw), dtype=np.float32)
     accum_m = np.zeros_like(albedo)
     weight_m = np.zeros((th, tw), dtype=np.float32)
+    accum_t = np.zeros_like(albedo)
+    weight_t = np.zeros((th, tw), dtype=np.float32)
     reports = []
 
-    for view, off in zip(views, offsets):
+    for i, (view, off) in enumerate(zip(views, offsets)):
         rgb, alpha_fit, alpha_bake = load_photo(view)
         ph, pw = rgb.shape[:2]
         if args.erode > 0:
@@ -348,11 +355,19 @@ def main() -> int:
         score, az, el, rad = fit_camera(pts, center, radius0, ref_sil, az_hint=az_hint, el_range=el_range)
         print(f"retexture: {Path(view).name}  IoU={score:.3f}  az={az:.1f} el={el:.1f} r={rad:.3f}")
         reports.append({"view": view, "iou": score, "az": az, "el": el, "radius": rad})
+        on_top = i == top
         if score < 0.25:
             print("retexture: weak camera fit, still projecting")
+            if on_top:
+                # A photo the shape does not match would paste a wrong-angle picture over everything.
+                print("retexture: weak fit for the first view: averaged in, not on top")
+                on_top = False
+        if args.first_wins:
+            reports[-1]["on_top"] = on_top
 
         eye = eye_on_sphere(center, rad, az, el)
-        splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, Path(view).name)
+        acc, wgt = (accum_t, weight_t) if on_top else (accum, weight)
+        splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, acc, wgt, Path(view).name)
         if args.mirror:
             # Side-on photo of a near-symmetric subject: the far side is the near side reflected through the
             # sagittal plane (glTF z = centre), so the reflected camera sees it as the photo flipped left-right.
@@ -366,6 +381,10 @@ def main() -> int:
         # Mirrored texels only where the real photo did not land; the real view wins everywhere it reached.
         base, _ = blend(albedo, accum_m, weight_m, args.keep)
     out, hit = blend(base, accum, weight, args.keep)
+    if weight_t.any():
+        # The first view over everything: the views under it show only where it did not land.
+        out, hit_t = blend(out, accum_t, weight_t, args.keep)
+        hit |= hit_t
 
     locked = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
     vis.material.baseColorTexture = locked

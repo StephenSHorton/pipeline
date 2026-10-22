@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Loopback HTTP adapter over the local MLX factory. Curl only; no MCP.
+"""Loopback HTTP adapter over the local MLX factory, for curl and the app. The agent workbench's MCP server
+(scripts/workbench/) is a separate process and a client of this one.
 
 GET  /health
 GET  /inspect/<stem>
@@ -202,6 +203,7 @@ STAGE_LABELS = {
     "shape": "Build the shape",
     "reduce": "Reduce the mesh",
     "paint": "Paint the texture",
+    "unwrap": "Unwrap the mesh",
     "retexture": "Bake the photo on",
     "psx": "PS1 low-poly",
     "lods": "Detail levels",
@@ -829,6 +831,19 @@ class Factory:
                     add_degraded(out, entry)
         return out
 
+    def mesh_of(self, mesh: str) -> tuple[Path, str]:
+        """The supplied mesh and the asset it belongs to: a .glb file under out/<stem>/ (ValueError otherwise)."""
+        path = resolve_under_root(self.root, mesh)
+        out_dir = (self.root / "out").resolve()
+        if path.suffix.lower() != ".glb":
+            raise ValueError("mesh must be a .glb file")
+        if not path.is_relative_to(out_dir) or len(path.relative_to(out_dir).parts) < 2:
+            raise ValueError("mesh must be a .glb under out/<stem>/")
+        stem = check_stem(path.relative_to(out_dir).parts[0])
+        if not path.is_file():
+            raise FileNotFoundError(f"no mesh at {mesh}")
+        return path, stem
+
     def views_handoff(self, img: Path) -> tuple[Path | None, list[dict[str, str]]]:
         """The draw's views.json to pass to generate.sh (--views-json), or None, plus the degraded notes.
         Views pass only when the picture is out/<stem>/flat/source.png and its sha256 is the one views.json was
@@ -878,11 +893,20 @@ class Factory:
         prompt: str | None = None,
         psx: dict[str, Any] | None = None,
         intent: dict[str, Any] | None = None,
+        mesh: str | None = None,
+        paint: bool = True,
     ) -> dict[str, Any]:
+        """mesh: a .glb under out/<stem>/ that generate.sh takes as the shape instead of hy3d's (the stem is that
+        folder's when none is given). paint False: no paint model, the mesh is unwrapped and only the photo bakes.
+        The picture is required either way: isolate, the orientation check and the bake read it."""
         # Everything is checked before the job slot is taken: a refused request leaves /status idle.
         quality = str(quality or "stack")
         if quality not in QUALITIES:
             raise ValueError(f"quality must be one of {', '.join(QUALITIES)}")
+        if not isinstance(paint, bool):
+            raise ValueError("paint must be true or false")
+        if not paint and quality == "pbr":
+            raise ValueError("quality pbr needs the paint; paint false has none")
         poly_in = str(poly or "medium")
         poly = normalize_poly(poly_in)
         # No 3D without a picture: the main image, every ref and every view must be one.
@@ -900,6 +924,14 @@ class Factory:
         psx_opts = clean_psx(psx)
         intent_doc = clean_intent(intent)
         prompt = str(prompt or "").strip()
+        mesh_path = None
+        if mesh:
+            mesh_path, mesh_stem = self.mesh_of(str(mesh))
+            if stem and check_stem(str(stem)) != mesh_stem:
+                raise ValueError(f"mesh must be under out/{stem}/")
+            stem = mesh_stem
+            # The shape never ran from the one picture, so "one picture" is no fallback to report.
+            degraded = [d for d in degraded if not (d.get("stage") == "shape" and d.get("code") == "single_view")]
         if not stem:
             stem = auto_stem(self.root, prompt, [img, *refs])
         else:
@@ -922,6 +954,8 @@ class Factory:
             "intent": intent_doc,
             "views_json": str(views_json) if views_json else None,
             "degraded": degraded,
+            "mesh": str(mesh_path) if mesh_path else None,
+            "paint": paint,
             "log": str(stem_dir(self.root, stem) / "generate.log"),
             "started": time.time(),
             "glb_path": None,
@@ -1252,6 +1286,8 @@ class Factory:
             psx=spec.get("psx") or None,
             views_json=Path(spec["views_json"]) if spec.get("views_json") else None,
             degraded=list(spec.get("degraded") or []),
+            mesh=Path(spec["mesh"]) if spec.get("mesh") else None,
+            paint=spec.get("paint", True) is not False,
         )
         spec["argv"] = argv
         with self._lock:
@@ -1805,6 +1841,15 @@ def _dispatch(
                 raw_images = [p for p in raw_images.split(",") if p]
             if not isinstance(raw_images, list):
                 raw_images = []
+            paint = payload.get("paint")
+            if paint is None:
+                paint = True
+            elif isinstance(paint, str):  # from the query string
+                paint = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(
+                    paint.strip().lower(), paint)
+            mesh = payload.get("mesh")
+            if mesh not in (None, "") and not isinstance(mesh, str):
+                raise ValueError("mesh must be a path to a .glb under out/<stem>/")
             result = factory.start_generate(
                 image=str(payload.get("image") or ""),
                 quality=str(payload.get("quality") or "stack"),
@@ -1815,6 +1860,8 @@ def _dispatch(
                 prompt=str(payload.get("prompt") or "") or None,
                 psx={k: payload.get(k if k == "facing" else f"psx_{k}") for k in PSX_KEYS},
                 intent=payload.get("intent") if isinstance(payload.get("intent"), dict) else None,
+                mesh=mesh or None,
+                paint=paint,
             )
             return _json_bytes(result, 202)
         except FileNotFoundError as e:
