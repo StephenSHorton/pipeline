@@ -12,7 +12,7 @@ scripts/generate.sh --image out/operator-turn/views/front.jpg --quality pbr --st
 
 1. **isolate** — Vision foreground mask.
 2. **blockout** — Hunyuan3D-2 mini shape (MLX-Swift). If `views/lifted/{front,left,back}.png` exist, `shape_mv.sh` tries Hunyuan3D-DiT-v2-mv; otherwise mini stays single-image.
-3. **reduce** — named LODs: lookdev 80k, game 12k, proxy 2k (or `--poly` at generate time)
+3. **reduce** — the 80k lookdev mesh that paint works on (`--poly` sets the shape's detail at generate time); no game / proxy LODs
 4. **remesh** — AutoRemesher quads (`mesh_quad.glb`) before paint so xatlas isn't packing Hunyuan triangle soup
 5. **surround** — extra views of the same object
 6. **paint** — Hunyuan RGB (`--quality textured`) or Paint 2.1 PBR albedo+MR (`--quality pbr`) on the remeshed mesh
@@ -32,7 +32,7 @@ Qualities: `draft` (mesh only), `textured` (RGB atlas), `pbr` (albedo + metallic
 
 Sprite stack is how we ship. Hunyuan meshes stay in the folder as the sculpt; the stack is the lowered-fidelity volume you actually put in a game. Inspector: `viewer/?asset=<stem>` (mesh left, stack right). Default display is 120 texels / 1.20 contrast+saturation; the sheet is 160². Paint in the inspector is a local brush (not Hunyuan): it writes `stack/sheet.png` and `textured_paint.glb`.
 
-Poly: `--poly hero` (octree 256), `lookdev` (octree 128 → 80k), `game` (octree 64 → 12k), `proxy` (octree 64 → 2k). Or `scripts/reduce.sh <stem>` after the fact.
+Poly: `--poly hero` (octree 256), `lookdev` (octree 128 → 80k), `game` (octree 64 → 12k), `proxy` (octree 64 → 2k). That is the shape's detail at make time; `scripts/reduce.sh <stem>` re-cuts only the lookdev mesh and the model list.
 
 ```bash
 scripts/m2m_keep.py out/operator/anigen.glb -o out/operator/anigen_keep.glb

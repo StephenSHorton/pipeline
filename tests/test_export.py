@@ -76,9 +76,10 @@ class ExportTest(unittest.TestCase):
         write(self.asset / "stack" / "stack.json", {"resolution": 4, "layers": 4, "pitch": 0.25, "maker": "picture"})
 
     def mesh(self) -> None:
+        # mesh_game / mesh_proxy: an older asset's leftover LODs, which export no longer copies.
         for name in ("mesh.glb", "textured.glb", "mesh_game.glb", "mesh_proxy.glb"):
             write(self.asset / name, b"glTF" + b"\0" * 80)
-        write(self.asset / "lods.json", {"lods": [{"id": "game", "file": "mesh_game.glb", "faces": 5000}]})
+        write(self.asset / "lods.json", {"lods": [{"id": "photo", "file": "textured.glb", "label": "Photo bake", "faces": 5000}]})
 
     def test_everything_lands_with_a_manifest(self) -> None:
         self.flat()
@@ -104,10 +105,12 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(doc["stack"]["layers"], 4)
         self.assertEqual(doc["stack"]["maker"], "picture")
         self.assertEqual(doc["3d"]["model"]["from"], "textured.glb")
-        self.assertEqual(doc["3d"]["game"]["faces"], 5000)
-        self.assertEqual(set(doc["3d"]), {"model", "game", "proxy"})
-        for rel in [doc["concept"], *(p["image"] for p in parts), "2d/sheets/idle.png", "stack/sheet.png", "3d/game.glb"]:
+        self.assertEqual(doc["3d"]["model"]["faces"], 5000)
+        self.assertEqual(set(doc["3d"]), {"model"})
+        for rel in [doc["concept"], *(p["image"] for p in parts), "2d/sheets/idle.png", "stack/sheet.png", "3d/model.glb"]:
             self.assertTrue((out / rel).is_file(), rel)
+        self.assertFalse((out / "3d" / "game.glb").exists())
+        self.assertFalse((out / "3d" / "proxy.glb").exists())
         self.assertIn("export/asset.json", result["files"])
 
     def test_photo_bake_is_the_model_and_psx_is_its_own_role(self) -> None:
@@ -134,10 +137,12 @@ class ExportTest(unittest.TestCase):
         self.stack()
         self.mesh()
         export_asset.build(self.root, "knight")
-        self.assertTrue((self.asset / "export" / "3d" / "proxy.glb").is_file())
-        (self.asset / "mesh_proxy.glb").unlink()
+        write(self.asset / "rigged.glb", b"glTF" + b"\0" * 80)
         export_asset.build(self.root, "knight")
-        self.assertFalse((self.asset / "export" / "3d" / "proxy.glb").exists())
+        self.assertTrue((self.asset / "export" / "3d" / "rigged.glb").is_file())
+        (self.asset / "rigged.glb").unlink()
+        export_asset.build(self.root, "knight")
+        self.assertFalse((self.asset / "export" / "3d" / "rigged.glb").exists())
         self.assertFalse((self.asset / "export.tmp").exists())
 
     def test_nothing_to_export(self) -> None:

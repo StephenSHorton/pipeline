@@ -71,8 +71,9 @@ export const RIG_NAMES: Record<string, string> = {
   avian: "Bird",
 };
 
-/** Plain names for the 3D roles; the PS1 model gets its own card. */
-const ROLE: Record<string, string> = { model: "Full detail", game: "Game detail", proxy: "Collision proxy", pixel: "Pixel", rigged: "Rigged" };
+/** Plain names for the 3D roles; the PS1 model gets its own card. No game / proxy LODs: export no longer writes them
+ * (an older export's asset.json that has them shows the bare role name until it is exported again). */
+const ROLE: Record<string, string> = { model: "Model", pixel: "Pixel", rigged: "Rigged" };
 
 const base = (p: string) => p.split("/").pop() ?? p;
 

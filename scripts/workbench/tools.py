@@ -55,7 +55,8 @@ from workbench import bake, clay, scene  # noqa: E402
 from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 FACINGS = sorted(PSX_FACING)
-LODS = ("psx", "mesh", "hero", "lookdev", "game", "proxy", "mv", "clay")
+# No game / proxy: those LODs are no longer made (reduce.sh cuts only lookdev).
+LODS = ("psx", "mesh", "hero", "lookdev", "mv", "clay")
 VIEWS = ("side", "xside", "front", "back", "top", "bottom", "q")
 STAGES = list(flow.STAGES)
 RENDER_KEEP_S = 600  # a look's folder outlives its answer (the path is in it) by this long

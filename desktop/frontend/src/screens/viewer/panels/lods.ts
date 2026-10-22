@@ -1,12 +1,13 @@
 // The Detail levels panel's pure logic and copy (legacy lods cubby, index.html 2129-2142; lodLabel 4969-4972; the
 // list in load() 5249-5262; fillTurnaround 4274-4296). The panel only lists and switches the LODs lods.json already
-// has: nothing here builds one (that is generate's lods stage, scripts/reduce.sh). LodsPanel.tsx lays these out.
-// No React, no fetch.
+// has: nothing here builds one (that is generate's lods stage, scripts/lods.py). The list is the finished models only
+// (viewableLods: Photo bake, PSX, the app's own saves, plus Rigged), not detail levels: Stephen asked for no hero /
+// lookdev / game / proxy versions. LodsPanel.tsx lays these out. No React, no fetch.
 import type { Lod } from "@/lib/api";
 import { RIGGED } from "@/viewer/candidates";
 
-/** The cubby's hint, word for word (index.html 2136). */
-export const LODS_HINT = "Show another version of the model. PSX is the PS1 low-poly; Hero is the full sculpt; Game is the reduced one.";
+/** The cubby's hint: what each finished model is (legacy named Hero and Game, which are no longer offered). */
+export const LODS_HINT = "Show another finished model. Photo bake is the textured model; PSX is the PS1 low-poly; Rigged has the clips.";
 
 /** The LOD list's aria-label (legacy had a bare div). "Model", as the HUD's old tabs: the region is "Detail levels". */
 export const LODS_LIST_LABEL = "Model";
@@ -17,7 +18,7 @@ export const TURNAROUND_LABEL = "Turnaround";
 /** The fallback figure's caption when views.json lists no views (index.html 4284). */
 export const INPUT_IMAGE = "Input image";
 
-/** A button's text: the label, then the face count with thousands separators ("Game 5,000", "Hero"). Legacy lodLabel. */
+/** A button's text: the label, then the face count with thousands separators ("PSX 1,184", "Photo bake"). Legacy lodLabel. */
 export function lodLabel(item: Pick<Lod, "label" | "faces">): string {
   const faces = item.faces ? ` ${Number(item.faces).toLocaleString()}` : "";
   return `${item.label}${faces}`;
