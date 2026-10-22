@@ -82,7 +82,8 @@ export const POLYS: readonly { id: Poly; label: string; hint: string }[] = [
 /* ---------------------------------------------------------------- 2D sprite steps */
 
 export type Step = "pieces" | "say" | "sound";
-/** The legacy step fields' placeholders (ix:1929-1942). Motion needs a clip, which only the classic view takes. */
+/** The legacy step fields' placeholders (ix:1929-1942). No Motion step at Make: it needs a clip, which the asset's
+ *  2D stage takes (Motion mode); the classic page that took it here is retired. */
 export const STEPS: readonly { id: Step; label: string; placeholder: string }[] = [
   { id: "pieces", label: "Pieces", placeholder: "Name the pieces… (optional)" },
   { id: "say", label: "Say", placeholder: "What it says… (optional)" },

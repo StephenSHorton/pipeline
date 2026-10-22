@@ -1,5 +1,6 @@
-// The PS1/pixel look state, shared with the legacy page: localStorage "pipeline.pixelLook" (pixel-look.js
-// bindPixelLookUi). Only on / pixelSize / lines are used here; the other legacy fields are kept as they are.
+// The PS1/pixel look state: localStorage "pipeline.pixelLook", the key and shape viewer/pixel-look.js
+// bindPixelLookUi uses (so the standalone viewer and the app agree). Only on / pixelSize / lines are used
+// here; the other fields are kept as they are.
 // ?game=0 turns it off for this load, any other ?game= turns it on.
 
 export interface PixelLook {

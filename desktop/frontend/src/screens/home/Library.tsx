@@ -167,7 +167,8 @@ function AssetCard({ asset: a, onDelete }: { asset: Asset; onDelete: () => void 
   const kind = assetKind(a);
   const name = a.title || a.id;
   const shot = a.preview || a.input;
-  // A sprite, Ideas or a drawing never built has no mesh: it opens in the classic view.
+  // Every asset opens in the asset screen; one with no mesh (a sprite, Ideas, a drawing never built) lands on the
+  // stage its flow says is current (openStem → defaultStage), not on 3D.
   const open = () => openAsset(a.id);
 
   return (
@@ -175,7 +176,7 @@ function AssetCard({ asset: a, onDelete }: { asset: Asset; onDelete: () => void 
       <button
         type="button"
         onClick={open}
-        title={a.has_mesh ? "Open" : "Open in the classic view"}
+        title="Open"
         className="flex cursor-pointer flex-col gap-2 rounded-xl border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <div aria-hidden="true" className="flex aspect-[4/3] w-full items-end justify-center overflow-hidden rounded-[11px] bg-clay-sky">

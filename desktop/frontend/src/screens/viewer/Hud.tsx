@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { legacyUrl, renameAsset, type Lod } from "@/lib/api";
+import { renameAsset, type Lod } from "@/lib/api";
 import { degradedLine, displayStem } from "@/lib/jobs";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -121,13 +121,6 @@ function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo
         </p>
       ) : null}
       {summary?.level ? <RigLine summary={summary} /> : null}
-      <a
-        href={legacyUrl(info?.lod === RIGGED ? { asset: stem, lod: RIGGED } : { asset: stem })}
-        className="hit-44 mt-0.5 w-fit rounded-sm text-[length:calc(13.5px*var(--fs))] font-medium text-primary no-underline outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-        title="The articulated pivots live in the classic view for now."
-      >
-        Open in classic view
-      </a>
     </Card>
   );
 }

@@ -16,7 +16,7 @@ Mesh view → **Pixel** in the inspector (or `viewer/?asset=<stem>&game=1`). It 
 | Colors | Posterize to N steps per channel, after tone mapping. Off by default. |
 | Dither | 4×4 ordered dither between those steps, on the game-pixel grid. |
 
-Code: `viewer/pixel-look.js` (copied to `desktop/frontend/public/pixel-look.js`; a test keeps them equal). `viewer/stack-lab.js` makes its own instance for the stack pane. It only changes how a frame is drawn. OrbitControls and the perspective camera still drive the view, and raycasts (carve, paint, stack paint) use the camera the screen shows.
+Code: `viewer/pixel-look.js` (the desktop app's port is `desktop/frontend/src/screens/asset/stack/gameLook.ts`; its test reads this file's shaders). `viewer/stack-lab.js` makes its own instance for the stack pane. It only changes how a frame is drawn. OrbitControls and the perspective camera still drive the view, and raycasts (carve, paint, stack paint) use the camera the screen shows.
 
 ## Where sprite stacks fit
 

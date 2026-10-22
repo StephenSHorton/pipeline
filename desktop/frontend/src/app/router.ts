@@ -1,5 +1,5 @@
 // A tiny query router. No path routes: the Go host owns every path prefix (/out, /assets, /2d, ...) and
-// serves the app only at "/". ?asset=<stem> opens the viewer (same param as the legacy page);
+// serves the app only at "/". ?asset=<stem> opens the asset screen;
 // ?view=library|make focuses a Home section; ?view=settings is Settings. #/asset/<stem> is accepted too and rewritten to the query form.
 import { useSyncExternalStore } from "react";
 
