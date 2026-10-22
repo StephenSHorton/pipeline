@@ -37,6 +37,11 @@ def _grid(blobs, grid: int):
     lo = lo - PAD_CELLS * h
     hi = hi + PAD_CELLS * h
     n = np.ceil((hi - lo) / h).astype(int) + 1
+    if any(b.mirror for b in blobs):
+        # Lattice symmetric about X = 0, so a mirrored clay meshes to a mirrored mesh, not one a cell off.
+        k = int(np.ceil(max(-lo[0], hi[0], 0.0) / h))
+        lo[0] = -k * h
+        n[0] = 2 * k + 1
     return lo, h, n
 
 

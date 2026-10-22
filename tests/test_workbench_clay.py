@@ -54,8 +54,8 @@ class ClayShapeTests(unittest.TestCase):
         mesh = mesher.mesh_clay(blobs, grid=64)
         flipped = np.asarray(mesh.vertices) * [-1, 1, 1]
         gap, _ = cKDTree(mesh.vertices).query(flipped)
-        cell = float(np.ptp(mesh.vertices, axis=0).max()) / 64
-        self.assertLess(float(gap.max()), cell)
+        # The lattice is symmetric about X = 0 when a blob mirrors, so every vertex has an exact twin.
+        self.assertLess(float(gap.max()), 1e-6)
         # Both ears are there: material on either side of X = 0 at ear height.
         ear = np.asarray(mesh.vertices)[:, 1] > 0.35
         self.assertTrue((mesh.vertices[ear, 0] > 0.1).any() and (mesh.vertices[ear, 0] < -0.1).any())
