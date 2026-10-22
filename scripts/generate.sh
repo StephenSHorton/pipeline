@@ -6,6 +6,9 @@
 # photo bake. When the views were drawn from a photo (views.json sheet.reference), that photo bakes over them.
 # --mesh <glb> takes the shape from a mesh made elsewhere (the workbench's clay) instead of hy3d; --paint off
 # unwraps the mesh instead of painting it, so a supplied mesh with --paint off loads no model at all.
+# --fill photo gives every texel the photo: a front-on (or back-on) photo is also mirrored onto the opposite end
+# (--mirror-ends off keeps it to the one end), and scripts/workbench/fill.py paints a swatch of the photo's own
+# subject onto whatever the bake still did not reach. Off by default: a make without it is as before.
 # Anything that falls back prints 'DEGRADED <stage> <code>: <message>' and lands in out/<stem>/degraded.json and
 # inspect.json's "degraded".
 set -euo pipefail
@@ -38,10 +41,12 @@ PSX_UP="y"
 PSX_NAME=""
 MESH_IN=""
 PAINT="on"
+FILL="none"
+MIRROR_ENDS=""
 NO_PICTURE="3D needs a picture. Draw or add one first."
 
 usage() {
-  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N] [--mesh <glb>] [--paint on|off]" >&2
+  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N] [--mesh <glb>] [--paint on|off] [--fill photo|none] [--mirror-ends on|off]" >&2
   echo "       psx: [--facing camera|right|left|away] [--psx-height N] [--psx-faces N] [--psx-atlas N] [--psx-up z|y] [--psx-name name]" >&2
   exit 2
 }
@@ -70,6 +75,8 @@ while [[ $# -gt 0 ]]; do
     --psx-name) PSX_NAME="$2"; shift 2 ;;
     --mesh) MESH_IN="$2"; shift 2 ;;
     --paint) PAINT="$2"; shift 2 ;;
+    --fill) FILL="$2"; shift 2 ;;
+    --mirror-ends) MIRROR_ENDS="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -121,6 +128,19 @@ case "$PAINT" in
 esac
 if [[ "$PAINT" == "off" && "$QUALITY" == "pbr" ]]; then
   echo "generate: --quality pbr needs the PBR paint; --paint off has none" >&2; exit 2
+fi
+case "$FILL" in
+  photo|none) ;;
+  *) echo "generate: unknown --fill $FILL (photo|none)" >&2; exit 2 ;;
+esac
+case "$MIRROR_ENDS" in
+  "") [[ "$FILL" == "photo" ]] && MIRROR_ENDS="on" || MIRROR_ENDS="off" ;;
+  on|off) ;;
+  *) echo "generate: unknown --mirror-ends $MIRROR_ENDS (on|off)" >&2; exit 2 ;;
+esac
+FILL_CLI="$ROOT/scripts/workbench/fill.py"
+if [[ "$FILL" == "photo" && ! -f "$FILL_CLI" ]]; then
+  echo "generate: --fill photo runs scripts/workbench/fill.py, which is missing" >&2; exit 1
 fi
 UNWRAP_CLI="$ROOT/scripts/workbench/unwrap_cli.py"
 if [[ "$PAINT" == "off" && "$QUALITY" == "textured" && ! -f "$UNWRAP_CLI" ]]; then
@@ -356,7 +376,7 @@ done
 
 # A rebuild starts clean: products of the last run must not sit next to a new shape.
 rm -f "$OUT/shape.json" "$OUT/textured.glb" "$OUT/pbr.glb" "$OUT/textured_photo.glb" "$OUT/textured_photo.albedo.png" \
-  "$OUT/textured_photo.fit.json" "$OUT/textured_game.glb" "$OUT/lod_textured_game.json" "$OUT/mesh_quad.glb" \
+  "$OUT/textured_photo.fit.json" "$OUT/textured_photo.cover.png" "$OUT/textured_photo.fill.json" "$OUT/textured_game.glb" "$OUT/lod_textured_game.json" "$OUT/mesh_quad.glb" \
   "$OUT/psx.glb" "$OUT/mesh_mv.glb"
 
 USE_MV=0
@@ -370,6 +390,7 @@ fi
 PLAN="isolate shape reduce"
 if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   PLAN="$PLAN $([[ "$PAINT" == "off" ]] && echo unwrap || echo paint) retexture"
+  [[ "$FILL" == "photo" ]] && PLAN="$PLAN fill"
   [[ "$WANT_PSX" -eq 1 ]] && PLAN="$PLAN psx"
   PLAN="$PLAN lods"
 fi
@@ -731,6 +752,10 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   [[ -n "$PHOTO_VIEW" ]] || VIEW_ARGS+=(--first-facing "$FIRST_FACING")
   OPPOSITE=""
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac
+  # --fill photo: a front-on or back-on picture with no real view of the other end mirrors onto it too.
+  if [[ "$MIRROR_ENDS" == "on" ]]; then
+    case "$FIRST_FACING" in camera) OPPOSITE=back ;; away) OPPOSITE=front ;; esac
+  fi
   if [[ -n "$OPPOSITE" && " ${NAMED[*]} " != *" $OPPOSITE "* ]]; then
     VIEW_ARGS+=(--mirror)
   fi
@@ -741,6 +766,19 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
     [[ -f "$OUT/textured_photo.glb" ]] && FINAL="$OUT/textured_photo.glb"
   else
     degrade retexture failed "the photo bake failed; the painted texture is used as is"
+  fi
+  if [[ "$FILL" == "photo" ]]; then
+    stage fill "Filling what the photo missed"
+    # The picture the bake put first (VIEW_ARGS[1]): the views' photo, else the main cut-out or the canonical view.
+    FILL_PHOTO="${VIEW_ARGS[1]}"
+    if [[ "$FINAL" != "$OUT/textured_photo.glb" ]]; then
+      degrade fill skipped "no photo bake to fill; the texture is used as is"
+    elif "$PYTHON" "$FILL_CLI" "$OUT/textured_photo.glb" -o "$OUT/textured_photo.glb" --photo "$FILL_PHOTO" \
+         --cover "$OUT/textured_photo.cover.png"; then
+      echo "generate: filled the texels the photo missed from $(basename "$FILL_PHOTO")"
+    else
+      degrade fill failed "filling what the photo missed failed; those texels keep the base texture"
+    fi
   fi
 
   if [[ "$WANT_PSX" -eq 1 ]]; then

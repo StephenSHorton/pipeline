@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Bake the photo onto a mesh (retexture.py) and cut it down to a PS1 model (psx_lowpoly.py), as subprocesses.
+"""Bake the photo onto a mesh (retexture.py), fill what it missed (workbench/fill.py) and cut it down to a PS1 model
+(psx_lowpoly.py), as subprocesses.
 
 Both are the pipeline's own stages, run with the factory's python exactly as generate.sh runs them, so a workbench
 bake is the bake an asset would get. They run in a child process because each holds a few hundred MB of samples
@@ -23,6 +24,17 @@ SCRIPTS = Path(__file__).resolve().parents[1]  # the stages run from this checko
 
 class BakeError(RuntimeError):
     pass
+
+
+def end_on(view: Path, facing: str | None) -> bool:
+    """Whether a view looks at one end of the subject (a front or back view): stated, else read from its name the
+    way retexture reads it. Those are the views whose far end --mirror covers with the flipped photo."""
+    if facing:
+        return facing in ("camera", "away")
+    stem = Path(view).stem.lower()
+    if any(w in stem for w in ("handle", "side", "left", "right")):
+        return False
+    return "front" in stem or "back" in stem
 
 
 def _run(root: Path, argv: list[str], env: dict[str, str] | None = None) -> str:
@@ -67,6 +79,20 @@ def retexture(root: Path, glb: Path, out: Path, views: list[Path], first_facing:
             pass
     info["log_tail"] = "\n".join(log.strip().splitlines()[-6:])
     return info
+
+
+def fill(root: Path, glb: Path, photo: Path, out: Path, keep: float | None = None) -> dict:
+    """fill.py glb --photo photo -o out (glb's .cover.png from retexture). Returns its .fill.json report."""
+    argv = [str(SCRIPTS / "workbench" / "fill.py"), str(glb), "-o", str(out), "--photo", str(photo),
+            "--cover", str(glb.with_suffix(".cover.png"))]
+    if keep is not None:
+        argv += ["--keep", str(keep)]
+    _run(root, argv)
+    report = out.with_suffix(".fill.json")
+    try:
+        return json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise BakeError("fill wrote no report") from None
 
 
 def psx(root: Path, glb: Path, out_dir: Path, glb_out: Path, name: str, height: float, facing: str,

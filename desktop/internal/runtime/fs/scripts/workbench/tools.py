@@ -168,6 +168,9 @@ VEC3 = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems":
 FACING = {"type": "string", "enum": FACINGS,
           "description": "where the subject looks in the picture: camera (a front view), right / left (side-on, "
                          "head toward image right / left), away"}
+FILL = {"type": "string", "enum": ["photo", "none"],
+        "description": "photo (default): texels no photo reached get a triplanar swatch of the photo's subject; "
+                       "none: they keep the base texture"}
 BLOB = {
     "type": "object",
     "description": "a clay blob (Clide3D field names). form: {type: Sphere|Ellipsoid|Capsule|Box|Torus|Cylinder, "
@@ -521,12 +524,20 @@ class Workbench:
                             "right/side, which is how retexture reads them")
         pics = [self.cutout(v["path"]) for v in views]
         bench = self.bench(stem)
+        facing = views[0].get("facing")
+        # Every texel from the photo unless asked otherwise: a front-on photo also mirrors onto the far end, and
+        # fill paints the photo's own swatch on whatever still has only the base (Stephen's call on the hay bale).
+        mirror = bool(a.get("mirror")) or (a.get("mirror_ends", True) is not False and bake.end_on(pics[0], facing))
+        filling = (a.get("fill") or "photo") == "photo"
 
         def run() -> dict:
             bench.mkdir(parents=True, exist_ok=True)
             dest = self.numbered(bench, "bake")
-            info = bake.retexture(self.root, glb, dest, pics, views[0].get("facing"), bool(a.get("mirror")),
+            info = bake.retexture(self.root, glb, dest, pics, facing, mirror,
                                   a.get("erode"), a.get("keep"), bool(a.get("first_wins", True)))
+            info["mirror"] = mirror
+            if filling:
+                info["fill"] = bake.fill(self.root, dest, pics[0], dest, a.get("keep"))
             info["glb"] = self.rel(dest)
             return {"stem": stem, "src": self.rel(glb), "views": [self.rel(p) for p in pics], **info}
 
@@ -574,6 +585,12 @@ class Workbench:
             body["mesh"] = self.rel(mesh)
         if "paint" in a:
             body["paint"] = bool(a["paint"])
+        # The workbench fills by default (every texel from the photo); a draft has no bake to fill.
+        fill = a.get("fill") or "photo"
+        if body["quality"] != "draft":
+            body["fill"] = fill
+        if "mirror_ends" in a:
+            body["mirror_ends"] = bool(a["mirror_ends"])
         for key in ("prompt", "poly", "seed", "intent"):
             if a.get(key) not in (None, ""):
                 body[key] = a[key]
@@ -647,12 +664,16 @@ class Workbench:
                        "params": {"type": "object"}}, ("stem", "src", "op")), self.mesh_edit),
             Tool("bake_photo", "Bake photos onto a GLB with UVs (retexture.py) into out/<stem>/workbench/bake_N.glb. "
                  "The first view's facing can be stated; later views are read from their file names. The first "
-                 "view wins where it lands unless first_wins is false.",
+                 "view wins where it lands unless first_wins is false. mirror_ends (default true) also bakes a "
+                 "front-on or back-on first view, flipped, onto the opposite end; mirror does the same for any view "
+                 "(a side-on one onto the far side). fill photo (default) then paints a triplanar swatch of the "
+                 "photo's subject onto every texel no photo reached (workbench/fill.py); none leaves them base.",
                  _obj({"stem": STEM, "glb": GLB,
                        "views": {"type": "array", "minItems": 1, "items": _obj(
                            {"path": {"type": "string"}, "facing": FACING}, ("path",))},
                        "mirror": {"type": "boolean"}, "erode": {"type": "number", "minimum": 0, "maximum": 0.2},
-                       "keep": {"type": "number", "minimum": 0, "maximum": 1}, "first_wins": {"type": "boolean"}},
+                       "keep": {"type": "number", "minimum": 0, "maximum": 1}, "first_wins": {"type": "boolean"},
+                       "fill": FILL, "mirror_ends": {"type": "boolean"}},
                       ("stem", "glb", "views")), self.bake_photo),
             Tool("psx", "Cut a baked GLB down to a PS1 model (psx_lowpoly.py, facing check off): out/<stem>/"
                  "workbench/psx/<name>.obj + .png + psx.json and workbench/psx.glb. height is in .obj units "
@@ -668,9 +689,11 @@ class Workbench:
             Tool("generate", "Factory job: generate.sh through POST /generate. mesh (a .glb under out/<stem>/) is "
                  "used as the shape instead of hy3d's; paint false skips the paint model (unwrap, then the photo "
                  "bake), so a clay asset loads no shape or paint model (quality psx may still ask the vision model for the facing, "
-                 "inside the job). psx: {facing, height, faces, atlas, up, name}. Returns a "
-                 "job_id.",
+                 "inside the job). psx: {facing, height, faces, atlas, up, name}. fill photo (default; not for "
+                 "draft) gives every texel the photo: a front-on photo mirrored onto the far end (mirror_ends, "
+                 "default true) and a swatch of it on the rest. Returns a job_id.",
                  _obj({"stem": STEM, "image": {"type": "string"}, "mesh": GLB, "paint": {"type": "boolean"},
+                       "fill": FILL, "mirror_ends": {"type": "boolean"},
                        "quality": {"type": "string", "enum": ["draft", "textured", "pbr", "stack", "psx"]},
                        "psx": _obj({k: {"type": ["string", "number"]} for k in PSX_KEYS}),
                        "images": {"type": "array", "items": {"type": "string"}},

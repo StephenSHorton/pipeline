@@ -219,6 +219,8 @@ def generate_argv(
     degraded: list[dict[str, str]] | None = None,
     mesh: Path | None = None,
     paint: bool = True,
+    fill: str | None = None,
+    mirror_ends: bool | None = None,
 ) -> list[str]:
     cmd = [
         str(generate_script(root)),
@@ -249,6 +251,12 @@ def generate_argv(
         cmd += ["--mesh", str(mesh)]
     if not paint:
         cmd += ["--paint", "off"]
+    # Every texel from the photo (mirrored onto the far end, the rest filled from its swatch). Only when asked, so a
+    # plain make's argv is as it was; mirror_ends only when stated (generate.sh's default follows fill).
+    if fill == "photo":
+        cmd += ["--fill", "photo"]
+    if mirror_ends is not None:
+        cmd += ["--mirror-ends", "on" if mirror_ends else "off"]
     # --quality psx options: facing, height, faces, atlas, up, name.
     for key, value in (psx or {}).items():
         if value not in (None, ""):
