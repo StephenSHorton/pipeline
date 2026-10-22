@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { Route } from "@/app/router";
 import { useJobs } from "@/lib/jobs";
+import { cn } from "@/lib/utils";
 import { JobCard } from "./JobCard";
 import { Library, useAssets } from "./Library";
 import { MakePanel } from "./MakePanel";
@@ -41,7 +42,8 @@ export function HomeScreen({ section }: { section?: Extract<Route, { name: "home
   return (
     <div ref={scroller} className="absolute inset-0 overflow-x-hidden overflow-y-auto bg-background text-ink">
       {centred ? null : <Ground top={262} />}
-      <div className="relative flex min-h-full flex-col items-center px-4 pt-[clamp(2rem,8vh,4.5rem)] pb-12">
+      {/* Centred: overflow-y-clip, so the ground's tail under the card never makes the page scroll. */}
+      <div className={cn("relative flex min-h-full flex-col items-center px-4 pt-[clamp(2rem,8vh,4.5rem)] pb-12", centred && "overflow-y-clip")}>
         {showJob ? (
           <section aria-label="Job" className="w-full max-w-[38rem]">
             <JobCard job={job!} />
