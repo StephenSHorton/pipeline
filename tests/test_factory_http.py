@@ -223,6 +223,15 @@ class FactoryEnvTests(unittest.TestCase):
         plain = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium")
         self.assertNotIn("--mesh", plain)
         self.assertNotIn("--paint", plain)
+        # fill: only "photo" reaches generate.sh; mirror_ends only when stated.
+        self.assertNotIn("--fill", plain)
+        self.assertNotIn("--mirror-ends", plain)
+        none = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium", fill="none")
+        self.assertEqual(none, plain)
+        filled = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium",
+                                           fill="photo", mirror_ends=False)
+        self.assertEqual(filled[filled.index("--fill") + 1], "photo")
+        self.assertEqual(filled[filled.index("--mirror-ends") + 1], "off")
 
     def test_inspect_glb_function_on_triangle(self) -> None:
         import tempfile
@@ -990,6 +999,43 @@ class FactoryHttpTests(unittest.TestCase):
         self.assertIs(seen["paint"], True)
         seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "q", "paint": "false"})
         self.assertIs(seen["paint"], False)
+
+    def test_generate_takes_fill_and_mirror_ends(self) -> None:
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "quality": "textured",
+                                        "fill": "photo"})
+        self.assertEqual(seen["fill"], "photo")
+        self.assertIsNone(seen["mirror_ends"])
+        self.assertEqual(last.get("fill"), "photo")
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "fill": "photo",
+                                     "mirror_ends": "off"})
+        self.assertIs(seen["mirror_ends"], False)
+        # Absent or "none": as before.
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f"})
+        self.assertEqual(seen["fill"], "none")
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "fill": "none"})
+        self.assertEqual(seen["fill"], "none")
+
+    def test_generate_refuses_a_bad_fill(self) -> None:
+        for body, word in (
+            ({"fill": "swatch"}, "fill"),
+            ({"fill": ["photo"]}, "fill"),
+            ({"fill": "photo", "quality": "draft"}, "draft"),
+            ({"fill": "photo", "mirror_ends": "maybe"}, "mirror_ends"),
+            ({"fill": "photo", "mirror_ends": 1}, "mirror_ends"),
+        ):
+            with self.subTest(body=body):
+                status, payload = http_json(self.base + "/generate", method="POST",
+                                            data={"image": "in/radio-concept.jpg", "stem": "f", **body})
+                self.assertEqual(status, 400, payload)
+                self.assertIn(word, payload.get("error") or "")
+        _, idle = http_json(self.base + "/status")
+        self.assertEqual(idle.get("state"), "idle")
+
+    def test_fill_is_a_labelled_stage(self) -> None:
+        prog = factory_http.parse_progress("STAGES isolate shape reduce unwrap retexture fill lods inspect\n"
+                                           "STAGE fill x\n")
+        self.assertEqual(prog["stages"][5], {"key": "fill", "label": "Fill what the photo missed"})
+        self.assertEqual(prog["stage_index"], 5)
 
     def test_generate_refuses_a_mesh_outside_the_asset(self) -> None:
         write_triangle_glb(self.root / "in" / "loose.glb")

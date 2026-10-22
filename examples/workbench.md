@@ -70,10 +70,10 @@ Paths are relative to the repo root, and nothing outside it is read.
 | `clay_edit` | `stem`, `name`, `patch` | Changes one blob. `form` merges unless its type changes, and so does `noise` (`noise: null` or `amp: 0` turns it off). `name` renames the blob, and `{remove: true}` deletes it. |
 | `clay_mesh` | `stem`, `grid?`, `height?`, `texture?` | Writes `workbench/clay.glb` with UVs and the blob colours. |
 | `mesh_edit` | `stem`, `src`, `op`, `params?` | Writes `workbench/edit_N.glb`. Ops: `remove_floaters` (`keep`, `min_faces`) and `delete_sphere` (`center`, `radius`). |
-| `bake_photo` | `stem`, `glb`, `views`, `mirror?`, `erode?`, `keep?`, `first_wins?` | Runs `retexture.py` and writes `workbench/bake_N.glb`. You can state the facing of the first view only; later views are read from their file names. Every view must be a cutout with a transparent background, such as `lifted.png` or `views/lifted/*.png`: an opaque photo is refused, because its background would be baked onto the model. |
+| `bake_photo` | `stem`, `glb`, `views`, `mirror?`, `erode?`, `keep?`, `first_wins?`, `fill?`, `mirror_ends?` | Runs `retexture.py` and writes `workbench/bake_N.glb`. By default every texel gets the photo: with `mirror_ends` (default true) a front-on or back-on first view is also baked, flipped, onto the opposite end, and with `fill: "photo"` (default) `workbench/fill.py` paints a triplanar swatch of the photo's subject on whatever the bake still missed. `fill: "none"` leaves those texels as the base texture. You can state the facing of the first view only; later views are read from their file names. Every view must be a cutout with a transparent background, such as `lifted.png` or `views/lifted/*.png`: an opaque photo is refused, because its background would be baked onto the model. |
 | `psx` | `stem`, `glb`, `height`, `facing`, `faces?`, `atlas?`, `name?` | Runs `psx_lowpoly.py` with its facing check off. Writes `workbench/psx/` and `workbench/psx.glb`. `height` is in .obj units (s&box inches). |
 | `draw_views` | `stem`, `image`, `prompt`, `intent?` | Factory job (draw model): four turnaround views drawn with the photo as a reference. |
-| `generate` | `image`, `stem?`, `mesh?`, `paint?`, `quality?`, `psx?`, ... | Factory job: runs `generate.sh`. With `mesh` it uses that GLB as the shape instead of hy3d's. With `paint: false` it unwraps and bakes the photo, so a clay asset loads no model. |
+| `generate` | `image`, `stem?`, `mesh?`, `paint?`, `fill?`, `mirror_ends?`, `quality?`, `psx?`, ... | Factory job: runs `generate.sh`. With `mesh` it uses that GLB as the shape instead of hy3d's. With `paint: false` it unwraps and bakes the photo, so a clay asset loads no model. `fill` defaults to `"photo"` here (`generate.sh --fill photo`): the photo is mirrored onto the far end and a swatch of it fills the rest. |
 | `job_status`, `cancel`, `pick_take` | `job_id?`, `job_id`, `stem` + `stage` + `take` | Poll or stop the factory's job, or pick a take. |
 
 `lod` picks which model a `stem` means:
@@ -108,6 +108,9 @@ rounded box. Through the workbench only:
 4. **Bake the photo on with the pipeline:** `generate` with
    `{"stem": "mlg-hay_bale_v2", "image": "in/mlg/hay_bale.jpg", "mesh": "out/mlg-hay_bale_v2/workbench/clay.glb",
    "paint": false, "quality": "textured"}`. No model loads. Poll `job_status` until it is done.
+   - The workbench sends `fill: "photo"`: the photo of the round end is mirrored onto the other end and a swatch
+     of its straw covers the rolled side. Without it (the first remake) everything the photo did not see stayed
+     flat clay tan.
    - Use `quality: "textured"` plus the `psx` tool rather than `quality: "psx"`, because generate.sh's own PS1 step
      runs the facing check, and that check asks ollama.
 5. **Make the PS1 model:** `psx` with

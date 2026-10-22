@@ -258,6 +258,42 @@ class ToolTests(Base):
             self.assertIn("lifted.png", res["content"][0]["text"])
         self.assertEqual(self.factory.calls, [])
 
+    def test_bake_photo_mirrors_the_ends_and_fills_by_default(self) -> None:
+        # A drum lying along z with a plain tan atlas, and a head-on photo of its round end: by default the far end
+        # gets the photo flipped (mirror_ends) and the barrel a swatch of it (fill), so no texel stays tan.
+        from PIL import Image
+
+        from workbench import mesher
+
+        drum = trimesh.creation.cylinder(radius=0.5, height=0.6, sections=24)
+        vmap, faces, uvs = mesher.unwrap(drum.vertices, drum.faces, 256)
+        mesh = trimesh.Trimesh(np.asarray(drum.vertices)[vmap], faces, process=False)
+        mat = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (256, 256), (200, 160, 80)))
+        mesh.visual = trimesh.visual.TextureVisuals(uv=uvs, material=mat)
+        glb = self.asset("bale", mesh, "textured.glb")
+        rng = np.random.default_rng(0)
+        a = np.zeros((128, 128, 4), np.uint8)
+        yy, xx = np.mgrid[:128, :128]
+        a[..., :3] = np.clip(rng.normal((120, 150, 60), 25, (128, 128, 3)), 0, 255).astype(np.uint8)
+        a[..., 3] = np.where((yy - 64) ** 2 + (xx - 64) ** 2 <= 54 ** 2, 255, 0)
+        Image.fromarray(a, "RGBA").save(self.root / "out" / "bale" / "lifted.png")
+        view = [{"path": "out/bale/lifted.png", "facing": "camera"}]
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view})
+        self.assertTrue(out["mirror"])
+        self.assertEqual(out["fill"]["covered_after"], 1.0)
+        self.assertLess(out["fill"]["covered_before"], 1.0)
+        baked = trimesh.load(self.root / out["glb"], force="mesh").visual.material.baseColorTexture
+        self.assertEqual(int((np.asarray(baked.convert("RGB")) == (200, 160, 80)).all(-1).sum()), 0)
+        # fill none and mirror_ends false: the plain bake, as before.
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view, "fill": "none",
+                                        "mirror_ends": False})
+        self.assertFalse(out["mirror"])
+        self.assertNotIn("fill", out)
+        # A side-on first view is not end-on: mirror_ends leaves it alone.
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "fill": "none",
+                                        "views": [{"path": "out/bale/lifted.png", "facing": "right"}]})
+        self.assertFalse(out["mirror"])
+
     def test_old_render_folders_are_removed(self) -> None:
         glb = self.asset("synth", quadruped())
         first, _ = self.ok("look", {"glb": glb, "views": ["side"], "size": 64})
@@ -280,8 +316,15 @@ class ToolTests(Base):
         method, path, body = self.factory.calls[-1]
         self.assertEqual((method, path), ("POST", "/generate"))
         self.assertEqual(body, {"image": "out/bale/photo.png", "quality": "textured", "stem": "bale",
-                                "mesh": "out/bale/workbench/clay.glb", "paint": False, "facing": "right",
-                                "psx_height": "40"})
+                                "mesh": "out/bale/workbench/clay.glb", "paint": False, "fill": "photo",
+                                "facing": "right", "psx_height": "40"})
+        # The workbench fills by default; fill none and mirror_ends pass through, and a draft (no bake) sends no fill.
+        self.ok("generate", {"image": "out/bale/photo.png", "fill": "none", "mirror_ends": False})
+        body = self.factory.calls[-1][2]
+        self.assertEqual((body["fill"], body["mirror_ends"]), ("none", False))
+        self.ok("generate", {"image": "out/bale/photo.png", "quality": "draft"})
+        self.assertNotIn("fill", self.factory.calls[-1][2])
+        self.assertTrue(self.call("generate", {"image": "out/bale/photo.png", "fill": "swatch"})["isError"])
         res = self.call("generate", {"image": "out/bale/photo.png", "psx": {"facing": "up"}})
         self.assertTrue(res["isError"])
 

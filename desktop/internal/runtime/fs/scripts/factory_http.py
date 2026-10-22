@@ -205,6 +205,7 @@ STAGE_LABELS = {
     "paint": "Paint the texture",
     "unwrap": "Unwrap the mesh",
     "retexture": "Bake the photo on",
+    "fill": "Fill what the photo missed",
     "psx": "PS1 low-poly",
     "lods": "Detail levels",
     "inspect": "Check the model",
@@ -895,10 +896,14 @@ class Factory:
         intent: dict[str, Any] | None = None,
         mesh: str | None = None,
         paint: bool = True,
+        fill: str | None = None,
+        mirror_ends: bool | None = None,
     ) -> dict[str, Any]:
         """mesh: a .glb under out/<stem>/ that generate.sh takes as the shape instead of hy3d's (the stem is that
         folder's when none is given). paint False: no paint model, the mesh is unwrapped and only the photo bakes.
-        The picture is required either way: isolate, the orientation check and the bake read it."""
+        The picture is required either way: isolate, the orientation check and the bake read it.
+        fill "photo": every texel from the photo (generate.sh --fill photo); "none" or absent: as before.
+        mirror_ends: mirror a front-on photo onto the far end too (generate.sh's default: on with fill photo)."""
         # Everything is checked before the job slot is taken: a refused request leaves /status idle.
         quality = str(quality or "stack")
         if quality not in QUALITIES:
@@ -907,6 +912,13 @@ class Factory:
             raise ValueError("paint must be true or false")
         if not paint and quality == "pbr":
             raise ValueError("quality pbr needs the paint; paint false has none")
+        fill = None if fill in (None, "") else fill
+        if fill not in (None, "photo", "none"):
+            raise ValueError("fill must be photo or none")
+        if fill == "photo" and quality == "draft":
+            raise ValueError("fill photo needs a photo bake; quality draft has none")
+        if mirror_ends is not None and not isinstance(mirror_ends, bool):
+            raise ValueError("mirror_ends must be true or false")
         poly_in = str(poly or "medium")
         poly = normalize_poly(poly_in)
         # No 3D without a picture: the main image, every ref and every view must be one.
@@ -956,6 +968,8 @@ class Factory:
             "degraded": degraded,
             "mesh": str(mesh_path) if mesh_path else None,
             "paint": paint,
+            "fill": fill or "none",
+            "mirror_ends": mirror_ends,
             "log": str(stem_dir(self.root, stem) / "generate.log"),
             "started": time.time(),
             "glb_path": None,
@@ -1288,6 +1302,8 @@ class Factory:
             degraded=list(spec.get("degraded") or []),
             mesh=Path(spec["mesh"]) if spec.get("mesh") else None,
             paint=spec.get("paint", True) is not False,
+            fill=spec.get("fill"),
+            mirror_ends=spec.get("mirror_ends"),
         )
         spec["argv"] = argv
         with self._lock:
@@ -1847,6 +1863,10 @@ def _dispatch(
             elif isinstance(paint, str):  # from the query string
                 paint = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(
                     paint.strip().lower(), paint)
+            mirror_ends = payload.get("mirror_ends")
+            if isinstance(mirror_ends, str):  # from the query string
+                mirror_ends = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(
+                    mirror_ends.strip().lower(), mirror_ends)
             mesh = payload.get("mesh")
             if mesh not in (None, "") and not isinstance(mesh, str):
                 raise ValueError("mesh must be a path to a .glb under out/<stem>/")
@@ -1862,6 +1882,8 @@ def _dispatch(
                 intent=payload.get("intent") if isinstance(payload.get("intent"), dict) else None,
                 mesh=mesh or None,
                 paint=paint,
+                fill=payload.get("fill"),
+                mirror_ends=mirror_ends,
             )
             return _json_bytes(result, 202)
         except FileNotFoundError as e:

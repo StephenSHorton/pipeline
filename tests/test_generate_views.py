@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """generate.sh with stub binaries: the no-picture guard, turnaround views, the shape fallbacks and loud degradation,
-a supplied mesh (--mesh), no paint (--paint off) and the views' photo baking over the drawn views.
+a supplied mesh (--mesh), no paint (--paint off), the views' photo baking over the drawn views and --fill photo.
 
 Each test builds a throwaway root (scripts copied from the repo, stub hy3d / lift-subject / shape_mv.sh) so
 generate.sh runs end to end in seconds without a model.
@@ -79,6 +79,15 @@ uv = np.random.default_rng(0).random((len(mesh.vertices), 2))
 mat = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (size, size), (128, 128, 128)))
 mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
 mesh.export(args[args.index("-o") + 1])
+'''
+
+# scripts/workbench/fill.py <glb> -o <out> --photo <png> --cover <png>: records its argv (FILL_FAIL: exits 1).
+FILL_STUB = r'''
+import json, os, sys
+from pathlib import Path
+root = Path(__file__).resolve().parents[2]
+(root / "fill.args.json").write_text(json.dumps(sys.argv[1:]))
+sys.exit(1 if os.environ.get("FILL_FAIL") else 0)
 '''
 
 SHAPE_MV_OK = r'''#!/usr/bin/env bash
@@ -487,6 +496,71 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual(unwrap[1:], ["-o", str(self.out("textured.glb")), "--texture", "1024"])
         self.assertEqual(self.retexture_args()[0], str(self.out("textured.glb")))
         self.assertTrue(self.out("psx.glb").is_file())
+
+    # --- --fill photo: every texel from the photo -----------------------------------------------------------
+
+    def stages(self, proc) -> list[str]:
+        return next(ln for ln in proc.stdout.splitlines() if ln.startswith("STAGES ")).split()[1:]
+
+    def test_default_argv_is_unchanged_and_nothing_fills(self) -> None:
+        (self.root / "scripts" / "workbench").mkdir()
+        self.stub("scripts/workbench/fill.py", FILL_STUB, exe=False)
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.retexture_args(), [str(self.out("textured.glb")), "-o", str(self.out("textured_photo.glb")),
+                                                 "--view", str(self.out("lifted.png")), "--first-facing", "camera"])
+        self.assertNotIn("fill", self.stages(proc))
+        self.assertFalse((self.root / "fill.args.json").exists())
+
+    def test_fill_photo_mirrors_the_far_end_and_fills_after_the_bake(self) -> None:
+        (self.root / "scripts" / "workbench").mkdir()
+        self.stub("scripts/workbench/fill.py", FILL_STUB, exe=False)
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        stages = self.stages(proc)
+        self.assertEqual(stages[stages.index("retexture") + 1], "fill")
+        self.assertLess(stages.index("fill"), stages.index("lods"))
+        args = self.retexture_args()
+        self.assertEqual(args[args.index("--first-facing") + 1], "camera")
+        self.assertIn("--mirror", args)
+        self.assertIn("(mirror: on)", proc.stdout)
+        fill_args = json.loads((self.root / "fill.args.json").read_text())
+        glb = str(self.out("textured_photo.glb"))
+        self.assertEqual(fill_args, [glb, "-o", glb, "--photo", str(self.out("lifted.png")),
+                                     "--cover", str(self.out("textured_photo.cover.png"))])
+        self.assertFalse([ln for ln in self.degraded_lines(proc) if "fill" in ln])
+        # Facing away mirrors onto the front the same way; --mirror-ends off keeps the photo to its end but fills.
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo", "--facing", "away")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("--mirror", self.retexture_args())
+        (self.root / "fill.args.json").unlink()
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo",
+                            "--mirror-ends", "off")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("--mirror", self.retexture_args())
+        self.assertTrue((self.root / "fill.args.json").exists())
+        # A side-on photo still mirrors as before (its far side), and fills.
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo", "--facing", "left")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("--mirror", self.retexture_args())
+
+    def test_a_failed_fill_is_degraded_not_fatal(self) -> None:
+        (self.root / "scripts" / "workbench").mkdir()
+        self.stub("scripts/workbench/fill.py", FILL_STUB, exe=False)
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo",
+                            env={"FILL_FAIL": "1"})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("DEGRADED fill failed", [ln.split(":")[0] for ln in self.degraded_lines(proc)])
+        self.assertIn("GENERATE_RESULT " + str(self.out("textured_photo.glb")), proc.stdout)
+
+    def test_fill_and_mirror_ends_are_checked(self) -> None:
+        for args, code, word in ((("--fill", "swatch"), 2, "--fill"), (("--mirror-ends", "maybe"), 2, "--mirror-ends"),
+                                 (("--fill", "photo"), 1, "fill.py, which is missing")):
+            with self.subTest(args=args):
+                proc = self.run_gen("--image", str(self.image), "--quality", "textured", *args)
+                self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+                self.assertIn(word, proc.stderr)
+                self.assertFalse(self.out().exists())
 
     def test_paint_off_needs_the_unwrap_cli_and_no_pbr(self) -> None:
         proc = self.run_gen("--image", str(self.image), "--paint", "off", "--quality", "textured")

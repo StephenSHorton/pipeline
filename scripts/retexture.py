@@ -4,8 +4,11 @@
 Hunyuan/AniGen paint is a hallucination in a fragmented atlas. This pass overwrites
 texels the camera actually saw with the input photo. Occluded texels keep the
 generated atlas. Multiple --view images (front/back/top) stack. --mirror also bakes a side-on
-photo, flipped, onto the far side. --first-wins puts the first --view (a real photo) over the
+photo, flipped, onto the far side, and a front-on (or back-on) one onto the opposite end. --first-wins puts the first --view (a real photo) over the
 others instead of averaging it in: the rest (drawn views) fill only where it did not reach.
+
+Next to the albedo it writes <out>.cover.png: each texel's photo confidence (splat weight, mirror included, clipped
+to 1) as 0..255, so a later pass (workbench/fill.py) knows which texels no photo reached (below --keep * 255).
 """
 from __future__ import annotations
 
@@ -287,6 +290,18 @@ def photo_offset(photo, named: list[tuple[str, float]]) -> tuple[float, str]:
     return best[1], best[2]
 
 
+def mirror_az(az: float, off: float | None) -> float:
+    """Azimuth of the camera reflected through the mid-plane that --mirror bakes across (elevation and radius stay).
+
+    Side-on (offset +-90): the glTF z mid-plane, the sagittal plane of a subject standing along x. Otherwise the
+    axis-aligned vertical mid-plane most across the line of sight: z when the camera looks mostly along z (az near
+    0 or 180), else x. Reflecting through z maps az to 180 - az, through x to -az."""
+    if off is not None and abs(off) == 90.0:
+        return (180.0 - az) % 360
+    a = np.deg2rad(az)
+    return (180.0 - az) % 360 if abs(np.cos(a)) >= abs(np.sin(a)) else (-az) % 360
+
+
 def view_offset(stem: str) -> float | None:
     if "front" in stem:
         return FACING_OFFSET["camera"]
@@ -309,7 +324,9 @@ def main() -> int:
     ap.add_argument("--samples", type=int, default=280_000)
     ap.add_argument("--keep", type=float, default=0.18, help="leave generated albedo where photo confidence is below this")
     ap.add_argument("--mirror", action="store_true",
-                    help="side-on photo: also bake it flipped onto the far side (through the glTF z mid-plane)")
+                    help="also bake each photo flipped onto the side it cannot see: a side-on one onto the far "
+                         "side (through the glTF z mid-plane), a front-on or back-on one onto the opposite end "
+                         "(through the mid-plane across the camera's forward axis)")
     ap.add_argument("--erode", type=float, default=0.0,
                     help="pull the bake mask in by this fraction of the photo's longer side (drops cutout halos)")
     ap.add_argument("--first-facing", choices=sorted(FACING_OFFSET), default=None,
@@ -414,7 +431,9 @@ def main() -> int:
         if args.mirror:
             # Side-on photo of a near-symmetric subject: the far side is the near side reflected through the
             # sagittal plane (glTF z = centre), so the reflected camera sees it as the photo flipped left-right.
-            meye = eye_on_sphere(center, rad, (180.0 - az) % 360, el)
+            # A front-on or back-on photo: the far END is the near one reflected through the mid-plane across the
+            # line of sight (a bale's two round ends, a crate's front and back), the same flipped photo.
+            meye = eye_on_sphere(center, rad, mirror_az(az, off), el)
             splat(pts, nrm, uv_pts, meye, center, rgb[:, ::-1].copy(), alpha_fit[:, ::-1].copy(),
                   alpha_bake[:, ::-1].copy(),
                   accum_m, weight_m, Path(view).name + " (mirrored)")
@@ -430,11 +449,15 @@ def main() -> int:
         hit |= hit_t
 
     locked = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+    # Confidence the photo (or its mirror) reached each texel: what fill.py reads to find the texels left as base.
+    cover = np.maximum(np.maximum(weight, weight_m), weight_t)
     vis.material.baseColorTexture = locked
     vis.material.image = locked
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     sidecar = Path(args.out).with_suffix(".albedo.png")
     locked.save(sidecar)
+    Image.fromarray(np.rint(np.clip(cover, 0.0, 1.0) * 255.0).astype(np.uint8), "L").save(
+        Path(args.out).with_suffix(".cover.png"))
     Path(args.out).with_suffix(".fit.json").write_text(json.dumps(reports, indent=2) + "\n")
     # The GLB last, under a hidden name and renamed into place: whoever reads it (generate.sh --mesh, a take) gets
     # the old file or the whole new one, and its sidecars are already there.
@@ -442,6 +465,8 @@ def main() -> int:
     mesh.export(tmp, file_type=Path(args.out).suffix.lstrip(".").lower() or "glb")
     os.replace(tmp, args.out)
     print(f"retexture: wrote {args.out}  covered {hit.mean()*100:.1f}% of atlas")
+    if args.mirror:
+        print(f"retexture: with the mirror {(cover > args.keep).mean()*100:.1f}% of atlas")
     return 0
 
 
