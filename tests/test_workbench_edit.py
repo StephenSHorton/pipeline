@@ -54,6 +54,40 @@ def quadruped() -> tuple[trimesh.Trimesh, dict]:
     return trimesh.util.concatenate([m for _, m in parts]), ranges
 
 
+def biped(gap: float) -> tuple[trimesh.Trimesh, list[np.ndarray]]:
+    """A round body on two legs along z, gap apart (surface to surface), head at +x. Returns the legs' indices."""
+    body = trimesh.creation.icosphere(subdivisions=4)
+    body.apply_scale([0.5, 0.4, 0.35])
+    body.apply_translation([0, 0.9, 0])
+    head = trimesh.creation.icosphere(subdivisions=3, radius=0.15).apply_translation([0.5, 1.35, 0])
+    zc = LEG_R + gap / 2
+    legs = [tube(0, -zc), tube(0, zc)]
+    off = len(body.vertices) + len(head.vertices)
+    idx = [np.arange(off + i * len(legs[0].vertices), off + (i + 1) * len(legs[0].vertices)) for i in range(2)]
+    return trimesh.util.concatenate([body, head] + legs), idx
+
+
+def with_tail(length: float, y: float = 0.85) -> trimesh.Trimesh:
+    """The quadruped with a level tail of this length at the rump (-z), at the height of the body's middle."""
+    mesh, _ = quadruped()
+    tail = trimesh.creation.cylinder(radius=0.05, height=length)  # along z already
+    tail.apply_translation([0, y, -0.98 - length / 2])
+    return trimesh.util.concatenate([mesh, tail])
+
+
+def headless() -> dict[str, trimesh.Trimesh]:
+    """Shapes with no head: an upright cylinder, a ball, a box on four wheels (wheel axes along z)."""
+    cyl = trimesh.creation.cylinder(radius=0.6, height=1.0, sections=48).apply_translation([0, 0, 0.5])
+    cyl.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0]))  # axis up (y)
+    ball = trimesh.creation.icosphere(subdivisions=4, radius=0.5).apply_translation([0, 0.5, 0])
+    parts = [trimesh.creation.box([2.0, 0.6, 1.0]).apply_translation([0, 0.7, 0])]
+    for x in (-0.7, 0.7):
+        for z in (-0.6, 0.6):
+            w = trimesh.creation.cylinder(radius=0.35, height=0.2, sections=32).apply_translation([x, 0.35, z])
+            parts.append(w)
+    return {"upright cylinder": cyl, "ball": ball, "box on wheels": trimesh.util.concatenate(parts)}
+
+
 class ThickenTests(unittest.TestCase):
     def test_doubles_leg_width_keeps_body_and_feet(self) -> None:
         mesh, idx = quadruped()
@@ -91,6 +125,34 @@ class ThickenTests(unittest.TestCase):
     def test_no_legs(self) -> None:
         with self.assertRaises(edit.EditError):
             edit.thicken_legs(trimesh.creation.box([1, 1, 2]), 1.5)
+
+    def test_close_legs_each_about_its_own_centre(self) -> None:
+        """Legs nearly touching (or touching) make one footprint blob; it is split at the waist, so each leg
+        thickens about its own centre instead of the pair splaying apart about their middle."""
+        for gap in (0.0, 0.005, 0.02, 0.05):
+            mesh, legs = biped(gap)
+            V = np.asarray(mesh.vertices)
+            out, info = edit.thicken_legs(mesh, 2.0)
+            self.assertEqual(info["legs_found"], 2, gap)
+            zc = LEG_R + gap / 2
+            for leg in legs:
+                low = leg[V[leg, 1] < 0.15]
+                before, after = np.median(V[low, 2]), np.median(out[low, 2])
+                self.assertAlmostEqual(abs(before), zc, delta=1e-6)
+                self.assertLess(abs(after - before) / zc, 0.06, gap)  # the centre stays put
+                self.assertAlmostEqual(np.ptp(out[low, 2]) / np.ptp(V[low, 2]), 2.0, delta=0.1)
+
+    def test_one_part_on_the_floor_refused(self) -> None:
+        """A ball on the floor has one 'leg' (its bottom): refused, nothing moves."""
+        ball = trimesh.creation.icosphere(subdivisions=4, radius=0.5).apply_translation([0, 0.5, 0])
+        V = np.asarray(ball.vertices).copy()
+        with self.assertRaisesRegex(edit.EditError, "found 1 leg-like part"):
+            edit.thicken_legs(ball, 1.5)
+        with self.assertRaisesRegex(edit.EditError, "found 1 leg-like part; give top"):
+            edit.shorten_legs(ball, 0.7)
+        np.testing.assert_array_equal(ball.vertices, V)
+        out, info = edit.shorten_legs(ball, 0.7, top=0.2)  # a given top is the caller's call
+        self.assertEqual(info["top_from"], "given")
 
 
 class ShortenTests(unittest.TestCase):
@@ -159,6 +221,33 @@ class WidenTests(unittest.TestCase):
         self.assertEqual(info["start_from"], "given")
         with self.assertRaises(edit.EditError):
             edit.widen_head(flipped, 1.2, head="up")
+
+    def test_level_tail_is_not_the_head(self) -> None:
+        """A tail sticks out past the hind legs further than the head past the front ones, but it is thin and sits
+        at the body's mid-height; the head rises above it."""
+        for length in (0.3, 0.5, 0.7):
+            for y in (0.75, 0.85):
+                _, info = edit.widen_head(with_tail(length, y), 1.3)
+                self.assertEqual(info["head"], "+z", (length, y))
+                self.assertGreater(info["start"], 0.6)
+            flipped = with_tail(length)
+            flipped.vertices = np.asarray(flipped.vertices) * [1, 1, -1]
+            self.assertEqual(edit.widen_head(flipped, 1.3)[1]["head"], "-z")
+
+    def test_headless_shapes_refused(self) -> None:
+        for name, mesh in headless().items():
+            V = np.asarray(mesh.vertices).copy()
+            with self.assertRaises(edit.EditError, msg=name):
+                edit.widen_head(mesh, 1.3)
+            np.testing.assert_array_equal(mesh.vertices, V)
+            # Given both, the caller decides: it runs.
+            head = "+x" if np.ptp(V[:, 0]) >= np.ptp(V[:, 2]) else "+z"
+            out, info = edit.widen_head(mesh, 1.3, head=head, start=0.7)
+            self.assertEqual((info["head_from"], info["start_from"]), ("given", "given"))
+            self.assertGreater(info["head_width_after"], info["head_width_before"])
+        # A barrel has no neck: a given head end alone still needs a start.
+        with self.assertRaisesRegex(edit.EditError, "no neck"):
+            edit.widen_head(headless()["box on wheels"], 1.3, head="+x")
 
 
 class TextureTests(unittest.TestCase):

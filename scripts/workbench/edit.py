@@ -11,12 +11,15 @@ shape when they are not given:
 - leg band: horizontal cross-sections of the surface, filled; the legs are a few small discs, the belly a big one.
   The band runs from the floor to the lowest height whose section reaches BODY_SHARE of the widest section.
 - legs: the band's footprint in xz, rasterised and labelled; the sub-band with the most separate blobs that come
-  down near the floor gives the seeds (legs that touch at the hooves usually part higher up, or the other way round). Every band vertex then goes
-  to the leg whose centre line (per-height centroid, smoothed) is nearest.
-- head end: the end that sticks out further past the outermost legs (a head and neck overhang the front legs; the
-  rump barely passes the hind ones); with no legs found, the end with the narrower section.
+  down near the floor gives the seeds (legs that touch at the hooves usually part higher up, or the other way round).
+  A blob that pinches in the middle (two legs pressed together) is split at the waist; one too long for a leg that
+  does not pinch is refused. Fewer than two legs is refused too. Every band vertex then goes to the leg whose centre
+  line (per-height centroid, smoothed) is nearest.
+- head end: an end whose tip stands above the body's mid-height and is not thin (a tail is low, or thin, or both);
+  with two such ends, the one that sticks out further past the outermost legs (a head and neck overhang the front
+  legs; the rump barely passes the hind ones). Otherwise refused: give head.
 - head start: walking from the middle of the body toward the head, the first section narrower than NECK_SHARE of the
-  body's width, measured above the leg band.
+  body's width, measured above the leg band; refused (give start) when the end never narrows below NARROW_SHARE.
 """
 from __future__ import annotations
 
@@ -26,7 +29,17 @@ from scipy import ndimage
 
 BODY_SHARE = 0.2  # a section this share of the widest one is body, not legs
 NECK_SHARE = 0.8  # a section this share of the body's width is where the neck begins
-FOOT_SHARE = 0.35  # a leg comes down within this share of the band from the floor (a raised hoof too)
+WAIST_SHARE = 0.55  # a blob whose middle is narrower than this share of both sides is two legs touching
+LEG_ASPECT = 1.8  # a footprint blob this long, with no waist and MERGED_SIZE times the others, is legs together
+LEG_ASPECT_ALONE = 2.4  # this long is legs pressed together whatever the others are
+MERGED_SIZE = 1.6
+SPLIT_ASPECT = 1.5  # only a blob this much longer than wide is tried for a waist
+WAIST_GRID = 80  # raster cells along a blob's long axis for the waist test
+FOOT_SHARE = 0.35
+HEAD_RISE = 0.35  # a head's top stands this share of the back's height above the body's mid-height
+TAIL_SECTION = 0.05  # an end whose tip is thinner than this (height share x width share of the body) is a tail
+NARROW_SHARE = 0.6  # toward the head the section narrows below this share of the body's width
+END_SHARE = 0.12  # the tip of an end: this share of the length  # a leg comes down within this share of the band from the floor (a raised hoof too)
 GRID = 128  # raster cells along the longest horizontal side
 SAMPLES = 120_000
 AXES = {"+x": (0, 1.0), "-x": (0, -1.0), "+z": (2, 1.0), "-z": (2, -1.0)}
@@ -100,11 +113,63 @@ def _top_abs(mesh, P, top_frac):
     return floor, floor + float(top_frac) * (ceil - floor), "given"
 
 
-def find_legs(P: np.ndarray, floor: float, top: float, grid: int = GRID, slabs: int = 6) -> list[np.ndarray]:
-    """Seed masks (xz rasters) of each leg: the sub-band of the lower 85% of the leg band with the most blobs."""
+def _split_waist(xz: np.ndarray, depth: int = 3) -> list[tuple[np.ndarray, float]]:
+    """Split one footprint blob's points (xz) where it pinches: legs that touch (or nearly) make one blob shaped like
+    a figure eight. The points are rasterised again, finer (WAIST_GRID cells along the blob), so the pinch is not
+    filled in by the coarse raster's closing; walking along the long axis, a column whose outline is narrower than
+    WAIST_SHARE of the widest column on both sides is a waist, and each side is split again. Returns the parts, each with its
+    aspect (long over short axis of its points; a hoof is up to about 2, two touching legs at least 1.7)."""
+    if len(xz) < 30:
+        return [(xz, 1.0)]
+    c0 = xz.mean(0)
+    evals, evecs = np.linalg.eigh(np.cov((xz - c0).T))
+    aspect = float(np.sqrt(evals[1] / max(evals[0], 1e-12)))
+    if depth == 0 or aspect < SPLIT_ASPECT:  # a round blob is one leg (two touching are at least sqrt 3 long)
+        return [(xz, aspect)]
+    uv = (xz - c0) @ evecs[:, ::-1]  # long axis first
+    cell = float(np.ptp(uv[:, 0])) / WAIST_GRID or 1.0
+    ij = np.floor((uv - uv.min(0)) / cell).astype(int) + 2
+    m = np.zeros(tuple(ij.max(0) + 3), bool)
+    m[ij[:, 0], ij[:, 1]] = True
+    m = ndimage.binary_dilation(m)
+    # Each column's outline width (first to last cell), so a hollow or patchy outline still reads as its span.
+    any_ = m.any(1)
+    first = np.where(any_, m.argmax(1), 0)
+    last = np.where(any_, m.shape[1] - 1 - m[:, ::-1].argmax(1), -1)
+    w = ndimage.gaussian_filter1d((last - first + 1).astype(float), 1.0, mode="constant")
+    span = np.nonzero(w > 0.5)[0]
+    lo, hi = span[0] + int(0.2 * len(span)), span[0] + int(np.ceil(0.8 * len(span)))
+    best, cut = 1.0, None
+    for j in range(max(lo, 1), min(hi, len(w) - 1)):
+        share = w[j] / max(min(w[:j].max(), w[j + 1:].max()), 1e-9)
+        if share < best:
+            best, cut = share, j
+    if cut is None or best >= WAIST_SHARE:
+        return [(xz, aspect)]
+    return [q for side in (ij[:, 0] < cut, ij[:, 0] >= cut) for q in _split_waist(xz[side], depth - 1)]
+
+
+def _merged(parts: list[tuple[np.ndarray, float]]) -> bool:
+    """Whether a blob left after the waist split still looks like more than one leg: very long for a leg, or long
+    and clearly bigger than the other legs."""
+    sizes = np.array([float(len(q)) for q, _ in parts])
+    for i, (_, aspect) in enumerate(parts):
+        others = np.delete(sizes, i)
+        if aspect > LEG_ASPECT_ALONE or (aspect > LEG_ASPECT and len(others) and
+                                         sizes[i] > MERGED_SIZE * float(np.median(others))):
+            return True
+    return False
+
+
+def find_legs(P: np.ndarray, floor: float, top: float, grid: int = GRID, slabs: int = 6):
+    """Seed masks (xz rasters) of each leg: the sub-band of the lower 85% of the leg band with the most blobs, a blob
+    that pinches in the middle split in two. Returns the seeds; whether that sub-band has a blob too long for one leg
+    that could not be split (legs pressed together along their length); and the splits, each the merged blob's mask
+    with its legs' (seed index, xz centre)."""
     r = _Raster(P, grid)
     edges = np.linspace(floor, floor + 0.85 * (top - floor), slabs + 1)
     best: list[np.ndarray] = []
+    best_odd, best_groups = False, []
     for k in range(slabs):
         sel = (P[:, 1] >= edges[k]) & (P[:, 1] < edges[k + 1])
         lab, n = ndimage.label(r.mask(P[sel]))
@@ -114,9 +179,38 @@ def find_legs(P: np.ndarray, floor: float, top: float, grid: int = GRID, slabs: 
         keep = [i + 1 for i in range(n) if sizes[i] >= 0.15 * sizes.max()]
         # A leg reaches (near) the floor; a blob that only hangs into the band (chest wool, an udder) is not one.
         keep = [i for i in keep if _reaches_floor(P, r, lab == i, floor, top)]
-        if len(keep) > len(best):
-            best = [lab == i for i in keep]
-    return best
+        S = P[sel]
+        ij = r.ij(S)
+        masks, parts, groups = [], [], []
+        for i in keep:
+            mine = lab == i
+            inside = mine[ij[:, 0], ij[:, 1]]
+            xz = S[inside][:, [0, 2]]
+            split = _split_waist(xz)
+            if len(split) > 1:
+                # Each coarse cell goes to the part with most of its points.
+                count = np.zeros((len(split),) + mine.shape)
+                for j, (q, _) in enumerate(split):
+                    qi = r.ij(np.c_[q[:, 0], np.zeros(len(q)), q[:, 1]])
+                    np.add.at(count[j], (qi[:, 0], qi[:, 1]), 1)
+                win = count.argmax(0)
+                ms = [(win == j) & (count[j] > 0) & mine for j in range(len(split))]
+                ok = [j for j, q in enumerate(ms) if q.sum() and _reaches_floor(P, r, q, floor, top)]
+                if len(ok) > 1:
+                    groups.append((mine, [(len(masks) + n, split[j][0].mean(0)) for n, j in enumerate(ok)]))
+                    masks += [ms[j] for j in ok]
+                    parts += [split[j] for j in ok]
+                    continue
+                split = _split_waist(xz, depth=0)
+            masks.append(mine)
+            parts.append(split[0])
+        if len(masks) > len(best):
+            best, best_odd, best_groups = masks, _merged(parts), groups
+    return best, best_odd, best_groups
+
+
+def _too_few(n: int, hint: str) -> EditError:
+    return EditError(f"found {n} leg-like part{'' if n == 1 else 's'}; {hint}")
 
 
 def _reaches_floor(P: np.ndarray, r: "_Raster", m: np.ndarray, floor: float, top: float) -> bool:
@@ -132,9 +226,11 @@ class _Legs:
     def __init__(self, P: np.ndarray, floor: float, top: float, bins: int = 24):
         self.floor, self.top = floor, top
         self.raster = _Raster(P, GRID)
-        seeds = find_legs(P, floor, top)
-        if not seeds:
-            raise EditError("no legs found in the leg band")
+        seeds, odd, self.groups = find_legs(P, floor, top)
+        if len(seeds) < 2:
+            raise _too_few(len(seeds), "check the shape (it needs at least two legs standing on the floor)")
+        if odd:
+            raise EditError("some legs touch along their length and can't be told apart; check the shape")
         band = P[(P[:, 1] <= floor + 0.85 * (top - floor))]
         ij = self.raster.ij(band)
         lab = np.full(len(band), -1)
@@ -143,7 +239,12 @@ class _Legs:
         self.edges = np.linspace(floor, top, bins + 1)
         self.ys = (self.edges[:-1] + self.edges[1:]) / 2
         self.n = len(seeds)
-        for _ in range(3):  # seed, then let every band point join its nearest centre line and refit
+        # Legs split at a waist touch: their centres are the middle of each height's extent, not the median. Along
+        # the contact the outlines crowd, so a median there runs off (a centre a little off moves a crowd of points
+        # to the other leg, which pushes both centres further the same way); the extent's middle moves half as far
+        # as the boundary does, so refitting closes in on the contact.
+        self.touching = {i for _, legs in self.groups for i, _ in legs}
+        for _ in range(6 if self.touching else 3):  # seed, then let every band point join its nearest centre line
             self._fit(band, lab)
             lab = self.nearest(band)[0]
 
@@ -160,7 +261,8 @@ class _Legs:
                 got = [int(np.median(k))]
                 cen = [np.median(pts[:, [0, 2]], axis=0)]
             else:
-                cen = [np.median(pts[k == b][:, [0, 2]], axis=0) for b in got]
+                cen = [np.percentile(pts[k == b][:, [0, 2]], [2, 98], axis=0).mean(0) if i in self.touching
+                       else np.median(pts[k == b][:, [0, 2]], axis=0) for b in got]
             cen = np.array(cen)
             for a in range(2):
                 C[i, :, a] = np.interp(self.ys, self.ys[got], cen[:, a])
@@ -232,6 +334,10 @@ def shorten_legs(mesh: trimesh.Trimesh, factor: float, top: float | None = None,
     V = np.asarray(mesh.vertices, float)
     P = _surface(mesh)
     floor, ytop, how = _top_abs(mesh, P, top)
+    if how == "auto":
+        seeds, odd, _ = find_legs(P, floor, ytop)
+        if len(seeds) < 2 and not odd:
+            raise _too_few(len(seeds), "give top or check the shape")
     band = ytop - floor
     b = max(blend * band, 1e-9)
     a = ytop - b
@@ -268,14 +374,60 @@ def _width_profile(P: np.ndarray, li: int, sign: float, fi: int, bins: int = 40)
     return (np.arange(bins) + 0.5) / bins, w
 
 
+def _end_shape(P: np.ndarray, fi: int, li: int, above: float) -> dict:
+    """The body's middle (back line, belly, width) and each end's tip, all measured above the legs. An end's rise is
+    its top above the body's mid-height, as a share of the back's height above it; thick and wide are the tip's
+    height and lateral spread as shares of the body's."""
+    F = P[:, fi]
+    t = (F - F.min()) / max(float(np.ptp(F)), 1e-12)
+    up = P[:, 1] >= above
+    k = np.minimum((t * 20).astype(int), 19)
+    tops = [np.percentile(P[(k == b) & up, 1], 98) for b in range(7, 13) if ((k == b) & up).sum() >= 5]
+    bots = [np.percentile(P[(k == b) & up, 1], 2) for b in range(7, 13) if ((k == b) & up).sum() >= 5]
+    mid = (t > 0.35) & (t < 0.65) & up
+    if not tops or mid.sum() < 10:
+        raise EditError("no body found above the legs")
+    back, belly = float(np.median(tops)), float(np.median(bots))
+    width = float(np.ptp(np.percentile(P[mid, li], [2, 98])))
+    half = (back + belly) / 2
+    ends = {}
+    for sign, sel in ((-1.0, t < END_SHARE), (1.0, t > 1 - END_SHARE)):
+        Q = P[sel & up]
+        if len(Q) < 10:
+            ends[sign] = None
+            continue
+        ends[sign] = {"rise": (float(np.percentile(Q[:, 1], 98)) - half) / max(back - half, 1e-9),
+                      "thick": float(np.ptp(np.percentile(Q[:, 1], [2, 98]))) / max(back - belly, 1e-9),
+                      "wide": float(np.ptp(np.percentile(Q[:, li], [2, 98]))) / max(width, 1e-9)}
+    return ends
+
+
 def head_end(mesh: trimesh.Trimesh, P: np.ndarray | None = None) -> tuple[str, str]:
-    """Which end is the head (+x/-x/+z/-z) and why."""
+    """Which end is the head (+x/-x/+z/-z) and why. An end can be the head when its tip stands clearly above the
+    body's mid-height and is not a thin appendage (a level or hanging tail is both low and thin). One such end is
+    the head; with two, the one that sticks out further past the outermost legs (a head and neck overhang the front
+    legs; the rump barely passes the hind ones). Anything else is refused: a shape with no head end, or ends that
+    look alike (a cylinder, a ball, a box on wheels), is not guessed at."""
     P = _surface(mesh) if P is None else P
     fi, li = _length_axes(P)
     ax = "xyz"[fi]
+    floor = float(P[:, 1].min())
     try:
-        floor = float(P[:, 1].min())
         ytop = leg_top(mesh, P)
+    except EditError:
+        ytop = None
+    ends = _end_shape(P, fi, li, floor if ytop is None else ytop)
+    can = [sign for sign, e in ends.items()
+           if e is not None and e["rise"] >= HEAD_RISE and e["thick"] * e["wide"] >= TAIL_SECTION]
+    if not can:
+        raise EditError("no head end found: neither end rises above the body's mid-height as a head does; give head")
+    if len(can) == 1:
+        other = ends[-can[0]]
+        why = "the other end is a thin tail" if other and other["rise"] >= HEAD_RISE else "the other end sits low"
+        return (f"+{ax}" if can[0] > 0 else f"-{ax}"), f"only end rising above the body ({why})"
+    try:
+        if ytop is None:
+            raise EditError("no leg band")
         legs = _Legs(P, floor, ytop)
         feet = legs.C[:, 0, 0 if fi == 0 else 1]
         over_pos = P[:, fi].max() - feet.max()
@@ -284,21 +436,24 @@ def head_end(mesh: trimesh.Trimesh, P: np.ndarray | None = None) -> tuple[str, s
             return (f"+{ax}" if over_pos > over_neg else f"-{ax}"), "overhang past the outermost legs"
     except EditError:
         pass
-    _, w = _width_profile(P, li, 1.0, fi)
-    n = max(len(w) // 8, 1)
-    return (f"+{ax}" if w[-n:].mean() < w[:n].mean() else f"-{ax}"), "narrower end"
+    raise EditError(f"can't tell the head end: both ends of {ax} look alike; give head")
 
 
 def head_start(P: np.ndarray, fi: int, li: int, sign: float, above: float) -> float:
-    """Fraction along the length (0 rump, 1 nose) where the body narrows into the neck, measured above the legs."""
+    """Fraction along the length (0 rump, 1 nose) where the body narrows into the neck, measured above the legs.
+    The head end has to narrow for real (below NARROW_SHARE of the body's width) before the tip; a shape that keeps
+    its width (a barrel, a box) has no neck to start from."""
     Q = P[P[:, 1] >= above]
     ts, w = _width_profile(Q if len(Q) > 100 else P, li, sign, fi)
     mid = (ts >= 0.35) & (ts <= 0.6)
     body = float(np.median(w[mid])) if mid.any() else float(w.max())
+    toward = (ts > 0.5) & (ts <= 0.95)
+    if not toward.any() or w[toward].min() >= NARROW_SHARE * body:
+        raise EditError("no neck found: the body never narrows toward the head end; give start")
     for t, x in zip(ts, w):
         if t > 0.5 and x < NECK_SHARE * body:
             return float(t)
-    raise EditError("no neck found: the body never narrows toward the head end")
+    raise EditError("no neck found: the body never narrows toward the head end; give start")
 
 
 def widen_head(mesh: trimesh.Trimesh, factor: float, start: float | None = None, ramp: float = 0.1,

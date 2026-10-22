@@ -771,7 +771,10 @@ class Workbench:
                  "widen_head (factor 1..2, start?, ramp? default 0.1, head? +x|-x|+z|-z) scales the head's lateral "
                  "axis about its centre line, ramping in from start to start + ramp along the length (0 rump, 1 "
                  "nose). top (share of height where legs meet belly), start and head are read from the shape when "
-                 "omitted; the answer says what was found (top, legs and their centres, start, head end). "
+                 "omitted; the answer says what was found (top, legs and their centres, start, head end). When the "
+                 "shape doesn't show them (fewer than two legs, legs it can't tell apart, no head end that rises "
+                 "above the body or ends that look alike, no neck) the op refuses and says why: give top, head or "
+                 "start. "
                  "straighten_head, symmetrize and nudge are not built yet.",
                  _obj({"stem": STEM, "src": GLB, "op": {"type": "string", "enum": ["remove_floaters", "delete_sphere",
                                                                                    "stretch", "thicken_legs",
