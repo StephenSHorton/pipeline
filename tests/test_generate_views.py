@@ -23,7 +23,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 NO_PICTURE = "3D needs a picture. Draw or add one first."
-REAL_SCRIPTS = ["generate.sh", "_common.sh", "mv_orient.py", "reduce_mesh.py", "reduce.sh", "inspect_glb.py",
+REAL_SCRIPTS = ["generate.sh", "_common.sh", "mv_orient.py", "proportion_check.py", "reduce_mesh.py", "reduce.sh", "inspect_glb.py",
                 "psx_lowpoly.py", "key_spill.py", "lods.py"]
 
 HY3D_STUB = r'''
@@ -422,6 +422,10 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertTrue(self.out("views", "lifted", "photo.png").is_file())
         roles = {v["id"]: v["role"] for v in json.loads(self.out("views.json").read_text())["views"]}
         self.assertEqual(roles["photo"], "reference")
+        # The photo's proportion check ran on the multi-view hero; a square photo of a cube is no side-on length.
+        prop = json.loads(self.out("shape.json").read_text())["proportion"]
+        self.assertFalse(prop["applied"])
+        self.assertIn("proportion_check: left alone", proc.stdout)
         # A photo changed since the draw is not the subject any more: the drawn views bake alone, as before.
         square_png(photo, size=64)
         proc = self.run_gen("--image", str(self.image), "--views-json", str(vj), "--quality", "textured")
@@ -434,6 +438,7 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual([Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"][0], "right.png")
         self.assertEqual(args[args.index("--first-facing") + 1], "right")
         self.assertNotIn("--first-wins", args)
+        self.assertNotIn("proportion", json.loads(self.out("shape.json").read_text()))   # no photo: no check
 
     def test_a_supplied_mesh_is_the_shape(self) -> None:
         # The supplied mesh may be a product of the last run, which the clean-up removes: it must survive.
