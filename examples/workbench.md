@@ -67,7 +67,7 @@ Paths are relative to the repo root, and nothing outside it is read.
 | `compare_reference` | `stem` or `glb`, `image`, `facing?` | Silhouette IoU against the photo, the regions that are missing or extra, and a reference/model/overlap PNG. |
 | `clay_get` | `stem` | `workbench/clay.json` and the forms with their dims. |
 | `clay_set` | `stem`, `blobs`, `replace?` | Writes blobs: same-named blobs are replaced and the rest are added. With `replace: true` the list becomes the whole clay. |
-| `clay_edit` | `stem`, `name`, `patch` | Changes one blob. `form` merges unless its type changes. `name` renames the blob, and `{remove: true}` deletes it. |
+| `clay_edit` | `stem`, `name`, `patch` | Changes one blob. `form` merges unless its type changes, and so does `noise` (`noise: null` or `amp: 0` turns it off). `name` renames the blob, and `{remove: true}` deletes it. |
 | `clay_mesh` | `stem`, `grid?`, `height?`, `texture?` | Writes `workbench/clay.glb` with UVs and the blob colours. |
 | `mesh_edit` | `stem`, `src`, `op`, `params?` | Writes `workbench/edit_N.glb`. Ops: `remove_floaters` (`keep`, `min_faces`) and `delete_sphere` (`center`, `radius`). |
 | `bake_photo` | `stem`, `glb`, `views`, `mirror?`, `erode?`, `keep?`, `first_wins?` | Runs `retexture.py` and writes `workbench/bake_N.glb`. You can state the facing of the first view only; later views are read from their file names. Every view must be a cutout with a transparent background, such as `lifted.png` or `views/lifted/*.png`: an opaque photo is refused, because its background would be baked onto the model. |
@@ -93,13 +93,18 @@ rounded box. Through the workbench only:
 1. **Measure the current bale:** `measure {"stem": "mlg-hay_bale"}` gives `circularity 0.71` from the side.
    A round bale should be above 0.9.
 2. **Block it out as clay:** a hay-tan cylinder lying on its side, its round end facing the camera like the photo.
+   A plain cylinder reads as a CAD part ("it looks like a giant cylinder"), so give it soft rims, a slight barrel,
+   a straw wobble, and a flat patch where it sits on the ground (see [Clay character](#clay-character)):
    ```json
-   {"stem": "mlg-hay_bale_v2", "blobs": [{"name": "bale",
-     "form": {"type": "Cylinder", "radius": 0.75, "height": 1.2},
-     "rotation": [90, 0, 0], "color": "#c8a24f", "blend": 0}]}
+   {"stem": "mlg-hay_bale_v2", "replace": true, "blobs": [
+     {"name": "bale", "form": {"type": "Cylinder", "radius": 0.75, "height": 1.2, "rounding": 0.12, "bulge": 0.05},
+      "rotation": [90, 0, 0], "color": "#c8a24f", "noise": {"amp": 0.015, "scale": 0.15, "seed": 1}},
+     {"name": "ground", "op": "carve", "form": {"type": "Box", "size": [4, 1, 4]},
+      "translation": [0, -1.23, 0], "blend": 0.04}]}
    ```
 3. **Mesh it:** `clay_mesh {"stem": "mlg-hay_bale_v2", "height": 1.5}`, then `measure` it with `lod: "clay"`.
-   Circularity should now be about 0.99.
+   Circularity from the end is about 0.94 (0.99 for the plain cylinder; the flat bottom and the wobble take
+   the rest). `height` scales what is left after the ground cut, so it is the resting height.
 4. **Bake the photo on with the pipeline:** `generate` with
    `{"stem": "mlg-hay_bale_v2", "image": "in/mlg/hay_bale.jpg", "mesh": "out/mlg-hay_bale_v2/workbench/clay.glb",
    "paint": false, "quality": "textured"}`. No model loads. Poll `job_status` until it is done.
@@ -111,3 +116,28 @@ rounded box. Through the workbench only:
    `compare_reference` against the photo.
 
 Stop there for review.
+
+## Clay character
+
+Primitives give the right proportions and the wrong feel. Three things make a clay shape read as an object:
+
+| field | on | what |
+|---|---|---|
+| `rounding` | Cylinder form (and Box, as before) | Rim radius in metres. The edge becomes a quarter-round, so a bale has soft shoulders, not a machined lip. |
+| `bulge` | Cylinder form | Barrel: the radius grows by `bulge * radius` at mid-height and returns to `radius` at the caps (parabolic, -0.5..1). 0.05 is a bale settling under its own weight. |
+| `noise` | any blob | `{amp, scale, seed, octaves}`: seeded gradient noise moves the surface by up to `amp` metres in bumps about `scale` across. `octaves` 1-4 (default 2) adds finer detail. |
+| ground contact | a carve | Carve a wide Box away below the floor; its `blend` rounds the edge of the contact patch. |
+
+Notes:
+- **Noise is per blob, in the blob's frame.** It moves and mirrors with the blob, a smooth part can sit next
+  to a rough one, and carves stay clean. Clide3D's noise is a sculpt brush on the finished mesh; its blobs have
+  no noise field and ignore this one.
+- **Noise has a limit.** `amp` is clamped so the slope it adds stays under 0.5, which keeps the field a usable
+  distance: for `octaves` 2 that is about `scale / 8.3`, for 4 about `scale / 13`. The clamped value is what
+  `clay.json` records. Keep `scale` at least 4 grid cells (the longest side over `grid`), or the bumps alias.
+- **Why a carve for the ground, not a field.** A flatten amount on the blob would be a plane in the blob's own
+  frame, which tilts when the blob is rotated (the bale is). A carve is in world space, composes with
+  everything, and the noisy bale above it still gets a dead-flat contact patch.
+- `clay.json` writes `rounding`, `bulge` and `noise` only when they are set, so older files save back unchanged.
+- Meshing time goes up with curvature: at `grid` 96 the bale above meshes in under a second, but the UV unwrap
+  takes about 45 s (about 4 s for the plain cylinder), because xatlas works harder on curved charts.

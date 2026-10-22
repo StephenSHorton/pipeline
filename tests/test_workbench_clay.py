@@ -87,7 +87,180 @@ class ClayShapeTests(unittest.TestCase):
         self.assertGreater(clay.sdf(hard, neck)[0], clay.sdf(soft, neck)[0])
 
 
+class ClayCharacterTests(unittest.TestCase):
+    """Rounding, bulge, noise and a carved ground contact: what keeps a clay bale from reading as a CAD cylinder."""
+
+    def test_rounding_takes_off_the_rims(self) -> None:
+        r, h, rr = 0.5, 1.0, 0.2
+        sharp = mesher.mesh_clay([blob(form={"type": "Cylinder", "radius": r, "height": h})], grid=64)
+        soft = mesher.mesh_clay([blob(form={"type": "Cylinder", "radius": r, "height": h, "rounding": rr})], grid=64)
+        # Steiner: the rounded cylinder is the inner cylinder (radius a, length l) grown by rr.
+        a, ln = r - rr, h - 2 * rr
+        exact = (np.pi * a * a * ln + (2 * np.pi * a * a + 2 * np.pi * a * ln) * rr
+                 + (np.pi * ln + np.pi ** 2 * a) * rr ** 2 + 4 / 3 * np.pi * rr ** 3)
+        lost = np.pi * r * r * h - exact                     # about 0.049 m3, 6% of the sharp one
+        self.assertTrue(soft.is_watertight)
+        # Same grid for both, so the meshing error mostly cancels in the difference.
+        self.assertAlmostEqual(sharp.volume - soft.volume, lost, delta=lost * 0.25)
+        # The SDF itself is exact: zero on the rim's torus, rr in from the cylinder's corner.
+        corner = np.array([[r - rr + rr / np.sqrt(2), h / 2 - rr + rr / np.sqrt(2), 0.0]])
+        self.assertAlmostEqual(float(clay.sdf([blob(form={"type": "Cylinder", "radius": r, "height": h,
+                                                          "rounding": rr})], corner)[0]), 0.0, places=9)
+
+    def test_bulge_widens_the_middle_and_leaves_the_caps(self) -> None:
+        r, h, bulge = 0.5, 1.0, 0.2
+        mesh = mesher.mesh_clay([blob(form={"type": "Cylinder", "radius": r, "height": h, "bulge": bulge})], grid=80)
+        v = np.asarray(mesh.vertices)
+        radial = np.hypot(v[:, 0], v[:, 2])
+        middle = radial[np.abs(v[:, 1]) < 0.03].max()
+        near_cap = radial[np.abs(np.abs(v[:, 1]) - (h / 2 - 0.02)) < 0.01].max()
+        self.assertTrue(mesh.is_watertight)
+        self.assertAlmostEqual(middle, r * (1 + bulge), delta=0.01)
+        # 0.02 below the cap the parabola has only grown by about bulge * r * 0.08.
+        self.assertAlmostEqual(near_cap, r * (1 + bulge * 0.0784), delta=0.01)
+        self.assertAlmostEqual(float(v[:, 1].max()), h / 2, delta=0.01)   # the caps stay where they were
+
+    NOISY = {"type": "Cylinder", "radius": 0.5, "height": 0.8, "rounding": 0.08}
+
+    def noisy(self, amp: float, seed: int = 0) -> list:
+        return [blob(name="bale", form=self.NOISY, noise={"amp": amp, "scale": 0.15, "seed": seed, "octaves": 2})]
+
+    def test_noise_is_seeded(self) -> None:
+        a = mesher.mesh_clay(self.noisy(0.015, seed=1), grid=48)
+        b = mesher.mesh_clay(self.noisy(0.015, seed=1), grid=48)
+        c = mesher.mesh_clay(self.noisy(0.015, seed=2), grid=48)
+        self.assertTrue(np.array_equal(a.vertices, b.vertices) and np.array_equal(a.faces, b.faces))
+        p = np.random.default_rng(0).uniform(-0.6, 0.6, (4000, 3))
+        self.assertFalse(np.allclose(clay.sdf(self.noisy(0.015, 1), p), clay.sdf(self.noisy(0.015, 2), p)))
+        self.assertTrue(a.is_watertight and c.is_watertight)
+
+    def test_roughness_grows_with_amp(self) -> None:
+        smooth = [blob(name="bale", form=self.NOISY)]
+        rough = []
+        for amp in (0.0, 0.01, 0.02):
+            mesh = mesher.mesh_clay(self.noisy(amp) if amp else smooth, grid=64)
+            self.assertTrue(mesh.is_watertight)
+            # How far the noisy surface wanders from the smooth one.
+            rough.append(float(np.std(clay.sdf(smooth, mesh.vertices))))
+        self.assertLess(rough[0], 0.002)
+        self.assertLess(rough[0], rough[1])
+        self.assertLess(rough[1], rough[2])
+        self.assertLess(rough[2], 0.02)
+
+    def test_noisy_flat_caps_stay_watertight(self) -> None:
+        # A noisy cap lying along a grid plane makes cell faces whose corners alternate in and out; surface nets
+        # gave those edges four triangles until mesher joined them. Several seeds and grids, all watertight.
+        for seed in range(4):
+            for grid in (48, 64):
+                mesh = mesher.mesh_clay(self.noisy(0.012, seed=seed), grid=grid)
+                self.assertTrue(mesh.is_watertight, f"seed {seed} grid {grid}")
+
+    def test_checkerboard_face_is_joined(self) -> None:
+        d = np.ones((3, 3, 3))
+        d[1, 1, 1] = d[1, 2, 2] = -1.0       # diagonal corners of the x = 1 face: a checkerboard
+        d[1, 2, 1] = 0.2                     # the outside corner nearer the surface
+        out = mesher.join_checkerboards(d, 0.1)
+        self.assertLess(out[1, 2, 1], 0)
+        self.assertEqual(out[1, 1, 2], 1.0)
+        self.assertEqual(int((out < 0).sum()), 3)
+
+    def test_noise_amp_is_clamped_to_a_usable_distance(self) -> None:
+        b = blob(form={"type": "Sphere", "radius": 0.5}, noise={"amp": 1.0, "scale": 0.1, "octaves": 4})
+        self.assertAlmostEqual(b.noise.amp, clay.Noise.max_amp(0.1, 4), places=6)
+        self.assertLess(b.noise.amp, 0.1 / 10)
+        # The field's slope stays near 1, so the distance is still a distance.
+        p = np.random.default_rng(1).uniform(-0.7, 0.7, (3000, 3))
+        g = mesher.gradient(lambda q: b.sdf(q), p, 1e-4)
+        slope = np.linalg.norm(g, axis=1)
+        self.assertGreater(slope.min(), 1 - clay.NOISE_MAX_SLOPE - 0.05)
+        self.assertLess(slope.max(), 1 + clay.NOISE_MAX_SLOPE + 0.05)
+        self.assertIsNone(blob(form={"type": "Sphere", "radius": 0.5}, noise={"amp": 0, "scale": 0.1}).noise)
+        with self.assertRaisesRegex(ValueError, "octaves"):
+            blob(form={"type": "Sphere", "radius": 0.5}, noise={"amp": 0.01, "scale": 0.1, "octaves": 5})
+        with self.assertRaisesRegex(ValueError, "scale"):
+            blob(form={"type": "Sphere", "radius": 0.5}, noise={"amp": 0.01})
+
+    def test_noise_travels_with_the_blob(self) -> None:
+        here = blob(form={"type": "Sphere", "radius": 0.3}, noise={"amp": 0.01, "scale": 0.1, "seed": 3})
+        there = blob(form={"type": "Sphere", "radius": 0.3}, noise={"amp": 0.01, "scale": 0.1, "seed": 3},
+                     translation=[1.0, 0.5, 0.0], rotation=[0, 40, 0])
+        p = np.random.default_rng(2).uniform(-0.4, 0.4, (500, 3))
+        moved = there._rot().apply(p) + there.translation
+        np.testing.assert_allclose(here.sdf(p), there.sdf(moved), atol=1e-9)
+
+    def test_carved_floor_gives_a_flat_contact_patch(self) -> None:
+        bale = blob(name="bale", form={"type": "Cylinder", "radius": 0.5, "height": 0.8}, rotation=[90, 0, 0],
+                    noise={"amp": 0.01, "scale": 0.15})
+        floor = blob(name="floor", form={"type": "Box", "size": [3, 1, 3]}, op="carve", translation=[0, -0.95, 0],
+                     blend=0.03)
+        mesh = mesher.mesh_clay([bale, floor], grid=64)
+        v = np.asarray(mesh.vertices)
+        self.assertTrue(mesh.is_watertight)
+        # The cut sits at y = -0.45; the noisy bale would otherwise reach below -0.5.
+        self.assertAlmostEqual(float(v[:, 1].min()), -0.45, delta=0.01)
+        flat = v[np.abs(v[:, 1] + 0.45) < 0.003]
+        # A chord 0.05 up from the bottom of a 0.5 m circle is 2 * sqrt(0.5^2 - 0.45^2) = 0.44 wide.
+        self.assertGreater(float(np.ptp(flat[:, 0])), 0.3)
+
+
 class ClayJsonTests(unittest.TestCase):
+    # Verbatim out/mlg-hay_bale_v2/workbench/clay.json as clay_set wrote it before rounding, bulge and noise.
+    OLD_BALE = """{
+  "units": "m",
+  "up": "Y",
+  "blobs": [
+    {
+      "name": "bale",
+      "form": {
+        "type": "Cylinder",
+        "radius": 0.75,
+        "height": 1.2,
+        "note": "Clide3D has no Cylinder; it calls this a Lathe (a revolved rectangle profile)."
+      },
+      "op": "add",
+      "blend": 0.0,
+      "color": [
+        0.7843,
+        0.6353,
+        0.3098
+      ],
+      "mirror": false,
+      "translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        90.0,
+        0.0,
+        0.0
+      ]
+    }
+  ]
+}
+"""
+
+    def test_old_clay_json_saves_back_byte_identical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src, out = Path(tmp) / "old.json", Path(tmp) / "again.json"
+            src.write_text(self.OLD_BALE)
+            box = clay.to_json(clay.from_json([{"name": "b", "form": {"type": "Box", "size": [1, 1, 1]}}]))
+            clay.save(clay.load(src), out)
+            self.assertEqual(out.read_text(), self.OLD_BALE)
+        # Box always wrote its rounding, and still does.
+        self.assertEqual(box["blobs"][0]["form"]["rounding"], 0.0)
+
+    def test_new_fields_round_trip(self) -> None:
+        b = blob(name="bale", form={"type": "Cylinder", "radius": 0.75, "height": 1.2, "rounding": 0.12,
+                                    "bulge": 0.05}, noise={"amp": 0.015, "scale": 0.15, "seed": 7})
+        d = b.to_dict()
+        self.assertEqual((d["form"]["rounding"], d["form"]["bulge"]), (0.12, 0.05))
+        self.assertEqual(d["noise"], {"amp": 0.015, "scale": 0.15, "seed": 7, "octaves": 2})
+        self.assertEqual(clay.Blob.from_dict(d).to_dict(), d)
+        plain = blob(form={"type": "Cylinder", "radius": 0.5, "height": 1.0, "bulge": 0.0}).to_dict()
+        self.assertNotIn("bulge", plain["form"])
+        self.assertNotIn("noise", plain)
+
     def test_round_trip_and_cylinder_note(self) -> None:
         blobs = [blob(name="bale", form={"type": "Cylinder", "radius": 0.6, "height": 0.9}, color="#c8a85a",
                       rotation=[0, 0, 90], translation=[0, 0.6, 0]),
