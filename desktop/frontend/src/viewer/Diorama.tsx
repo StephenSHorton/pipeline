@@ -10,6 +10,7 @@ import { AnimationMixer, LoopOnce, LoopRepeat, type AnimationAction, type Animat
 import { PixelPass } from "./PixelPass";
 import type { PixelLook } from "./pixelLook";
 import type { PreparedModel } from "./prepareModel";
+import { ToolBridge, ToolOverlays } from "./ToolBridge";
 
 export const PAD_H = 0.45;
 /** The orbit home: a little lower than Yardline's 37 deg, to see more of the model's side. */
@@ -34,9 +35,11 @@ export function Diorama(props: DioramaProps) {
     <SceneCanvas quality="high" className="!absolute inset-0" style={{ background: ground }}>
       <color attach="background" args={[ground]} />
       <NoPointerEvents />
+      <ToolBridge />
       <ClayCameraRig home={{ x: 0, z: 0 }} />
       <Lights />
       <Stage {...props} />
+      <ToolOverlays />
       {props.pixel.on ? <PixelPass look={props.pixel} /> : <PostFX />}
     </SceneCanvas>
   );
@@ -44,7 +47,8 @@ export function Diorama(props: DioramaProps) {
 
 /**
  * The page drives the orbit from the DOM (left-drag turns, right-drag pans, wheel zooms through the rig), so
- * R3F pointer events are off: ClayGround's own left-drag pan would fight the orbit.
+ * R3F pointer events are off: ClayGround's own left-drag pan would fight the orbit. An armed panel tool gets the
+ * pointer from the same DOM surface and raycasts itself (./tools.ts raycastAt).
  */
 function NoPointerEvents() {
   const setEvents = useThree((s) => s.setEvents);

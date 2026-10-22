@@ -4,6 +4,7 @@ import { AssetScreen } from "@/screens/asset/AssetScreen";
 import { SettingsScreen } from "@/screens/settings/SettingsScreen";
 import { checkFactory, useJobs } from "@/lib/jobs";
 import { startUpdateWatch } from "@/screens/settings/update";
+import "@/screens/asset/rig/finish"; // rig and render job finishes, on any screen (chain.ts skips them)
 import { AssetGate } from "./AssetGate";
 import { Overlays } from "./Overlays";
 import { TopBar } from "./TopBar";

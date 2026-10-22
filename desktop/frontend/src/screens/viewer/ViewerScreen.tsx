@@ -1,29 +1,46 @@
-// The asset viewer: the GLB as a clay diorama (src/viewer/Diorama.tsx) under a glass HUD (./Hud.tsx).
-// Everything not ported yet (rig check panel, export, 2D, stack, paint, cleanup, the turnaround figures from
-// views.json, articulated pivots) is one link away in the
-// classic view (/legacy.html?asset=<stem>).
+// The asset viewer for the 3D and Rig stages: the GLB as a clay diorama (src/viewer/Diorama.tsx) under a glass
+// HUD (./Hud.tsx), with the Cleanup, Paint and Detail levels rail and the Rig check dock (./panels/). Panels reach
+// the model through the tool API (src/viewer/tools.ts), which this screen feeds: the model, the file on screen,
+// and loadFile / reload. The turnaround figures from views.json and the articulated pivots are one link away in
+// the classic view (/legacy.html?asset=<stem>).
 import { useLook } from "mokei/clay";
 import { useMaterialColor } from "mokei/theme";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { AnimationClip } from "three";
 import { navigate } from "@/app/router";
+import { outUrl } from "@/lib/api";
 import { onJobFinished } from "@/lib/jobs";
+import type { StageProps } from "@/screens/asset/types";
 import { RIGGED, fileOf, fileTag, isPixelFile, modelCandidates, preferredClip, viewableLods } from "@/viewer/candidates";
 import { Diorama, resetLook } from "@/viewer/Diorama";
 import { loadFirstGlb } from "@/viewer/loadGlb";
 import { readPixelLook, toggle240, writePixelLook, type PixelLook } from "@/viewer/pixelLook";
 import { prepareModel, type PreparedModel } from "@/viewer/prepareModel";
+import { outRelFile, resetViewerTools, setViewerLoader, setViewerModel, useViewerTools, viewerTools, type ViewerTool } from "@/viewer/tools";
 import { useAssetDocs } from "@/viewer/useAssetDocs";
-import { Hud, type ModelInfo } from "./Hud";
+import { cn } from "@/lib/utils";
+import { Hud } from "./Hud";
+import { usePanels } from "./panels/store";
+import type { LoadState, ViewerPanelBase, ViewerView } from "./types";
 
-type LoadState = { state: "loading" } | { state: "ready"; info: ModelInfo } | { state: "error"; message: string };
+/** A file loadFile asked for (cache-busted by t). */
+interface Override {
+  file: string;
+  t: number;
+}
+type Waiter = { resolve: () => void; reject: (err: Error) => void };
 
-export function ViewerScreen({ stem, lod, flowVersion }: { stem: string; lod?: string; flowVersion?: number }) {
+export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
+  const { stem, flowVersion } = stage;
   const [version, setVersion] = useState(0);
-  const docs = useAssetDocs(stem, version);
+  // Re-reads the docs without dropping a loadFile override (reload, loadFile); `version` drops it.
+  const [docsBump, setDocsBump] = useState(0);
+  const docs = useAssetDocs(stem, `${version}.${docsBump}`);
   const clayColor = useMaterialColor("base");
 
   const [load, setLoad] = useState<LoadState>({ state: "loading" });
+  const loadRef = useRef(load);
+  loadRef.current = load;
   const [model, setModel] = useState<PreparedModel | null>(null);
   const [clips, setClips] = useState<AnimationClip[]>([]);
   const [clip, setClip] = useState<string | null>(null);
@@ -38,29 +55,89 @@ export function ViewerScreen({ stem, lod, flowVersion }: { stem: string; lod?: s
     writePixelLook(p);
   }, []);
 
+  // loadFile's file: `want` is what to load next, `shown` what is on screen. Legacy load() went back to the usual
+  // candidates after a job, a version pick or another LOD; so does this (want = null).
+  const want = useRef<Override | null>(null);
+  const shown = useRef<Override | null>(null);
+  const waiters = useRef<Waiter[]>([]);
+  const settle = useCallback((err: Error | null) => {
+    const ws = waiters.current;
+    waiters.current = [];
+    for (const w of ws) (err ? w.reject(err) : w.resolve());
+  }, []);
+
   // A finished job on this asset (a rig, a remake) re-reads its files and reloads the model.
-  useEffect(() => onJobFinished((j) => j.stem === stem && setVersion((v) => v + 1)), [stem]);
+  useEffect(
+    () =>
+      onJobFinished((j) => {
+        if (j.stem !== stem) return;
+        want.current = null;
+        setVersion((v) => v + 1);
+      }),
+    [stem],
+  );
   // A pick in the versions strip re-reads the flow: reload the model (the camera stays). Not on the first run.
   const seenFlow = useRef(flowVersion);
   useEffect(() => {
     if (seenFlow.current === flowVersion) return;
     seenFlow.current = flowVersion;
+    want.current = null;
     setVersion((v) => v + 1);
   }, [flowVersion]);
-  // The look store is global: give it back when the viewer goes away.
-  useEffect(() => () => resetLook(), []);
+  // Another LOD from the picker or a stage change: back to the candidates (the load effect below runs on lod).
+  const seenLod = useRef(lod);
+  if (seenLod.current !== lod) {
+    seenLod.current = lod;
+    want.current = null;
+  }
+  // The look store is global: give it back when the viewer goes away. The tool API and the open panel too
+  // (resetViewerTools disarms the tool, legacy left Carve and Paint armed).
+  useEffect(
+    () => () => {
+      resetLook();
+      resetViewerTools();
+      usePanels.getState().close();
+    },
+    [],
+  );
+  useEffect(() => () => settle(new Error("The viewer closed.")), [settle]);
+  useEffect(() => {
+    setViewerLoader({
+      loadFile(file) {
+        want.current = { file: file.replace(/^\/+/, ""), t: Date.now() };
+        return new Promise<void>((resolve, reject) => {
+          waiters.current.push({ resolve, reject });
+          setDocsBump((b) => b + 1);
+        });
+      },
+      reload() {
+        want.current = shown.current ? { ...shown.current, t: Date.now() } : want.current;
+        return new Promise<void>((resolve, reject) => {
+          waiters.current.push({ resolve, reject });
+          setDocsBump((b) => b + 1);
+        });
+      },
+    });
+    return () => setViewerLoader(null);
+  }, []);
 
   // Load the model: the legacy candidate order, first GLB that parses wins.
   useEffect(() => {
     if (!docs) return;
     const ctl = new AbortController();
+    const forced = want.current;
     const cand = modelCandidates({ stem, lod, lods: docs.lods?.lods ?? [], hasRig: docs.hasRig, rigFiles: docs.rigFiles });
+    // A loadFile file is the only URL tried (legacy loadFrom([url])): a miss keeps the model on screen.
+    const urls = forced ? [outUrl(stem, forced.file, forced.t)] : cand.urls;
+    const before = loadRef.current;
     setLoad({ state: "loading" });
-    loadFirstGlb(cand.urls, ctl.signal)
+    loadFirstGlb(urls, ctl.signal)
       .then(({ url, gltf, ms }) => {
         if (ctl.signal.aborted) return;
+        shown.current = forced;
         const file = fileOf(url);
-        const shownLod = /rigged/i.test(file) ? RIGGED : cand.lod;
+        // A loadFile file names its LOD when lods.json lists it (Cleanup's "Clean" once the docs are re-read).
+        const shownLod = forced ? (viewableLods(docs.lods?.lods).find((l) => l.file === forced.file)?.id ?? "") : /rigged/i.test(file) ? RIGGED : cand.lod;
         const made = prepareModel(gltf, { clayColor, pixel: isPixelFile(file, shownLod) });
         const names = gltf.animations.map((a) => a.name);
         setModel(made);
@@ -71,16 +148,25 @@ export function ViewerScreen({ stem, lod, flowVersion }: { stem: string; lod?: s
           state: "ready",
           info: { url, file, lod: shownLod, tag: fileTag(file, shownLod), ms, vertices: made.vertices, faces: made.faces, hasMap: made.hasMap },
         });
+        settle(null);
       })
       .catch((err: unknown) => {
         if (ctl.signal.aborted) return;
+        const message = String((err as Error)?.message || err);
+        if (forced) {
+          want.current = shown.current;
+          if (before.state !== "loading") setLoad(before);
+          settle(new Error(message));
+          return;
+        }
+        settle(new Error(message));
         setModel(null);
         setClips([]);
         setClip(null);
-        setLoad({ state: "error", message: String((err as Error)?.message || err) });
+        setLoad({ state: "error", message });
       });
     return () => ctl.abort();
-  }, [docs, stem, lod, clayColor]);
+  }, [docs, stem, lod, clayColor, settle]);
 
   // GPU memory: a model is freed once the next one replaces it, and when the viewer closes.
   useEffect(() => () => model?.dispose(), [model]);
@@ -91,11 +177,36 @@ export function ViewerScreen({ stem, lod, flowVersion }: { stem: string; lod?: s
 
   const pickLod = useCallback((id: string) => navigate({ name: "asset", stem, lod: id }, { replace: true }), [stem]);
 
+  // The tool API follows the model on screen; a new model disarms the tool. Not while loading: currentFile
+  // stays the file on screen until the next one has loaded (legacy loadFrom set it after the parse).
+  useEffect(() => {
+    if (load.state === "loading") return;
+    setViewerModel(model, load.state === "ready" ? outRelFile(load.info.url, stem) : "");
+  }, [model, load, stem]);
+  const tool = useViewerTools((s) => s.tool);
+
+  const onClip = useCallback((name: string) => {
+    setClip(name);
+    setPlaying(true);
+  }, []);
+  const view: ViewerView = { clips: clips.map((c) => c.name), clip, onClip, playing, onPlaying: setPlaying, spin, onSpin: setSpin, clay, onClay: setClay, wire, onWire: setWire };
+  const panel: ViewerPanelBase = {
+    ...stage,
+    stage: stage.stage === "rig" ? "rig" : "mesh",
+    docs,
+    load,
+    lods,
+    onPickLod: pickLod,
+    reloadDocs: () => setDocsBump((b) => b + 1),
+    view,
+    tools: viewerTools,
+  };
+
   return (
     // The clay runs on under the asset screen's versions strip (--strip-h, set by TakesStrip), so the stage and the
     // strip share one ground instead of meeting at a seam; the HUD keeps to the stage above it.
     <div className="absolute inset-x-0 top-0 bottom-[calc(-1*var(--strip-h,0px))] overflow-hidden">
-      <OrbitSurface>
+      <OrbitSurface tool={tool}>
         <Diorama model={model} clips={clips} clip={clip} playing={playing} clay={clay} wire={wire} spin={spin} pixel={pixel} />
       </OrbitSurface>
       <div className="pointer-events-none absolute inset-x-0 top-0 bottom-[var(--strip-h,0px)]">
@@ -106,13 +217,10 @@ export function ViewerScreen({ stem, lod, flowVersion }: { stem: string; lod?: s
           lods={lods}
           hasRig={!!docs?.hasRig}
           onPickLod={pickLod}
-          clips={clips.map((c) => c.name)}
+          clips={view.clips}
           clip={clip}
           playing={playing}
-          onClip={(name) => {
-            setClip(name);
-            setPlaying(true);
-          }}
+          onClip={onClip}
           onPlaying={setPlaying}
           clay={clay}
           canClay={!!info?.hasMap}
@@ -126,6 +234,7 @@ export function ViewerScreen({ stem, lod, flowVersion }: { stem: string; lod?: s
           onPixel={(on) => setPixel({ ...pixel, on })}
           on240={() => setPixel(toggle240(pixel))}
           onRenamed={(next) => navigate({ name: "asset", stem: next, ...(lod ? { lod } : {}) }, { replace: true })}
+          panel={panel}
         />
       </div>
     </div>
@@ -135,16 +244,43 @@ export function ViewerScreen({ stem, lod, flowVersion }: { stem: string; lod?: s
 /**
  * Orbit from the DOM: left-drag turns (azimuth) and tilts (elevation); right-drag or shift-drag pans with
  * ClayGround's formula; the wheel zooms through ClayCameraRig. The HUD sits above with pointer-events off.
+ * With a panel tool armed (src/viewer/tools.ts), the left button and every move go to the tool, and right-drag
+ * turns instead of panning (legacy Carve/Paint: "Orbit with right-drag while this is on").
  */
-function OrbitSurface({ children }: { children: React.ReactNode }) {
+function OrbitSurface({ tool, children }: { tool: ViewerTool | null; children: React.ReactNode }) {
   const drag = useRef<{ x: number; y: number; pan: boolean; id: number } | null>(null);
+  const painting = useRef<number | null>(null);
+  const pointer = (e: ReactPointerEvent<HTMLDivElement>, button: number) => {
+    let hit: ReturnType<typeof viewerTools.raycastAt> | undefined;
+    const { clientX, clientY } = e;
+    return {
+      clientX,
+      clientY,
+      button,
+      buttons: e.buttons,
+      shiftKey: e.shiftKey,
+      altKey: e.altKey,
+      pointerId: e.pointerId,
+      hit: () => (hit === undefined ? (hit = viewerTools.raycastAt(clientX, clientY)) : hit),
+    };
+  };
   const down = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.button !== 2) return;
-    drag.current = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, id: e.pointerId };
+    if (tool && e.button === 0) {
+      painting.current = e.pointerId;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      tool.onDown?.(pointer(e, 0));
+      return;
+    }
+    drag.current = { x: e.clientX, y: e.clientY, pan: !tool && (e.button === 2 || e.shiftKey), id: e.pointerId };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const move = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = drag.current;
+    if (tool && !(d && d.id === e.pointerId)) {
+      tool.onMove?.(pointer(e, -1));
+      return;
+    }
     if (!d || d.id !== e.pointerId) return;
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
@@ -169,14 +305,24 @@ function OrbitSurface({ children }: { children: React.ReactNode }) {
   };
   const up = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (drag.current?.id === e.pointerId) drag.current = null;
+    if (painting.current === e.pointerId) {
+      painting.current = null;
+      tool?.onUp?.(pointer(e, 0));
+    }
   };
+  // A tool disarmed mid-stroke must not get the up; the next tool starts clean.
+  useEffect(() => {
+    painting.current = null;
+  }, [tool]);
   return (
     <div
-      className="absolute inset-0 cursor-grab touch-none select-none active:cursor-grabbing"
+      className={cn("absolute inset-0 touch-none select-none", tool ? "" : "cursor-grab active:cursor-grabbing")}
+      style={tool ? { cursor: tool.cursor ?? "crosshair" } : undefined}
       onPointerDown={down}
       onPointerMove={move}
       onPointerUp={up}
       onPointerCancel={up}
+      onPointerLeave={() => tool?.onLeave?.()}
       onContextMenu={(e) => e.preventDefault()}
     >
       {children}

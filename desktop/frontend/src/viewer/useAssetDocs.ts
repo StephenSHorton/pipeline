@@ -78,8 +78,8 @@ export async function readAssetDocs(stem: string): Promise<AssetDocs> {
   };
 }
 
-/** null while loading. Re-read when `version` changes (after a rename or a job on this asset). */
-export function useAssetDocs(stem: string, version = 0): AssetDocs | null {
+/** null while loading. Re-read when `version` changes (after a rename, a job on this asset, or a panel's reload). */
+export function useAssetDocs(stem: string, version: number | string = 0): AssetDocs | null {
   const [docs, setDocs] = useState<{ key: string; docs: AssetDocs } | null>(null);
   const key = `${stem}#${version}`;
   useEffect(() => {

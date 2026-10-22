@@ -51,6 +51,7 @@ function StageBody(props: StageProps & { lod?: string }) {
       return <ExportStage {...props} />;
     case "mesh":
     case "rig":
-      return <ViewerScreen key={props.stem} stem={props.stem} flowVersion={props.flowVersion} lod={props.stage === "rig" ? (props.lod ?? "rigged") : props.lod} />;
+      // The stage props too, so the viewer's panels can tell 3D from Rig and read the flow.
+      return <ViewerScreen key={props.stem} {...props} lod={props.stage === "rig" ? (props.lod ?? "rigged") : props.lod} />;
   }
 }

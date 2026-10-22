@@ -17,23 +17,13 @@ import { cn } from "@/lib/utils";
 import { KIND_NAMES, RIGGED, slugStem } from "@/viewer/candidates";
 import type { PixelLook } from "@/viewer/pixelLook";
 import type { AssetDocs } from "@/viewer/useAssetDocs";
+import { PanelRail } from "./panels/PanelRails";
+import { PANEL, TOGGLE } from "./classes";
+import type { LoadState, ModelInfo, ViewerPanelBase } from "./types";
 
-export interface ModelInfo {
-  url: string;
-  file: string;
-  lod: string;
-  tag: string;
-  ms: number;
-  vertices: number;
-  faces: number;
-  hasMap: boolean;
-}
+export type { LoadState, ModelInfo } from "./types";
 
-type LoadState = { state: "loading" } | { state: "ready"; info: ModelInfo } | { state: "error"; message: string };
-
-const PANEL = "pointer-events-auto rounded-[14px] [-webkit-backdrop-filter:none] [backdrop-filter:none]";
-const TOGGLE =
-  "hit-44 h-[29px] rounded-[8px] px-[11px] text-[length:calc(14.2px*var(--fs))] font-semibold text-ink-3 hover:bg-muted aria-pressed:bg-accent aria-pressed:text-accent-foreground";
+export { PANEL, TOGGLE } from "./classes";
 
 export interface HudProps {
   stem: string;
@@ -59,18 +49,27 @@ export interface HudProps {
   onPixel: (on: boolean) => void;
   on240: () => void;
   onRenamed: (stem: string) => void;
+  /** What the rail and dock panels get (ViewerPanelProps minus id, open, onClose). */
+  panel: ViewerPanelBase;
 }
 
 export function Hud(p: HudProps) {
   const info = p.load.state === "ready" ? p.load.info : null;
   return (
     <div data-hud className="pointer-events-none absolute inset-0 z-[5] text-ink tracking-[var(--track)]">
-      <AssetCard {...p} info={info} />
-      {/* Wide: view toggles and the camera stack top right. Phones: one column at the bottom, in normal flow, so
-          nothing overlaps: the toggles with Reset view, then the model and clip pickers. */}
-      <div className="absolute top-3 right-3 flex flex-col items-end gap-2 max-sm:hidden">
+      {/* The asset card, then the panel rail under it (legacy left cubby rail). The column stops above the bottom
+          pickers on phones and scrolls the open panel instead of running off the screen. */}
+      <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:max-h-[calc(100%-160px)]">
+        <AssetCard {...p} info={info} />
+        <PanelRail side="left" base={p.panel} />
+      </div>
+      {/* Wide: view toggles and the camera stack top right, the Rig check dock under them. Phones: one column at
+          the bottom, in normal flow, so nothing overlaps: the toggles with Reset view, then the model and clip
+          pickers (the dock's panels join the left rail there). */}
+      <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-sm:hidden">
         <ViewCard {...p} />
         <CameraStack />
+        <PanelRail side="right" base={p.panel} className="w-[min(342px,calc(100vw-24px))]" />
       </div>
       <Status load={p.load} />
       <div className="absolute inset-x-3 bottom-3 flex flex-col items-center gap-2">
@@ -102,7 +101,7 @@ function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo
   const degraded = degradedLine(docs?.degraded);
   const summary = docs?.summary;
   return (
-    <Card size="hud" className={cn(PANEL, "absolute top-3 left-3 w-[min(340px,calc(100%-24px))] gap-1.5 px-4 pt-3 pb-3")}>
+    <Card size="hud" className={cn(PANEL, "w-full shrink-0 gap-1.5 px-4 pt-3 pb-3")}>
       <TitleInput stem={stem} onRenamed={onRenamed} />
       <div className="flex flex-wrap items-center gap-1.5">
         {kind ? <Badge variant="info" size="hud-sm">{kind}</Badge> : null}
@@ -125,7 +124,7 @@ function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo
       <a
         href={legacyUrl(info?.lod === RIGGED ? { asset: stem, lod: RIGGED } : { asset: stem })}
         className="hit-44 mt-0.5 w-fit rounded-sm text-[length:calc(13.5px*var(--fs))] font-medium text-primary no-underline outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-        title="Rig check, export, 2D, sprite stack, paint, cleanup, the turnaround figures and the articulated pivots live in the classic view for now."
+        title="The turnaround figures and the articulated pivots live in the classic view for now."
       >
         Open in classic view
       </a>
