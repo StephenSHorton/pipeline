@@ -20,7 +20,8 @@ function ToastHost() {
   const hide = useUi((s) => s.hideToast);
   if (!t) return null;
   return (
-    <div className="pointer-events-none fixed inset-x-0 z-50 flex justify-center px-4" style={{ bottom: "calc(var(--strip-h, 0px) + 24px)" }}>
+    // 24 px off the bottom: the versions panel moved to the left column, so nothing below the stage to clear.
+    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
       <div
         key={t.id}
         role="status"

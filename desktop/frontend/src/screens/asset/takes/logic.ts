@@ -1,5 +1,7 @@
-// The versions strip as data (legacy renderFlow's #takes half, index.html 2854-3031, and buildFromConcept's intent
-// merge, 3542-3577). Pure, so logic.test.ts can pin the exact copy; TakesStrip.tsx only draws these items.
+// The versions panel as data (legacy renderFlow's #takes half, index.html 2854-3031, and buildFromConcept's intent
+// merge, 3542-3577). Pure, so logic.test.ts can pin the exact copy; VersionsPanel.tsx only draws these items. The
+// legacy page drew them as a strip under the stage; the panel sits in the left column instead (Stephen: "The
+// versions ui can be on the left, don't make it take up huge space on the bottom center").
 import { outUrl, type AssetOutput, type Facing, type FacingSource } from "@/lib/api";
 import { conceptStill, flowEntry, staleNote, takeShot, type FlowState, type FlowTake, type Stage } from "@/lib/flow";
 import { displayStem } from "@/lib/jobs";
@@ -17,7 +19,7 @@ const OUTPUT_ORDER = Object.keys(OUTPUT_NAMES) as AssetOutput[];
 export const VERSIONS_TITLE = "Each build is kept. Click one to go back to it; nothing is deleted.";
 export const KEEP_TITLE = "Save what is on screen as a version you can come back to.";
 
-/** What a strip button does; TakesStrip maps each to its call. */
+/** What a panel button does; VersionsPanel maps each to its call. */
 export type StripAction = { do: "keep" } | { do: "build"; output: AssetOutput } | { do: "stack" } | { do: "remake" };
 
 export type StripItem =
@@ -117,6 +119,47 @@ export function stripItems({ stem, stage, flow, output, stacking }: StripInput):
     note(stage === "concept" ? "No picture yet." : "Use a step below to start the 2D sheet.");
   }
   return items;
+}
+
+/* ---------------------------------------------------------------- the panel's sections */
+
+type LabelItem = Extract<StripItem, { type: "label" }>;
+type TakeItem = Extract<StripItem, { type: "take" }>;
+type NoteItem = Extract<StripItem, { type: "note" }>;
+type RestItem = Extract<StripItem, { type: "act" | "note" }>;
+
+/** The panel's heading when it has no versions to show, only the next step (a Build, a note). */
+export const NEXT_HEADING = "Next step";
+
+export interface PanelGroups {
+  /** The "Versions" label, when the versions show. */
+  label: LabelItem | null;
+  takes: TakeItem[];
+  /** Keep, the stale note and the next step, in stripItems' order. */
+  rest: RestItem[];
+  /** The busy note (Stacking the picture…), read out by the panel's status line. */
+  busy: NoteItem | null;
+}
+
+/** stripItems split into the panel's parts: the heading, the thumbnails, and the buttons and notes. */
+export function groupItems(items: StripItem[]): PanelGroups {
+  return {
+    label: items.find((it): it is LabelItem => it.type === "label") ?? null,
+    takes: items.filter((it): it is TakeItem => it.type === "take"),
+    rest: items.filter((it): it is RestItem => it.type === "act" || it.type === "note"),
+    busy: items.find((it): it is NoteItem => it.type === "note" && !!it.busy) ?? null,
+  };
+}
+
+/** The panel heading: the versions label, else "Next step". */
+export const panelHeading = (g: PanelGroups): string => g.label?.text ?? NEXT_HEADING;
+
+/** The short line beside the heading, shown folded too: "2 of 3", or "3 kept" while the screen holds something
+ * unsaved (no version is the live one). "" without versions. */
+export function versionsSummary(takes: TakeItem[]): string {
+  if (!takes.length) return "";
+  const live = takes.find((t) => t.pressed);
+  return live ? `${live.n} of ${takes.length}` : `${takes.length} kept`;
 }
 
 /* ---------------------------------------------------------------- build from concept (§8.3) */

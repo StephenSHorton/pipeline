@@ -2,7 +2,7 @@
 // of buildFromConcept (3542-3577).
 import { describe, expect, it } from "vitest";
 import type { FlowEntry, FlowState, FlowTake, Stage } from "@/lib/flow";
-import { buildIntent, buildSpec, buildTitle, stripItems, takeTitle, withKeyFacing, type StripItem } from "./logic";
+import { buildIntent, buildSpec, buildTitle, groupItems, NEXT_HEADING, panelHeading, stripItems, takeTitle, versionsSummary, withKeyFacing, type StripItem } from "./logic";
 
 const take = (id: string, files: string[] = [], extra: Partial<FlowTake> = {}): FlowTake => ({ id, made: 0, files, ...extra });
 const entry = (stage: Stage, e: Partial<FlowEntry> = {}): FlowEntry => ({
@@ -105,6 +105,37 @@ describe("mesh and stack rows", () => {
 
   it("no concept picture and no mesh", () => {
     expect(texts(stripItems({ stem: "s", stage: "mesh", flow: flowOf(entry("concept"), entry("mesh")) }))).toEqual(["No concept picture yet."]);
+  });
+});
+
+describe("panel sections", () => {
+  it("splits the heading, the thumbnails and the buttons, in order", () => {
+    const f = flowOf(concept, entry("mesh", { live: true, pick: "t2", stale: ["concept"], takes: [take("t1"), take("t2")] }));
+    const g = groupItems(stripItems({ stem: "s", stage: "mesh", flow: f }));
+    expect(panelHeading(g)).toBe("Versions");
+    expect(texts(g.takes)).toEqual(["#1", "#2*"]);
+    expect(texts(g.rest)).toEqual(["Made from an older concept.", "Rebuild 3D model", "Change settings & remake…"]);
+    expect(g.busy).toBeNull();
+    expect(versionsSummary(g.takes)).toBe("2 of 2");
+  });
+
+  it("no versions: Next step, no summary", () => {
+    const f = flowOf(concept, entry("stack", { live: true }));
+    const g = groupItems(stripItems({ stem: "s", stage: "stack", flow: f, stacking: true }));
+    expect(g.label).toBeNull();
+    expect(g.takes).toEqual([]);
+    expect(panelHeading(g)).toBe(NEXT_HEADING);
+    expect(NEXT_HEADING).toBe("Next step");
+    expect(versionsSummary(g.takes)).toBe("");
+    expect(g.busy).toMatchObject({ text: "Stacking the picture…", busy: true });
+  });
+
+  it("unsaved: no version is live, so the summary counts what is kept", () => {
+    const f = flowOf(concept, entry("mesh", { live: true, pick: "t1", unsaved: true, takes: [take("t1"), take("t2"), take("t3")] }));
+    const g = groupItems(stripItems({ stem: "s", stage: "mesh", flow: f }));
+    expect(g.takes.some((t) => t.pressed)).toBe(false);
+    expect(versionsSummary(g.takes)).toBe("3 kept");
+    expect(texts(g.rest)[0]).toBe("Keep this version");
   });
 });
 
