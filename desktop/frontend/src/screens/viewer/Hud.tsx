@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { legacyUrl, renameAsset } from "@/lib/api";
+import { legacyUrl, renameAsset, type Lod } from "@/lib/api";
 import { degradedLine, displayStem } from "@/lib/jobs";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
@@ -29,6 +29,9 @@ export interface HudProps {
   stem: string;
   docs: AssetDocs | null;
   load: LoadState;
+  lods: Lod[];
+  hasRig: boolean;
+  onPickLod: (id: string) => void;
   clips: string[];
   clip: string | null;
   playing: boolean;
@@ -77,6 +80,7 @@ export function Hud(p: HudProps) {
           </Card>
         </div>
         <div className="flex max-w-full flex-wrap items-end justify-center gap-2">
+          <ModelPicker lods={p.lods} hasRig={p.hasRig} current={info?.lod ?? ""} onPick={p.onPickLod} />
           {p.clips.length ? <ClipPicker {...p} /> : null}
         </div>
       </div>
@@ -283,7 +287,29 @@ function CamBtn({ label, onClick, children }: { label: string; onClick: () => vo
   );
 }
 
-/* ------------------------------------------------------------------ clip picker (bottom; the LODs are in Detail levels) */
+/* ------------------------------------------------------------------ model + clip pickers (bottom) */
+
+function ModelPicker({ lods, hasRig, current, onPick }: { lods: Lod[]; hasRig: boolean; current: string; onPick: (id: string) => void }) {
+  const items = [...(hasRig ? [{ id: RIGGED, label: "Rigged", title: "The rigged model, with its clips." }] : []), ...lods.map((l) => ({
+    id: l.id,
+    label: l.label || l.id,
+    title: `Show ${l.label || l.id} (${l.file}${typeof l.faces === "number" ? `, ${l.faces.toLocaleString()} faces` : ""}).`,
+  }))];
+  if (items.length < 2) return null;
+  return (
+    <Card size="hud" className={cn(PANEL, "max-w-full p-1")}>
+      <Tabs value={current} onValueChange={(v) => typeof v === "string" && v !== current && onPick(v)}>
+        <TabsList variant="hud" aria-label="Model" className="max-w-full flex-wrap justify-start bg-transparent p-0">
+          {items.map((it) => (
+            <TabsTrigger key={it.id} variant="hud" value={it.id} title={it.title} className="hit-44">
+              {it.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+    </Card>
+  );
+}
 
 function ClipPicker({ clips, clip, playing, onClip, onPlaying }: HudProps) {
   return (

@@ -224,6 +224,9 @@ export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
           stem={stem}
           docs={docs}
           load={load}
+          lods={lods}
+          hasRig={!!docs?.hasRig}
+          onPickLod={pickLod}
           clips={view.clips}
           clip={clip}
           playing={playing}
