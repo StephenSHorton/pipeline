@@ -120,6 +120,25 @@ class ClayCharacterTests(unittest.TestCase):
         self.assertAlmostEqual(near_cap, r * (1 + bulge * 0.0784), delta=0.01)
         self.assertAlmostEqual(float(v[:, 1].max()), h / 2, delta=0.01)   # the caps stay where they were
 
+    def test_bulge_keeps_the_rounding_it_was_given(self) -> None:
+        # The flat cap face is radius - rounding whatever the bulge: rounding is not squashed by the barrel slope.
+        r, h = 0.6, 0.9
+        rho = np.linspace(0.0, r, 6001)
+        for bulge, rr in ((0.6, 0.1), (1.0, 0.1), (0.5, 0.3)):
+            b = blob(form={"type": "Cylinder", "radius": r, "height": h, "rounding": rr, "bulge": bulge})
+            on_cap = np.stack([rho, np.full_like(rho, h / 2), np.zeros_like(rho)], axis=1)
+            face = rho[clay.sdf([b], on_cap) <= 1e-9].max()
+            self.assertAlmostEqual(face, r - rr, delta=1e-3, msg=f"bulge {bulge}, rounding {rr}")
+            # The middle still swells to r * (1 + bulge), where the slope (and the scale) is 1.
+            mid = clay.sdf([b], np.array([[r * (1 + bulge), 0.0, 0.0]]))[0]
+            self.assertAlmostEqual(float(mid), 0.0, places=9)
+        mesh = mesher.mesh_clay([blob(form={"type": "Cylinder", "radius": r, "height": h, "rounding": 0.3,
+                                            "bulge": 0.5})], grid=64)
+        self.assertTrue(mesh.is_watertight)
+        v = np.asarray(mesh.vertices)
+        top = v[v[:, 1] > h / 2 - 0.005]
+        self.assertGreater(np.hypot(top[:, 0], top[:, 2]).max(), 0.25)   # a flat lid, not a nub
+
     NOISY = {"type": "Cylinder", "radius": 0.5, "height": 0.8, "rounding": 0.08}
 
     def noisy(self, amp: float, seed: int = 0) -> list:
@@ -257,6 +276,10 @@ class ClayJsonTests(unittest.TestCase):
         self.assertEqual((d["form"]["rounding"], d["form"]["bulge"]), (0.12, 0.05))
         self.assertEqual(d["noise"], {"amp": 0.015, "scale": 0.15, "seed": 7, "octaves": 2})
         self.assertEqual(clay.Blob.from_dict(d).to_dict(), d)
+        # amp 0 turns noise off, with or without a scale (clay_edit on a blob that never had noise).
+        self.assertIsNone(blob(form={"type": "Sphere", "radius": 1}, noise={"amp": 0}).noise)
+        with self.assertRaises(ValueError):
+            blob(form={"type": "Sphere", "radius": 1}, noise={"amp": 0.01})   # real noise still needs a scale
         plain = blob(form={"type": "Cylinder", "radius": 0.5, "height": 1.0, "bulge": 0.0}).to_dict()
         self.assertNotIn("bulge", plain["form"])
         self.assertNotIn("noise", plain)

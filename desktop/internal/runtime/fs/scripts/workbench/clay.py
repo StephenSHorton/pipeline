@@ -134,16 +134,20 @@ class Form:
         rr = min(max(d["rounding"], 0.0), r, half)
         radial = np.hypot(x, z) - r
         bulge = _bulge(d)
+        k = 1.0
         if bulge:
             # Barrel: a parabola in y, bulge * r at the middle and 0 at the caps (staves meet the lid at an angle,
-            # as on a real barrel). Measured straight out, a sloped wall reads too far by sqrt(1 + slope^2);
-            # dividing by it keeps the estimate close for gentle bulges (no longer exact).
+            # as on a real barrel). Measured straight out, a sloped wall reads too far by sqrt(1 + slope^2), so the
+            # whole distance is divided by it. Only the result: dividing radial before the rim rounding would round
+            # in squashed units where the slope peaks (the caps), shrinking the flat cap face to r - k * rr, nearly
+            # a point at large rounding. A positive scale leaves the zero set where it is, so the surface is
+            # exactly the authored one and the field stays a lower-bound distance estimate.
             t = np.clip(y / half, -1.0, 1.0)
             radial = radial - bulge * r * (1.0 - t * t)
             slope = 2.0 * bulge * r * t / half
-            radial = radial / np.sqrt(1.0 + slope * slope)
+            k = np.sqrt(1.0 + slope * slope)
         q = np.stack([radial + rr, np.abs(y) - half + rr], axis=1)
-        return np.minimum(q.max(axis=1), 0.0) + np.linalg.norm(np.maximum(q, 0.0), axis=1) - rr
+        return (np.minimum(q.max(axis=1), 0.0) + np.linalg.norm(np.maximum(q, 0.0), axis=1) - rr) / k
 
 
 def _bulge(d: dict) -> float:
@@ -211,6 +215,11 @@ class Noise:
             return None
         if not isinstance(d, dict):
             raise ValueError(f"blob {blob!r}: noise must be {{amp, scale, seed?, octaves?}}")
+        # amp first: amp 0 is how clay_edit switches noise off, and on a blob without noise there is no scale to
+        # merge it with, so {"amp": 0} alone must not be refused for the scale it does not need.
+        amp = float(d.get("amp", 0.0))
+        if amp <= 0:
+            return None
         if "scale" not in d:
             raise ValueError(f"blob {blob!r}: noise needs 'scale' (feature size, m)")
         scale = float(d["scale"])
@@ -219,9 +228,6 @@ class Noise:
         octaves = int(d.get("octaves", 2))
         if not OCTAVES[0] <= octaves <= OCTAVES[1]:
             raise ValueError(f"blob {blob!r}: noise octaves must be {OCTAVES[0]}..{OCTAVES[1]}")
-        amp = float(d.get("amp", 0.0))
-        if amp <= 0:
-            return None   # amp 0 is how clay_edit switches noise off
         # Clamped here, so clay.json records the noise that was actually meshed.
         amp = round(min(amp, cls.max_amp(scale, octaves)), 6)
         return cls(amp=amp, scale=scale, seed=int(d.get("seed", 0)), octaves=octaves)
