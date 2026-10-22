@@ -110,7 +110,8 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
         {summary ? <span className="text-[length:calc(12px*var(--fs))] text-ink-3 tabular-nums">{summary}</span> : null}
         <ChevronDown aria-hidden="true" size={15} strokeWidth={2.2} className={cn("ml-auto shrink-0 text-ink-3 transition-transform", !open && "-rotate-90")} />
       </button>
-      <div id={bodyId} className={cn("min-h-0 flex-col gap-1.5", open ? "flex" : "hidden")}>
+      {/* overflow-y-auto: in the viewer's left column the panel may shrink (AssetScreen), and its body scrolls then. */}
+      <div id={bodyId} className={cn("min-h-0 flex-col gap-1.5 overflow-y-auto [scrollbar-width:thin]", open ? "flex" : "hidden")}>
         {g.takes.length ? (
           <div
             role="group"

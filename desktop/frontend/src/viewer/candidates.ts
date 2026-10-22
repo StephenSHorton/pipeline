@@ -105,11 +105,15 @@ export const KIND_NAMES: Record<AssetOutput, string> = {
   sprite: "2D sprite",
 };
 
-/** The pane tag (ix:5130): Rigged model / PS1 model / Photo bake / 3D model. */
+/**
+ * The pane tag (ix:5130): Rigged model / PS1 model / Photo bake / 3D model. An older asset's lookdev / pbr paint
+ * (textured.glb, pbr.glb) is tagged Photo bake too, so the tag matches the tab viewableLods gives it.
+ */
 export function fileTag(file: string, lod: string): string {
   if (lod === RIGGED || /rigged/i.test(file)) return "Rigged model";
   if (/^psx/i.test(file) || lod === "psx") return "PS1 model";
-  if (/photo/i.test(file) || lod === "photo") return "Photo bake";
+  if (/photo/i.test(file) || lod === "photo") return PHOTO_BAKE;
+  if ((lod === "lookdev" || lod === "pbr") && /^(textured|pbr)\.glb$/i.test(file)) return PHOTO_BAKE;
   return "3D model";
 }
 

@@ -107,5 +107,9 @@ describe("viewer candidates", () => {
     expect(fileTag("psx.glb", "psx")).toBe("PS1 model");
     expect(fileTag("textured_photo.glb", "photo")).toBe("Photo bake");
     expect(fileTag("mesh.glb", "hero")).toBe("3D model");
+    // An older asset's paint stands in as the Photo bake tab, so its pane tag says so too.
+    expect(fileTag("textured.glb", "lookdev")).toBe("Photo bake");
+    expect(fileTag("pbr.glb", "pbr")).toBe("Photo bake");
+    expect(fileTag("mesh_lookdev.glb", "lookdev")).toBe("3D model");
   });
 });

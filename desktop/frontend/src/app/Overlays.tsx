@@ -20,8 +20,9 @@ function ToastHost() {
   const hide = useUi((s) => s.hideToast);
   if (!t) return null;
   return (
-    // 24 px off the bottom: the versions panel moved to the left column, so nothing below the stage to clear.
-    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
+    // 24 px off the bottom: the versions panel moved to the left column, so nothing below the stage to clear. Phones
+    // are the exception: Concept, Stack and Export put the panel last, along the bottom edge, so 80 px clears it.
+    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4 max-sm:bottom-20">
       <div
         key={t.id}
         role="status"

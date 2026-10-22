@@ -50,7 +50,8 @@ export function defaultsFromSearch(search = ""): StackState {
     contrast: 1.2,
     saturation: 1.2,
     shade: true,
-    auto: true,
+    // Stephen: spin starts off (the 3D viewer too); the Sync toggle turns it on.
+    auto: false,
     look: urlLook && LOOKS.includes(urlLook) ? urlLook : "voxel",
     pixel: urlParams.get("pixel") !== "0",
     pixelSize: Math.max(1, Math.min(8, Number(urlParams.get("px")) || 3)),

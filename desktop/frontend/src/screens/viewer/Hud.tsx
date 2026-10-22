@@ -61,7 +61,7 @@ export function Hud(p: HudProps) {
     <div data-hud className="pointer-events-none absolute inset-0 z-[5] text-ink tracking-[var(--track)]">
       {/* The asset card, the panel rail under it (legacy left cubby rail), then the versions panel: the left side
           is one stack. The column stops above the bottom pickers on phones and scrolls the open panel instead of
-          running off the screen; the versions panel keeps its size (it scrolls its own thumbnails). */}
+          running off the screen; the versions panel shrinks with the rail and scrolls its own body. */}
       <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:max-h-[calc(100%-160px)]">
         <AssetCard {...p} info={info} />
         <PanelRail side="left" base={p.panel} />

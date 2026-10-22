@@ -154,7 +154,7 @@ describe("defaults", () => {
       contrast: 1.2,
       saturation: 1.2,
       shade: true,
-      auto: true,
+      auto: false,
       look: "voxel",
       pixel: true,
       pixelSize: 3,

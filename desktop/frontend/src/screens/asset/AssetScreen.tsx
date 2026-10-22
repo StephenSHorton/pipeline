@@ -34,7 +34,9 @@ export function AssetScreen({ stem, lod }: { stem: string; lod?: string }) {
   if (!stage) return null;
   const props: StageProps = { stem, stage, flow, flowVersion, intent, enter: (s: Stage) => enter(s) };
   const viewer = stage === "mesh" || stage === "rig";
-  const versions = stage !== "ideas" ? <VersionsPanel key={stem} {...props} /> : null;
+  // In the viewer's left column the panel may shrink with the rail, so a short stage scrolls its body instead of
+  // running it under the bottom pickers (the column is capped above them on phones).
+  const versions = stage !== "ideas" ? <VersionsPanel key={stem} {...props} className={viewer ? "min-h-0 shrink" : undefined} /> : null;
   return (
     <div className="absolute inset-0 flex flex-col sm:flex-row">
       {versions && !viewer ? (
