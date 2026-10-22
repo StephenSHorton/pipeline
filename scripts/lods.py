@@ -76,14 +76,20 @@ def build(out: Path, stem: str) -> dict:
 def put(out: Path, stem: str, item: dict) -> dict:
     """Upsert one entry into out/lods.json and write it. An entry with the same id is replaced where it stands;
     a new one goes after the last entry SPECS orders before it (after photo, for psx), else first. Entries this
-    module does not know (paint, clean, ...) keep their places. No lods.json yet: a list of just this entry."""
+    module does not know (paint, clean, ...) keep their places. No lods.json yet (a make that stopped before its lods
+stage): the whole list from the folder, as build() would write it, so the models already there stay in the tabs."""
     path = out / "lods.json"
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
             raise ValueError("not an object")
     except (OSError, ValueError):
-        doc = {"stem": stem, "lods": []}
+        # A list of only this entry would hide the folder's other models: the app's tabs list nothing else once
+        # lods.json is non-empty. A metadata file build() cannot read leaves just this entry, as before.
+        try:
+            doc = build(out, stem)
+        except (OSError, ValueError):
+            doc = {"stem": stem, "lods": []}
     lods = list(doc.get("lods") or [])
     at = next((i for i, x in enumerate(lods) if x.get("id") == item["id"]), None)
     if at is not None:

@@ -51,9 +51,10 @@ def _run(root: Path, argv: list[str], env: dict[str, str] | None = None) -> str:
 
 def retexture(root: Path, glb: Path, out: Path, views: list[Path], first_facing: str | None = None,
               mirror: bool = False, erode: float | None = None, keep: float | None = None,
-              first_wins: bool = False) -> dict:
+              first_wins: bool = False, mirror_ends: bool = False) -> dict:
     """retexture.py glb -o out --view ... Only the first view's facing can be stated; the others are read from
-    their file names (front, back, left, right, side), as retexture does."""
+    their file names (front, back, left, right, side), as retexture does. mirror_ends (with mirror) passes
+    --mirror-ends: a front-on or back-on view mirrors onto the opposite end, not through the z mid-plane."""
     argv = [str(SCRIPTS / "retexture.py"), str(glb), "-o", str(out)]
     for v in views:
         argv += ["--view", str(v)]
@@ -61,6 +62,8 @@ def retexture(root: Path, glb: Path, out: Path, views: list[Path], first_facing:
         argv += ["--first-facing", first_facing]
     if mirror:
         argv.append("--mirror")
+        if mirror_ends:
+            argv.append("--mirror-ends")
     if erode:
         argv += ["--erode", str(erode)]
     if keep is not None:

@@ -544,15 +544,17 @@ class Workbench:
         facing = views[0].get("facing")
         # Every texel from the photo unless asked otherwise: a front-on photo also mirrors onto the far end, and
         # fill paints the photo's own swatch on whatever still has only the base (Stephen's call on the hay bale).
-        mirror = bool(a.get("mirror")) or (a.get("mirror_ends", True) is not False and bake.end_on(pics[0], facing))
+        ends = a.get("mirror_ends", True) is not False and bake.end_on(pics[0], facing)
+        mirror = bool(a.get("mirror")) or ends
         filling = (a.get("fill") or "photo") == "photo"
 
         def run() -> dict:
             bench.mkdir(parents=True, exist_ok=True)
             dest = self.numbered(bench, "bake")
             info = bake.retexture(self.root, glb, dest, pics, facing, mirror,
-                                  a.get("erode"), a.get("keep"), bool(a.get("first_wins", True)))
+                                  a.get("erode"), a.get("keep"), bool(a.get("first_wins", True)), ends)
             info["mirror"] = mirror
+            info["mirror_ends"] = ends
             if filling:
                 info["fill"] = bake.fill(self.root, dest, pics[0], dest, a.get("keep"))
             info["glb"] = self.rel(dest)
@@ -577,6 +579,13 @@ class Workbench:
             try:
                 report = bake.psx(self.root, glb, tmp / "psx", tmp / "psx.glb", name, float(a["height"]),
                                   a["facing"], a.get("faces"), a.get("atlas"))
+                # The cut takes tens of seconds and write() checked the stem only before it. A generate started
+                # meanwhile writes these same files (psx.glb, psx/, lods.json); moving ours in would mix the two.
+                # Asked again here the window shrinks to a few renames; the finally drops the cut, the PSX stays.
+                if self.factory.writing(stem):
+                    raise ToolError(f"a factory job started writing {stem} during the PSX cut; the cut was dropped "
+                                    "and the published PSX is as it was. Wait for the job (job_status), then run "
+                                    "psx again")
                 out_dir = folder / "psx"
                 if out_dir.is_dir():  # generate.sh clears psx/ before its cut too: no other name's files linger
                     for p in out_dir.iterdir():

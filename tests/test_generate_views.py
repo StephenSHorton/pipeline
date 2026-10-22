@@ -392,6 +392,7 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual(views, ["lifted.png"])
         self.assertEqual(args[args.index("--first-facing") + 1], "right")
         self.assertIn("--mirror", args)
+        self.assertNotIn("--mirror-ends", args)   # a plain make: every view mirrors through z, as it always did
 
     def test_the_views_photo_bakes_first_and_wins(self) -> None:
         # A photo draw's views.json names the photo it drew from: it is cut out and goes first with --first-wins,
@@ -523,6 +524,7 @@ class GenerateViewsTests(unittest.TestCase):
         args = self.retexture_args()
         self.assertEqual(args[args.index("--first-facing") + 1], "camera")
         self.assertIn("--mirror", args)
+        self.assertIn("--mirror-ends", args)
         self.assertIn("(mirror: on)", proc.stdout)
         fill_args = json.loads((self.root / "fill.args.json").read_text())
         glb = str(self.out("textured_photo.glb"))
@@ -532,17 +534,19 @@ class GenerateViewsTests(unittest.TestCase):
         # Facing away mirrors onto the front the same way; --mirror-ends off keeps the photo to its end but fills.
         proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo", "--facing", "away")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("--mirror", self.retexture_args())
+        self.assertIn("--mirror-ends", self.retexture_args())
         (self.root / "fill.args.json").unlink()
         proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo",
                             "--mirror-ends", "off")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertNotIn("--mirror", self.retexture_args())
+        self.assertNotIn("--mirror-ends", self.retexture_args())
         self.assertTrue((self.root / "fill.args.json").exists())
         # A side-on photo still mirrors as before (its far side), and fills.
         proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo", "--facing", "left")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("--mirror", self.retexture_args())
+        self.assertNotIn("--mirror-ends", self.retexture_args())
 
     def test_a_failed_fill_is_degraded_not_fatal(self) -> None:
         (self.root / "scripts" / "workbench").mkdir()

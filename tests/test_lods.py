@@ -64,6 +64,14 @@ class Lods(unittest.TestCase):
         doc = json.loads((self.out / "lods.json").read_text())
         self.assertEqual([x["id"] for x in doc["lods"]], ["psx", "hero"])  # nothing ordered before psx: first
 
+    def test_put_without_lods_json_keeps_the_folders_models(self) -> None:
+        # A make that stopped before its lods stage: the photo bake and hero are there, lods.json is not.
+        self.touch("textured_photo.glb", "mesh.glb", "psx.glb")
+        lods.put(self.out, "bale", {"id": "psx", "file": "psx.glb", "label": "PSX", "faces": 9})
+        doc = json.loads((self.out / "lods.json").read_text())
+        self.assertEqual([x["id"] for x in doc["lods"]], ["photo", "psx", "hero"])
+        self.assertEqual(doc["lods"][1]["faces"], 9)  # the given entry, not build()'s
+
     def test_cli_is_what_reduce_runs(self) -> None:
         self.assertIn('"$ROOT/scripts/lods.py" "$OUT"', (ROOT / "scripts" / "reduce.sh").read_text())
         self.touch("mesh.glb")

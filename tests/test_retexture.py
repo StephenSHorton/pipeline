@@ -185,7 +185,7 @@ class CoverAndEndMirrorTests(unittest.TestCase):
         plain = self.cap_red(self.bake()[0])
         self.assertGreater(max(plain), 0.6, plain)
         self.assertLess(min(plain), 0.1, plain)
-        albedo, cover = self.bake("--mirror")
+        albedo, cover = self.bake("--mirror", "--mirror-ends")
         both = self.cap_red(albedo)
         self.assertGreater(min(both), 0.6, both)
         # The barrel between the ends, side-on to the camera, stays mostly unreached: the cover says so.
@@ -195,9 +195,13 @@ class CoverAndEndMirrorTests(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "scripts"))
         import retexture
 
-        self.assertAlmostEqual(retexture.mirror_az(25.0, 0.0), 155.0)    # looking along z: through z
-        self.assertAlmostEqual(retexture.mirror_az(80.0, 0.0), 280.0)    # looking along x: through x
-        self.assertAlmostEqual(retexture.mirror_az(80.0, -90.0), 100.0)  # side-on: always the z mid-plane, as before
+        # --mirror-ends: the vertical mid-plane most across the line of sight.
+        self.assertAlmostEqual(retexture.mirror_az(25.0, 0.0, True), 155.0)    # looking along z: through z
+        self.assertAlmostEqual(retexture.mirror_az(80.0, 0.0, True), 280.0)    # looking along x: through x
+        self.assertAlmostEqual(retexture.mirror_az(80.0, -90.0, True), 100.0)  # side-on: always the z mid-plane
+        # Plain --mirror is what it always was, for every view: through z (a ref of the front end fitted at 105).
+        for az, off in ((80.0, 0.0), (105.0, None), (80.0, 180.0), (25.0, 0.0), (80.0, -90.0)):
+            self.assertAlmostEqual(retexture.mirror_az(az, off), (180.0 - az) % 360)
 
 
 if __name__ == "__main__":

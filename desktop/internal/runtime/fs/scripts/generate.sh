@@ -751,13 +751,17 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   done
   [[ -n "$PHOTO_VIEW" ]] || VIEW_ARGS+=(--first-facing "$FIRST_FACING")
   OPPOSITE=""
+  ENDS=0
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac
   # --fill photo: a front-on or back-on picture with no real view of the other end mirrors onto it too.
+  # --mirror-ends tells retexture to reflect such views across their line of sight; only then, so a plain
+  # --mirror bake (a side-on make without --fill) reflects every view through z exactly as it always did.
   if [[ "$MIRROR_ENDS" == "on" ]]; then
-    case "$FIRST_FACING" in camera) OPPOSITE=back ;; away) OPPOSITE=front ;; esac
+    case "$FIRST_FACING" in camera) OPPOSITE=back; ENDS=1 ;; away) OPPOSITE=front; ENDS=1 ;; esac
   fi
   if [[ -n "$OPPOSITE" && " ${NAMED[*]} " != *" $OPPOSITE "* ]]; then
     VIEW_ARGS+=(--mirror)
+    [[ "$ENDS" -eq 1 ]] && VIEW_ARGS+=(--mirror-ends)
   fi
   # Drop the cutout's edge ring at PS1 sizes.
   [[ "$WANT_PSX" -eq 1 ]] && VIEW_ARGS+=(--erode 0.008)

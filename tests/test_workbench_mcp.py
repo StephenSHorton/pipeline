@@ -288,7 +288,32 @@ class ToolTests(Base):
         self.ok("psx", {"stem": "cart", "glb": src, "height": 40, "facing": "right"})
         doc = json.loads((folder / "lods.json").read_text())
         self.assertEqual(doc["stem"], "cart")
-        self.assertEqual([x["id"] for x in doc["lods"]], ["psx"])
+        # No lods.json: the folder's own models are listed too, as generate.sh's lods stage would list them.
+        self.assertEqual([x["id"] for x in doc["lods"]], ["photo", "psx"])
+
+    def test_psx_dropped_when_a_job_starts_during_the_cut(self) -> None:
+        src = self.asset("bale", quadruped(), "textured_photo.glb")
+        folder = self.root / "out" / "bale"
+        (folder / "psx.glb").write_bytes(b"published")
+        (folder / "psx").mkdir()
+        (folder / "psx" / "bale.obj").write_text("published")
+        seen = self.fake_psx()
+        cut = tools.bake.psx
+
+        def cut_then_job_starts(*args, **kw):
+            report = cut(*args, **kw)
+            self.factory.state = {"ok": True, "state": "running", "stem": "bale", "job_id": "j2"}
+            return report
+
+        tools.bake.psx = cut_then_job_starts
+        res = self.call("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera"})
+        self.assertTrue(res["isError"])
+        self.assertIn("started writing bale during the PSX cut", res["content"][0]["text"])
+        self.assertEqual(len(seen), 1)
+        self.assertEqual((folder / "psx.glb").read_bytes(), b"published")
+        self.assertEqual((folder / "psx" / "bale.obj").read_text(), "published")
+        self.assertFalse((folder / "lods.json").exists())
+        self.assertEqual([p.name for p in folder.iterdir() if p.name.startswith(".")], [])
 
     def test_psx_refused_while_a_job_writes_the_stem(self) -> None:
         src = self.asset("bale", quadruped(), "textured_photo.glb")
@@ -376,6 +401,7 @@ class ToolTests(Base):
         view = [{"path": "out/bale/lifted.png", "facing": "camera"}]
         out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view})
         self.assertTrue(out["mirror"])
+        self.assertTrue(out["mirror_ends"])
         self.assertEqual(out["fill"]["covered_after"], 1.0)
         self.assertLess(out["fill"]["covered_before"], 1.0)
         baked = trimesh.load(self.root / out["glb"], force="mesh").visual.material.baseColorTexture
@@ -389,6 +415,18 @@ class ToolTests(Base):
         out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "fill": "none",
                                         "views": [{"path": "out/bale/lifted.png", "facing": "right"}]})
         self.assertFalse(out["mirror"])
+        # Asked for on a side-on view, the mirror is the plain one (through z): no --mirror-ends reaches retexture.
+        argvs = []
+        real = tools.bake._run
+        self.addCleanup(setattr, tools.bake, "_run", real)
+        tools.bake._run = lambda root, argv, env=None: (argvs.append(argv), real(root, argv, env))[1]
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "fill": "none", "mirror": True,
+                                        "views": [{"path": "out/bale/lifted.png", "facing": "right"}]})
+        self.assertEqual((out["mirror"], out["mirror_ends"]), (True, False))
+        self.assertIn("--mirror", argvs[-1])
+        self.assertNotIn("--mirror-ends", argvs[-1])
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view, "fill": "none"})
+        self.assertIn("--mirror-ends", argvs[-1])
 
     def test_old_render_folders_are_removed(self) -> None:
         glb = self.asset("synth", quadruped())

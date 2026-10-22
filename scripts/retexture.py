@@ -4,7 +4,7 @@
 Hunyuan/AniGen paint is a hallucination in a fragmented atlas. This pass overwrites
 texels the camera actually saw with the input photo. Occluded texels keep the
 generated atlas. Multiple --view images (front/back/top) stack. --mirror also bakes a side-on
-photo, flipped, onto the far side, and a front-on (or back-on) one onto the opposite end. --first-wins puts the first --view (a real photo) over the
+photo, flipped, onto the far side; with --mirror-ends a front-on (or back-on) one goes onto the opposite end. --first-wins puts the first --view (a real photo) over the
 others instead of averaging it in: the rest (drawn views) fill only where it did not reach.
 
 Next to the albedo it writes <out>.cover.png: each texel's photo confidence (splat weight, mirror included, clipped
@@ -290,13 +290,14 @@ def photo_offset(photo, named: list[tuple[str, float]]) -> tuple[float, str]:
     return best[1], best[2]
 
 
-def mirror_az(az: float, off: float | None) -> float:
+def mirror_az(az: float, off: float | None, ends: bool = False) -> float:
     """Azimuth of the camera reflected through the mid-plane that --mirror bakes across (elevation and radius stay).
 
-    Side-on (offset +-90): the glTF z mid-plane, the sagittal plane of a subject standing along x. Otherwise the
-    axis-aligned vertical mid-plane most across the line of sight: z when the camera looks mostly along z (az near
-    0 or 180), else x. Reflecting through z maps az to 180 - az, through x to -az."""
-    if off is not None and abs(off) == 90.0:
+    Without ends (plain --mirror, as it always was): the glTF z mid-plane for every view, the sagittal plane of a
+    subject standing along x. With ends (--mirror-ends): side-on views (offset +-90) still use z; any other view
+    the axis-aligned vertical mid-plane most across its line of sight, z when the camera looks mostly along z (az
+    near 0 or 180), else x. Reflecting through z maps az to 180 - az, through x to -az."""
+    if not ends or (off is not None and abs(off) == 90.0):
         return (180.0 - az) % 360
     a = np.deg2rad(az)
     return (180.0 - az) % 360 if abs(np.cos(a)) >= abs(np.sin(a)) else (-az) % 360
@@ -324,9 +325,13 @@ def main() -> int:
     ap.add_argument("--samples", type=int, default=280_000)
     ap.add_argument("--keep", type=float, default=0.18, help="leave generated albedo where photo confidence is below this")
     ap.add_argument("--mirror", action="store_true",
-                    help="also bake each photo flipped onto the side it cannot see: a side-on one onto the far "
-                         "side (through the glTF z mid-plane), a front-on or back-on one onto the opposite end "
-                         "(through the mid-plane across the camera's forward axis)")
+                    help="also bake each photo flipped onto the side it cannot see: through the glTF z mid-plane, "
+                         "the far side of a side-on one")
+    # Its own flag so a plain --mirror bake (generate.sh without --fill photo) stays byte-identical: the end rule
+    # reflects a view that looks along x through x, where --mirror alone always reflected through z.
+    ap.add_argument("--mirror-ends", action="store_true",
+                    help="with --mirror: a view that is not side-on mirrors through the vertical mid-plane across "
+                         "its line of sight instead, so a front-on or back-on photo lands on the opposite end")
     ap.add_argument("--erode", type=float, default=0.0,
                     help="pull the bake mask in by this fraction of the photo's longer side (drops cutout halos)")
     ap.add_argument("--first-facing", choices=sorted(FACING_OFFSET), default=None,
@@ -433,7 +438,7 @@ def main() -> int:
             # sagittal plane (glTF z = centre), so the reflected camera sees it as the photo flipped left-right.
             # A front-on or back-on photo: the far END is the near one reflected through the mid-plane across the
             # line of sight (a bale's two round ends, a crate's front and back), the same flipped photo.
-            meye = eye_on_sphere(center, rad, mirror_az(az, off), el)
+            meye = eye_on_sphere(center, rad, mirror_az(az, off, args.mirror_ends), el)
             splat(pts, nrm, uv_pts, meye, center, rgb[:, ::-1].copy(), alpha_fit[:, ::-1].copy(),
                   alpha_bake[:, ::-1].copy(),
                   accum_m, weight_m, Path(view).name + " (mirrored)")
