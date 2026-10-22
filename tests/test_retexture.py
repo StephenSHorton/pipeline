@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""retexture.py --first-wins: a real photo bakes over the drawn views instead of being averaged with them."""
+"""retexture.py --first-wins: a real photo bakes over the drawn views instead of being averaged with them, and is
+fitted near its --first-facing, anchored on a drawn side view."""
 from __future__ import annotations
 
 import json
@@ -79,6 +80,21 @@ class FirstWinsTests(unittest.TestCase):
         self.assertGreater(red, 0.9)
         self.assertLess(purple, 0.1)  # the soft seam where the photo's edge fades out
         self.assertEqual([f.get("on_top") for f in fit if Path(f["view"]).name == "photo.png"], [True])
+
+    def test_a_drawn_side_view_anchors_the_photo(self) -> None:
+        # The photo shares the canonical's facing: a drawn side view is fitted first, and the photo is then searched
+        # only within 50 degrees of that facing instead of all the way round, where a mirrored match could win.
+        side = cutout(self.tmp / "right.png", (30, 30, 220))
+        out = self.tmp / "out.glb"
+        proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "retexture.py"), str(self.glb), "-o", str(out),
+                               "--view", str(self.photo), "--first-wins", "--view", str(side),
+                               "--first-facing", "right", "--samples", "20000"],
+                              capture_output=True, text=True, timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        fit = json.loads(out.with_suffix(".fit.json").read_text())
+        self.assertEqual([Path(f["view"]).name for f in fit], ["right.png", "photo.png"])
+        gap = (fit[1]["az"] - fit[0]["az"] + 180) % 360 - 180
+        self.assertLessEqual(abs(gap), 50)
 
 
 if __name__ == "__main__":

@@ -386,7 +386,8 @@ class GenerateViewsTests(unittest.TestCase):
 
     def test_the_views_photo_bakes_first_and_wins(self) -> None:
         # A photo draw's views.json names the photo it drew from: it is cut out and goes first with --first-wins,
-        # with no --first-facing (its angle is unknown); the drawn views follow as before.
+        # keeping the canonical's --first-facing (the views were drawn in its pose, and a free fit of a front
+        # photo can land on the back); the drawn views follow as before.
         self.stub("scripts/shape_mv.sh", SHAPE_MV_OK)
         vj = self.views_json()
         (self.root / "in").mkdir()
@@ -400,8 +401,9 @@ class GenerateViewsTests(unittest.TestCase):
         views = [Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"]
         self.assertEqual(views, ["photo.png", "right.png", "front.png", "back.png", "left.png"])
         self.assertEqual(args[args.index("--view") + 2], "--first-wins")
-        self.assertNotIn("--first-facing", args)
+        self.assertEqual(args[args.index("--first-facing") + 1], "right")
         self.assertNotIn("--mirror", args)
+        self.assertEqual(self.degraded_lines(proc), [])
         self.assertTrue(self.out("views", "lifted", "photo.png").is_file())
         roles = {v["id"]: v["role"] for v in json.loads(self.out("views.json").read_text())["views"]}
         self.assertEqual(roles["photo"], "reference")
@@ -410,6 +412,9 @@ class GenerateViewsTests(unittest.TestCase):
         proc = self.run_gen("--image", str(self.image), "--views-json", str(vj), "--quality", "textured")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("changed since the draw", proc.stdout)
+        self.assertEqual([ln.split(":")[0] for ln in self.degraded_lines(proc)], ["DEGRADED retexture photo_skipped"])
+        deg = json.loads(self.out("degraded.json").read_text())["degraded"]
+        self.assertIn("photo_skipped", [r["code"] for r in deg])
         args = self.retexture_args()
         self.assertEqual([Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"][0], "right.png")
         self.assertEqual(args[args.index("--first-facing") + 1], "right")
@@ -430,6 +435,11 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertIn("iou", shape["orient"])
         self.assertEqual(len(trimesh.load(self.out("mesh_hero.glb"), force="mesh").faces), faces)
         self.assertTrue(self.out("lifted.png").is_file(), "isolate still runs: the bake reads lifted.png")
+        # The factory takes the extension in any case, so this script must too.
+        upper = self.tmp / "Clay.GLB"
+        trimesh.creation.box(extents=(1.0, 1.0, 1.0)).export(upper, file_type="glb")
+        proc = self.run_gen("--image", str(self.image), "--mesh", str(upper))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_a_supplied_mesh_with_views_is_not_turned(self) -> None:
         self.stub("scripts/shape_mv.sh", SHAPE_MV_OK)

@@ -42,12 +42,18 @@ The workbench only ever writes under `out/<stem>/workbench/`. Every write follow
 
 1. **Busy check:** it asks the factory `GET /status` and refuses if a running job owns that stem.
 2. **Take:** afterwards it calls `POST /flow/<stem>/snapshot` (stage `mesh`). Each change becomes a take, and
-   `pick_take` goes back to an earlier one.
+   `pick_take` goes back to an earlier one. The exceptions are `clay_set` and `clay_edit`: they change only
+   `clay.json`, and a take copies the whole mesh stage (tens of MB on a real asset). Their change rides along in
+   the next `clay_mesh` take, and a pick saves unsaved files as a take before going back.
+   The busy check, the read of whatever is being changed, and the write all happen under one lock per stem, and
+   `pick_take` waits for that lock too. GLBs are written under a hidden temp name and then renamed into place, so a
+   factory job never copies a half-written file.
 3. **Factory down:** if the factory is not running, the write still goes ahead, because no job can be racing it.
    No take is kept, and the result says so.
 
 `look` and `compare_reference` write their PNGs to a temp folder, because a render is not a change to the asset.
-Each result gives the PNG's path and also attaches the image.
+Each result gives the PNG's path and also attaches the image. A render's folder is removed by a later call once it is
+ten minutes old.
 
 Paths are relative to the repo root, and nothing outside it is read.
 
@@ -64,7 +70,7 @@ Paths are relative to the repo root, and nothing outside it is read.
 | `clay_edit` | `stem`, `name`, `patch` | Changes one blob. `form` merges unless its type changes. `name` renames the blob, and `{remove: true}` deletes it. |
 | `clay_mesh` | `stem`, `grid?`, `height?`, `texture?` | Writes `workbench/clay.glb` with UVs and the blob colours. |
 | `mesh_edit` | `stem`, `src`, `op`, `params?` | Writes `workbench/edit_N.glb`. Ops: `remove_floaters` (`keep`, `min_faces`) and `delete_sphere` (`center`, `radius`). |
-| `bake_photo` | `stem`, `glb`, `views`, `mirror?`, `erode?`, `keep?`, `first_wins?` | Runs `retexture.py` and writes `workbench/bake_N.glb`. You can state the facing of the first view only; later views are read from their file names. |
+| `bake_photo` | `stem`, `glb`, `views`, `mirror?`, `erode?`, `keep?`, `first_wins?` | Runs `retexture.py` and writes `workbench/bake_N.glb`. You can state the facing of the first view only; later views are read from their file names. Every view must be a cutout with a transparent background, such as `lifted.png` or `views/lifted/*.png`: an opaque photo is refused, because its background would be baked onto the model. |
 | `psx` | `stem`, `glb`, `height`, `facing`, `faces?`, `atlas?`, `name?` | Runs `psx_lowpoly.py` with its facing check off. Writes `workbench/psx/` and `workbench/psx.glb`. `height` is in .obj units (s&box inches). |
 | `draw_views` | `stem`, `image`, `prompt`, `intent?` | Factory job (draw model): four turnaround views drawn with the photo as a reference. |
 | `generate` | `image`, `stem?`, `mesh?`, `paint?`, `quality?`, `psx?`, ... | Factory job: runs `generate.sh`. With `mesh` it uses that GLB as the shape instead of hy3d's. With `paint: false` it unwraps and bakes the photo, so a clay asset loads no model. |

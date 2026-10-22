@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -286,10 +287,15 @@ def main() -> int:
     # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
     # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
     # coin-flip, so a front-first free fit can land on the back. Splats accumulate, so order only moves fit.json.
+    # With --first-wins the first view is a real photo, maybe a 3/4 shot: a drawn side view anchors better, and the
+    # photo is then searched only around its --first-facing.
     offsets = [view_offset(Path(v).stem.lower()) for v in args.view]
     if args.first_facing is not None:
         offsets[0] = FACING_OFFSET[args.first_facing]
-    side = next((i for i, o in enumerate(offsets) if o is not None and abs(o) == 90.0), 0)
+    sides = [i for i, o in enumerate(offsets) if o is not None and abs(o) == 90.0]
+    if args.first_wins and len(sides) > 1:
+        sides = sides[1:] if sides[0] == 0 else sides
+    side = sides[0] if sides else 0
     order = [side] + [i for i in range(len(args.view)) if i != side]
     top = order.index(0) if args.first_wins else -1  # where the first --view landed in the fit order
     views = [args.view[i] for i in order]
@@ -390,10 +396,14 @@ def main() -> int:
     vis.material.baseColorTexture = locked
     vis.material.image = locked
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    mesh.export(args.out)
     sidecar = Path(args.out).with_suffix(".albedo.png")
     locked.save(sidecar)
     Path(args.out).with_suffix(".fit.json").write_text(json.dumps(reports, indent=2) + "\n")
+    # The GLB last, under a hidden name and renamed into place: whoever reads it (generate.sh --mesh, a take) gets
+    # the old file or the whole new one, and its sidecars are already there.
+    tmp = Path(args.out).with_name(f".{Path(args.out).name}.tmp")
+    mesh.export(tmp, file_type=Path(args.out).suffix.lstrip(".").lower() or "glb")
+    os.replace(tmp, args.out)
     print(f"retexture: wrote {args.out}  covered {hit.mean()*100:.1f}% of atlas")
     return 0
 

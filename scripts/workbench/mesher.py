@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -288,7 +289,10 @@ def clay_glb(blobs, out: str | Path, grid: int = 96, height: float | None = None
                    lambda p, f, b: clay.colour_at(blobs, p))
     scale = normalise_height(tex, height) if height else 1.0
     Path(out).parent.mkdir(parents=True, exist_ok=True)
-    tex.export(out)
+    # Hidden name, then a rename: a factory job or a take copying clay.glb mid-write gets the old file or the new.
+    tmp = Path(out).with_name(f".{Path(out).name}.tmp")
+    tex.export(tmp, file_type="glb")
+    os.replace(tmp, out)
     lo, hi = tex.bounds
     return {
         "path": str(out),

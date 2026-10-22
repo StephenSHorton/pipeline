@@ -12,9 +12,10 @@ of those is a number here, so a fix can be checked by measuring again instead of
 - look: textured renders from fixed ortho cameras (rig_render's views and contact sheet).
 - measure: bounds, triangles, pieces, head offset and yaw, mirror IoU, circularity. Everything is measured on
   area-weighted surface samples, not vertices: PSX meshes are unwelded, flat-shaded triangle soup, and their vertices
-  bunch where the triangles are small. Silhouettes are rasterised triangles. The body frame (forward, lateral,
-  centre line) is rest_check's, with the head end taken from the pipeline's facing (glTF +Z forward) rather than
-  rest_check's highest-end rule, which picks the rump of a grazing sheep or pig.
+  bunch where the triangles are small. Silhouettes are rasterised triangles. The body frame is the pipeline's
+  facing: forward glTF +Z, lateral +X, so mirror_iou flips left for right whatever the proportions (rest_check's
+  long axis is X for anything wider than deep, and its highest-end rule picks the rump of a grazing sheep or pig).
+  The centre line is fitted to the barrel as rest_check does when the body is longer than wide.
 - compare_reference: fits retexture's camera to the photo's silhouette, renders the model's silhouette from it, and
   reports the IoU plus the regions the model is missing or has extra.
 """
@@ -96,9 +97,31 @@ def pieces(mesh: trimesh.Trimesh) -> int:
     return int(len(np.unique(lab[np.unique(G)])))
 
 
+def mid_line(P: np.ndarray, lat: np.ndarray, n: int = 20) -> float:
+    """The body's lateral middle: the median over height slices of each slice's median. A part out to one side at
+    one height (an arm, a post on a cart) moves its own slices, not the answer."""
+    h, x = P @ UP, P @ lat
+    edges = np.linspace(h.min(), h.max(), n + 1)
+    mids = [np.median(x[(h >= a) & (h <= b)]) for a, b in zip(edges[:-1], edges[1:]) if ((h >= a) & (h <= b)).any()]
+    return float(np.median(mids))
+
+
 def body_line(P: np.ndarray, toward: np.ndarray | None = FORWARD) -> dict:
-    """rest_check's frame plus the barrel's centre line (lateral = k[0] * forward + k[1], forward about c)."""
+    """The body frame and its centre line (lateral = k[0] * forward + k[1], forward about c). With toward, forward is
+    toward and lateral its left; the centre line is fitted to the barrel when the body is longer than wide, else it
+    is the body's middle. toward None: rest_check's frame (the long axis, head at the highest end)."""
     c, fwd, lat, f = rest_check._frame(P, toward)
+    if toward is not None:
+        # A known facing is the frame, not just the head end: _frame's forward is the longest ground axis, which for
+        # anything wider than it is deep (shoulders, a bale, a cart) is X, and would mirror front-to-back.
+        fwd = toward - UP * (toward @ UP)
+        fwd = fwd / np.linalg.norm(fwd)
+        lat = np.cross(UP, fwd)
+        f = (P - c) @ fwd
+        if np.ptp(f) <= np.ptp(P @ lat):
+            # No barrel along forward (an upright figure, a bale, a cart): slices across a short axis fit no line,
+            # and turning onto one would swing forward back to X. Mirror about the middle of the body instead.
+            return {"c": c, "fwd": fwd, "lat": lat, "k": np.array([0.0, mid_line(P, lat)])}
     for i in range(4):
         body = rest_check._centres(P, f)[4:12]
         k = np.polyfit((body - c) @ fwd, body @ lat, 1)

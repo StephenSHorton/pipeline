@@ -11,15 +11,24 @@ factory to snapshot the mesh stage, so each change is a take that can be picked 
 not running at all, nothing can be racing the write: it goes ahead, and the result says no take was kept.
 
 The renders look and compare_reference make go to a temp folder, not out/<stem>/workbench/: everything under
-workbench/ belongs to the mesh stage's takes, and a look is not a change to the asset.
+workbench/ belongs to the mesh stage's takes, and a look is not a change to the asset. Each call's folder is
+removed by a later call once it is RENDER_KEEP_S old, so a long session does not fill the temp disk.
+
+A take copies the whole mesh stage (tens of MB of mesh*.glb and textured*.glb on a real asset), so the JSON-only
+clay_set and clay_edit keep none: clay.json rides along in the next clay_mesh's take, and a pick saves it first.
+Products are written to a hidden temp name and renamed into place, so a factory job or a take never copies a
+half-written GLB.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +56,7 @@ FACINGS = sorted(PSX_FACING)
 LODS = ("psx", "mesh", "hero", "lookdev", "game", "proxy", "mv", "clay")
 VIEWS = ("side", "xside", "front", "back", "top", "q")
 STAGES = list(flow.STAGES)
+RENDER_KEEP_S = 600  # a look's folder outlives its answer (the path is in it) by this long
 NOT_YET = ("not yet: {op} arrives with edit.py, after Stephen's critique of the first asset (plan, milestone 1 "
            "step 6). Use remove_floaters or delete_sphere, or rebuild the shape as clay.")
 
@@ -57,6 +67,14 @@ class ToolError(ValueError):
 
 class ArgError(ValueError):
     """Arguments that do not match the tool's schema."""
+
+
+def export_glb(mesh, dest: Path) -> None:
+    """Write a GLB under a hidden name (takes skip dot files) and rename it into place: a reader sees the old file
+    or the whole new one."""
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    mesh.export(tmp, file_type="glb")
+    os.replace(tmp, dest)
 
 
 @dataclass
@@ -178,6 +196,7 @@ class Workbench:
         self.factory = factory or FactoryClient()
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        self._renders = Path(tempfile.gettempdir()) / f"workbench_renders_{os.getpid()}"
         self.tools: dict[str, Tool] = {t.name: t for t in self._registry()}
 
     # ------------------------------------------------------------ calling
@@ -227,6 +246,22 @@ class Workbench:
         except ValueError:
             raise ToolError(f"{raw}: not a picture (jpg, png or webp) under the repo") from None
 
+    def cutout(self, raw: str) -> Path:
+        """A picture with the subject cut out. An opaque one would make its whole frame the silhouette that the bake
+        fits a camera to, and paint the background onto the model."""
+        from PIL import Image
+
+        p = self.picture(raw)
+        with Image.open(p) as im:
+            alpha = im.getchannel("A") if "A" in im.getbands() else None
+            if alpha is None and im.mode == "P" and "transparency" in im.info:
+                alpha = im.convert("RGBA").getchannel("A")
+            opaque = alpha is None or alpha.getextrema()[0] >= 250
+        if opaque:
+            raise ToolError(f"{raw}: no transparent background to cut the subject from; bake a cutout such as "
+                            "out/<stem>/lifted.png or out/<stem>/views/lifted/*.png")
+        return p
+
     def target(self, args: dict) -> Path:
         """The GLB a look/measure/compare is about: glb when given, else the stem's model by lod."""
         if args.get("glb"):
@@ -257,15 +292,20 @@ class Workbench:
         with self._locks_guard:
             return self._locks.setdefault(stem, threading.Lock())
 
-    def write(self, stem: str, note: str, fn: Callable[[], dict]) -> dict:
+    def write(self, stem: str, note: str, fn: Callable[[], dict], take: bool = True) -> dict:
         """Run fn (a write into out/<stem>/workbench/) only when no factory job owns the stem, then keep the result
-        as a mesh take. One workbench write per stem at a time."""
+        as a mesh take (unless take is False). One workbench write per stem at a time: fn reads what it changes
+        itself, under the lock, so two callers editing one stem cannot drop each other's change."""
         check_stem(stem)
         with self._lock(stem):
             busy = self.factory.writing(stem)
             if busy:
                 raise ToolError(f"a factory job is writing {stem}; wait for it (job_status) or cancel it first")
             out = fn()
+            if not take:
+                out["take"] = {"ok": False, "skipped": "a JSON-only change keeps no take of its own; the next "
+                               "clay_mesh's take carries it"}
+                return out
             if busy is None:
                 out["take"] = {"ok": False, "error": "factory not running: wrote without its job check, kept no take"}
                 return out
@@ -288,6 +328,17 @@ class Workbench:
         if not out.get("ok", True):
             raise ToolError(out.get("error") or f"the factory refused ({out.get('http_status')})")
         return out
+
+    def render_dir(self) -> Path:
+        """A fresh folder for one look or compare. Older ones past RENDER_KEEP_S go: their PNG went out as base64."""
+        self._renders.mkdir(parents=True, exist_ok=True)
+        for old in self._renders.iterdir():
+            try:
+                if time.time() - old.stat().st_mtime > RENDER_KEEP_S:
+                    shutil.rmtree(old, ignore_errors=True)
+            except OSError:
+                pass
+        return Path(tempfile.mkdtemp(dir=self._renders))
 
     # ------------------------------------------------------------ eyes
 
@@ -322,7 +373,7 @@ class Workbench:
 
         glb = self.target(a)
         views = a.get("views") or list(eyes.LOOK_VIEWS)
-        out = Path(tempfile.mkdtemp(prefix="workbench_")) / f"{glb.stem}_look.png"
+        out = self.render_dir() / f"{glb.stem}_look.png"
         png = eyes.look(glb, views, int(a.get("size") or 384), out)
         return {"glb": self.rel(glb), "views": views, "png": png, "_image": png}
 
@@ -338,7 +389,7 @@ class Workbench:
 
         glb = self.target(a)
         image = self.picture(a["image"])
-        out = Path(tempfile.mkdtemp(prefix="workbench_")) / f"{glb.stem}_compare.png"
+        out = self.render_dir() / f"{glb.stem}_compare.png"
         res = eyes.compare_reference(glb, image, a.get("facing"), out)
         return {"glb": self.rel(glb), "image": self.rel(image), **res, "_image": res["png"]}
 
@@ -366,48 +417,58 @@ class Workbench:
     def clay_set(self, a: dict) -> dict:
         stem = check_stem(a["stem"])
         new = clay.from_json(a["blobs"])  # ValueError: a bad blob, before anything is written
-        if a.get("replace"):
-            blobs = new
-        else:
-            by_name = {b.name: b for b in new}
-            blobs = [by_name.pop(b.name, b) for b in self._clay(stem)] + list(by_name.values())
-        return self.write(stem, "workbench clay_set", lambda: self._save_clay(stem, blobs))
+
+        def run() -> dict:
+            if a.get("replace"):
+                blobs = new
+            else:
+                by_name = {b.name: b for b in new}
+                blobs = [by_name.pop(b.name, b) for b in self._clay(stem)] + list(by_name.values())
+            return self._save_clay(stem, blobs)
+
+        return self.write(stem, "workbench clay_set", run, take=False)
 
     def clay_edit(self, a: dict) -> dict:
         stem = check_stem(a["stem"])
-        blobs = self._clay(stem)
-        names = [b.name for b in blobs]
-        if a["name"] not in names:
-            raise ToolError(f"no blob {a['name']!r} in {stem}'s clay (has: {', '.join(names) or 'none'})")
-        i = names.index(a["name"])
         patch = dict(a["patch"])
-        if patch.pop("remove", False):
-            if patch:
-                raise ToolError("remove takes no other fields")
-            del blobs[i]
-        else:
-            d = blobs[i].to_dict()
-            form = patch.pop("form", None)
-            if form is not None:
-                if not isinstance(form, dict):
-                    raise ToolError("patch.form must be an object")
-                d["form"] = form if form.get("type", d["form"]["type"]) != d["form"]["type"] else {**d["form"], **form}
-                d["form"].pop("note", None)
-            d.update(patch)
-            blobs[i] = clay.Blob.from_dict(d)
-            clay.from_json([b.to_dict() for b in blobs])  # a rename onto another blob's name
-        return self.write(stem, f"workbench clay_edit {a['name']}", lambda: self._save_clay(stem, blobs))
+        remove = bool(patch.pop("remove", False))
+        form = patch.pop("form", None)
+        if remove and (patch or form is not None):
+            raise ToolError("remove takes no other fields")
+        if form is not None and not isinstance(form, dict):
+            raise ToolError("patch.form must be an object")
+
+        def run() -> dict:
+            blobs = self._clay(stem)
+            names = [b.name for b in blobs]
+            if a["name"] not in names:
+                raise ToolError(f"no blob {a['name']!r} in {stem}'s clay (has: {', '.join(names) or 'none'})")
+            i = names.index(a["name"])
+            if remove:
+                del blobs[i]
+            else:
+                d = blobs[i].to_dict()
+                if form is not None:
+                    same = form.get("type", d["form"]["type"]) == d["form"]["type"]
+                    d["form"] = {**d["form"], **form} if same else dict(form)
+                    d["form"].pop("note", None)
+                d.update(patch)
+                blobs[i] = clay.Blob.from_dict(d)
+                clay.from_json([b.to_dict() for b in blobs])  # a rename onto another blob's name
+            return self._save_clay(stem, blobs)
+
+        return self.write(stem, f"workbench clay_edit {a['name']}", run, take=False)
 
     def clay_mesh(self, a: dict) -> dict:
         from workbench import mesher
 
         stem = check_stem(a["stem"])
-        blobs = self._clay(stem)
-        if not blobs:
-            raise ToolError(f"{stem} has no clay yet (clay_set first)")
         bench = self.bench(stem)
 
         def run() -> dict:
+            blobs = self._clay(stem)
+            if not blobs:
+                raise ToolError(f"{stem} has no clay yet (clay_set first)")
             info = mesher.clay_glb(blobs, bench / "clay.glb", grid=int(a.get("grid") or 96), height=a.get("height"),
                                    texture=int(a.get("texture") or 1024))
             scene.record_clay(bench.parent, stem, "clay.glb")
@@ -446,7 +507,7 @@ class Workbench:
         def run() -> dict:
             bench.mkdir(parents=True, exist_ok=True)
             dest = self.numbered(bench, "edit")
-            out_mesh.export(dest)
+            export_glb(out_mesh, dest)
             return {"stem": stem, "op": op, "src": self.rel(src), "glb": self.rel(dest), **info}
 
         return self.write(stem, f"workbench mesh_edit {op}", run)
@@ -458,7 +519,7 @@ class Workbench:
         if any(v.get("facing") for v in views[1:]):
             raise ToolError("only the first view's facing can be stated; name the others' files front/back/left/"
                             "right/side, which is how retexture reads them")
-        pics = [self.picture(v["path"]) for v in views]
+        pics = [self.cutout(v["path"]) for v in views]
         bench = self.bench(stem)
 
         def run() -> dict:
@@ -537,7 +598,9 @@ class Workbench:
 
     def pick_take(self, a: dict) -> dict:
         stem = check_stem(a["stem"])
-        return self.job(lambda: self.factory.pick(stem, a["stage"], a["take"]))
+        # A pick deletes the stage's live files, workbench/ included: not while a workbench write is mid-way.
+        with self._lock(stem):
+            return self.job(lambda: self.factory.pick(stem, a["stage"], a["take"]))
 
     # ------------------------------------------------------------ the registry
 
@@ -604,7 +667,8 @@ class Workbench:
                        "intent": {"type": "object"}}, ("stem", "image", "prompt")), self.draw_views, "job"),
             Tool("generate", "Factory job: generate.sh through POST /generate. mesh (a .glb under out/<stem>/) is "
                  "used as the shape instead of hy3d's; paint false skips the paint model (unwrap, then the photo "
-                 "bake), so a clay asset loads no model. psx: {facing, height, faces, atlas, up, name}. Returns a "
+                 "bake), so a clay asset loads no shape or paint model (quality psx may still ask the vision model for the facing, "
+                 "inside the job). psx: {facing, height, faces, atlas, up, name}. Returns a "
                  "job_id.",
                  _obj({"stem": STEM, "image": {"type": "string"}, "mesh": GLB, "paint": {"type": "boolean"},
                        "quality": {"type": "string", "enum": ["draft", "textured", "pbr", "stack", "psx"]},

@@ -240,7 +240,8 @@ BAD="$(not_pictures "${CHECK[@]}")"
 [[ -z "$BAD" ]] || refuse_picture "$(printf '%s' "$BAD" | head -1)"
 # The supplied mesh must be a binary glTF: the shape stage takes it as it is.
 if [[ -n "$MESH_IN" ]]; then
-  if [[ ! -f "$MESH_IN" || "${MESH_IN##*.}" != "glb" || "$(head -c 4 "$MESH_IN")" != "glTF" ]]; then
+  MESH_EXT="$(printf '%s' "${MESH_IN##*.}" | tr '[:upper:]' '[:lower:]')"  # bash 3.2: no ${x,,}
+  if [[ ! -f "$MESH_IN" || "$MESH_EXT" != "glb" || "$(head -c 4 "$MESH_IN")" != "glTF" ]]; then
     echo "generate: --mesh wants a .glb file: $MESH_IN" >&2; exit 2
   fi
 fi
@@ -399,7 +400,12 @@ if [[ -n "$PHOTO" ]]; then
   echo "generate: photo=$PHOTO (the views were drawn from it)"
 fi
 if [[ -n "$PHOTO_NOTE" ]]; then
-  echo "generate: $PHOTO_NOTE"
+  # Only a multi-view bake would have used the photo; there, baking without it is a fallback like any other.
+  if [[ "$USE_MV" -eq 1 && "$QUALITY" != "draft" ]]; then
+    degrade retexture photo_skipped "$PHOTO_NOTE"
+  else
+    echo "generate: $PHOTO_NOTE"
+  fi
 fi
 if [[ -n "$PROMPT" ]]; then
   echo "generate: prompt=$PROMPT"
@@ -695,8 +701,10 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   # Every named view, canonical first, then the refs. --first-facing says where the first one looks;
   # --mirror only when a side-on picture has no real opposite view.
   # The views' photo goes before them all, with --first-wins: retexture averages the views it bakes, so only that
-  # flag lets the real photo win where it reaches while the drawn views fill what it never saw. Its angle is
-  # unknown, so no --first-facing: retexture fits it freely, anchored on the drawn views (named by file).
+  # flag lets the real photo win where it reaches while the drawn views fill what it never saw. The views were
+  # drawn in the photo's pose, so it keeps the canonical's --first-facing: retexture searches it within 50 degrees
+  # of that, anchored on a drawn side view. Fitted freely, a front photo of a left/right symmetric subject can
+  # land on the back, where its silhouette matches as well, and win over the drawn back view.
   VIEW_ARGS=()
   NAMED=()
   FIRST_FACING="$FACING"
@@ -721,7 +729,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   for v in "$OUT/views/lifted"/ref-*.png; do
     [[ -f "$v" ]] && VIEW_ARGS+=(--view "$v")
   done
-  [[ -n "$PHOTO_VIEW" ]] || VIEW_ARGS+=(--first-facing "$FIRST_FACING")
+  VIEW_ARGS+=(--first-facing "$FIRST_FACING")
   OPPOSITE=""
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac
   if [[ -n "$OPPOSITE" && " ${NAMED[*]} " != *" $OPPOSITE "* ]]; then

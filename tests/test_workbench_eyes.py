@@ -88,6 +88,23 @@ class Eyes(unittest.TestCase):
         self.assertGreater(centred["mirror_iou"], 0.95)
         self.assertLess(shifted["mirror_iou"], centred["mirror_iou"] - 0.02)
 
+    def test_mirror_is_left_right_when_wider_than_deep(self):
+        # Shoulders wider than the body is deep make X the long ground axis; the mirror must still be about X = 0.
+        def figure(*arm_x):
+            parts = [trimesh.creation.box([0.6, 1.7, 0.3]).apply_translation([0, 0.85, 0])]
+            parts += [trimesh.creation.box([0.6, 0.12, 0.12]).apply_translation([x, 1.4, 0]) for x in arm_x]
+            return trimesh.util.concatenate(parts)
+
+        both = eyes.measure(self.glb("arms", figure(-0.6, 0.6)), n=N)
+        one = eyes.measure(self.glb("arm", figure(0.6)), n=N)
+        self.assertGreater(both["mirror_iou"], 0.97)
+        self.assertLess(one["mirror_iou"], 0.65)
+        # A wheel or bale face-on to the camera (+Z) is round looking along forward: the end view.
+        wheel = trimesh.creation.cylinder(radius=0.5, height=0.4, sections=64).apply_translation([0, 0.5, 0])
+        r = eyes.measure(self.glb("wheel", wheel), n=N)
+        self.assertGreater(r["circularity"], 0.95)
+        self.assertEqual(r["circularity_view"], "end")
+
     def test_circularity(self):
         cyl = eyes.measure(self.glb("cyl", lying_cylinder()), n=N)
         box = eyes.measure(self.glb("box", trimesh.creation.box([1.4, 1.0, 1.0]).apply_translation([0, 0.5, 0])), n=N)

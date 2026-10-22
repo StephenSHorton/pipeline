@@ -160,7 +160,7 @@ class ToolTests(Base):
                   "translation": [0, 0.6, 0]}]
         out, _ = self.ok("clay_set", {"stem": "bale", "blobs": blobs})
         self.assertEqual([b["name"] for b in out["blobs"]], ["bale", "dent"])
-        self.assertTrue(out["take"]["ok"])
+        self.assertIn("skipped", out["take"])  # a few-KB JSON change does not copy the whole mesh stage
         self.ok("clay_edit", {"stem": "bale", "name": "dent", "patch": {"remove": True}})
         self.ok("clay_edit", {"stem": "bale", "name": "bale", "patch": {"form": {"radius": 0.5}}})
         got, _ = self.ok("clay_get", {"stem": "bale"})
@@ -178,8 +178,9 @@ class ToolTests(Base):
         scene = json.loads((glb.parent / "scene.json").read_text())
         self.assertEqual(scene["objects"][0]["kind"], "clay")
         self.assertEqual(scene["objects"][0]["mesh"], "clay.glb")
+        self.assertEqual([p.name for p in glb.parent.iterdir() if p.name.startswith(".")], [])  # no temp left
         snaps = self.factory.snapshots()
-        self.assertEqual(len(snaps), 4)
+        self.assertEqual(len(snaps), 1)  # clay_mesh only
         self.assertTrue(all(c[1] == "/flow/bale/snapshot" and c[2]["stage"] == "mesh" for c in snaps))
         measured, _ = self.ok("measure", {"stem": "bale", "lod": "clay"})
         self.assertEqual(measured["pieces"], 1)
@@ -201,6 +202,61 @@ class ToolTests(Base):
         res = self.call("mesh_edit", {"stem": "junk", "src": src, "op": "delete_sphere", "params": {"radius": 1}})
         self.assertTrue(res["isError"])
         self.assertIn("center is required", res["content"][0]["text"])
+
+    def test_clay_edits_read_under_the_lock(self) -> None:
+        # Another client's edit lands between this call's start and its write (here: during the busy check, which
+        # runs under the lock). Read outside the lock, the second save would drop it.
+        self.ok("clay_set", {"stem": "bale", "blobs": [{"name": "a", "form": {"type": "Sphere", "radius": 0.5}}]})
+        clay_json = self.root / "out" / "bale" / "workbench" / "clay.json"
+        real = self.factory._call
+
+        def racing(method, path, body=None):
+            if path.startswith("/status") and not getattr(racing, "done", False):
+                racing.done = True
+                doc = json.loads(clay_json.read_text())
+                blobs = doc["blobs"] if isinstance(doc, dict) else doc
+                blobs.append({**blobs[0], "name": "b"})
+                clay_json.write_text(json.dumps(doc))
+            return real(method, path, body)
+
+        self.factory._call = racing
+        self.ok("clay_edit", {"stem": "bale", "name": "a", "patch": {"color": "#ff0000"}})
+        got, _ = self.ok("clay_get", {"stem": "bale"})
+        self.assertEqual([b["name"] for b in got["blobs"]], ["a", "b"])
+
+    def test_pick_waits_for_a_workbench_write(self) -> None:
+        (self.root / "out" / "bale").mkdir(parents=True)
+        done = threading.Event()
+        with self.bench._lock("bale"):
+            t = threading.Thread(target=lambda: (self.call("pick_take", {"stem": "bale", "stage": "mesh",
+                                                                         "take": "t1"}), done.set()))
+            t.start()
+            self.assertFalse(done.wait(0.3))
+        t.join(5)
+        self.assertTrue(done.is_set())
+
+    def test_bake_photo_wants_a_cutout(self) -> None:
+        from PIL import Image
+
+        glb = self.asset("bale", trimesh.creation.box(), "mesh.glb")
+        Image.new("RGB", (32, 32), (200, 160, 80)).save(self.root / "out" / "bale" / "input.jpg")
+        Image.new("RGBA", (32, 32), (200, 160, 80, 255)).save(self.root / "out" / "bale" / "flat.png")
+        for pic in ("out/bale/input.jpg", "out/bale/flat.png"):
+            res = self.call("bake_photo", {"stem": "bale", "glb": glb, "views": [{"path": pic}]})
+            self.assertTrue(res["isError"], pic)
+            self.assertIn("lifted.png", res["content"][0]["text"])
+        self.assertEqual(self.factory.calls, [])
+
+    def test_old_render_folders_are_removed(self) -> None:
+        glb = self.asset("synth", quadruped())
+        first, _ = self.ok("look", {"glb": glb, "views": ["side"], "size": 64})
+        old = Path(first["png"]).parent
+        self.assertTrue(old.is_dir())
+        keep, tools.RENDER_KEEP_S = tools.RENDER_KEEP_S, -1
+        self.addCleanup(setattr, tools, "RENDER_KEEP_S", keep)
+        second, _ = self.ok("look", {"glb": glb, "views": ["side"], "size": 64})
+        self.assertFalse(old.exists())
+        self.assertTrue(Path(second["png"]).is_file())
 
     def test_generate_is_a_factory_job(self) -> None:
         self.asset("bale", trimesh.creation.box(), "workbench/clay.glb")
@@ -230,15 +286,19 @@ class BusyStemTests(Base):
         self.assertFalse((self.root / "out" / "bale").exists())
         self.assertEqual(self.factory.snapshots(), [])
 
+    MESH = {"stem": "bale", "grid": 16, "texture": 64}
+
     def test_another_stems_job_or_a_finished_one_does_not_block(self) -> None:
         for state in ({"state": "running", "stem": "sheep"}, {"state": "done", "stem": "bale"}):
             self.factory.state = {"ok": True, "job_id": "j1", **state}
-            out, _ = self.ok("clay_set", {"stem": "bale", "blobs": self.BLOBS})
+            self.ok("clay_set", {"stem": "bale", "blobs": self.BLOBS})
+            out, _ = self.ok("clay_mesh", self.MESH)
             self.assertTrue(out["take"]["ok"])
 
     def test_factory_down_writes_without_a_take(self) -> None:
         self.factory.down = True
-        out, _ = self.ok("clay_set", {"stem": "bale", "blobs": self.BLOBS})
+        self.ok("clay_set", {"stem": "bale", "blobs": self.BLOBS})
+        out, _ = self.ok("clay_mesh", self.MESH)
         self.assertFalse(out["take"]["ok"])
         self.assertIn("kept no take", out["take"]["error"])
         self.assertTrue((self.root / "out" / "bale" / "workbench" / "clay.json").is_file())
