@@ -235,6 +235,33 @@ class ToolTests(Base):
         res = self.call("mesh_edit", {"stem": "long", "src": src, "op": "stretch", "params": {"axis": "w", "factor": 2}})
         self.assertTrue(res["isError"])
 
+    def test_mesh_edit_proportions(self) -> None:
+        src = self.asset("sheep", quadruped(), "mesh.glb")
+        before = trimesh.load(self.root / src, force="mesh")
+        out, _ = self.ok("mesh_edit", {"stem": "sheep", "src": src, "op": "thicken_legs", "params": {"factor": 1.5}})
+        self.assertEqual(out["glb"], "out/sheep/workbench/edit_1.glb")
+        self.assertEqual(out["legs_found"], 4)
+        self.assertEqual(out["top_from"], "auto")
+        out, _ = self.ok("mesh_edit", {"stem": "sheep", "src": out["glb"], "op": "shorten_legs",
+                                       "params": {"factor": 0.7}})
+        short = trimesh.load(self.root / out["glb"], force="mesh")
+        self.assertLess(short.extents[1], before.extents[1])
+        self.assertAlmostEqual(short.bounds[0][1], before.bounds[0][1], places=4)  # still on the floor
+        out, _ = self.ok("mesh_edit", {"stem": "sheep", "src": out["glb"], "op": "widen_head",
+                                       "params": {"factor": 1.3, "head": "+z"}})
+        self.assertEqual(out["glb"], "out/sheep/workbench/edit_3.glb")
+        self.assertEqual((out["head"], out["head_from"]), ("+z", "given"))
+        self.assertAlmostEqual(out["head_width_after"] / out["head_width_before"], 1.3, delta=0.05)
+        for params in ({"factor": 5}, {}, {"factor": 1.2, "head": "up"}, {"factor": 1.2, "wobble": 1}):
+            res = self.call("mesh_edit", {"stem": "sheep", "src": src, "op": "widen_head", "params": params})
+            self.assertTrue(res["isError"], params)
+        res = self.call("mesh_edit", {"stem": "sheep", "src": src, "op": "shorten_legs", "params": {"factor": 0.2}})
+        self.assertTrue(res["isError"])
+        box = self.asset("crate", trimesh.creation.box([1, 1, 1]), "mesh.glb")
+        res = self.call("mesh_edit", {"stem": "crate", "src": box, "op": "thicken_legs", "params": {"factor": 2}})
+        self.assertTrue(res["isError"])
+        self.assertIn("thicken_legs", res["content"][0]["text"])
+
     def fake_psx(self, faces: int = 1200, fail: bool = False):
         """Stand in for psx_lowpoly (bake.psx): write what it writes, record where, and answer its report."""
         seen = []
