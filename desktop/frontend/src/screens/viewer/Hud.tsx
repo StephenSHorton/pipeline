@@ -51,17 +51,21 @@ export interface HudProps {
   onRenamed: (stem: string) => void;
   /** What the rail and dock panels get (ViewerPanelProps minus id, open, onClose). */
   panel: ViewerPanelBase;
+  /** The asset screen's versions panel, the foot of the left column. */
+  versions?: ReactNode;
 }
 
 export function Hud(p: HudProps) {
   const info = p.load.state === "ready" ? p.load.info : null;
   return (
     <div data-hud className="pointer-events-none absolute inset-0 z-[5] text-ink tracking-[var(--track)]">
-      {/* The asset card, then the panel rail under it (legacy left cubby rail). The column stops above the bottom
-          pickers on phones and scrolls the open panel instead of running off the screen. */}
+      {/* The asset card, the panel rail under it (legacy left cubby rail), then the versions panel: the left side
+          is one stack. The column stops above the bottom pickers on phones and scrolls the open panel instead of
+          running off the screen; the versions panel keeps its size (it scrolls its own thumbnails). */}
       <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:max-h-[calc(100%-160px)]">
         <AssetCard {...p} info={info} />
         <PanelRail side="left" base={p.panel} />
+        {p.versions}
       </div>
       {/* Wide: view toggles and the camera stack top right, the Rig check dock under them. Phones: one column at
           the bottom, in normal flow, so nothing overlaps: the toggles with Reset view, then the model and clip

@@ -9,7 +9,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { deleteAsset, listAssets, flowFiles, outUrl, readInspect, type Asset } from "@/lib/api";
 import { degradedLine, onJobEnded } from "@/lib/jobs";
 import { askConfirm } from "@/lib/ui";
-import { navigate } from "@/app/router";
 import { openAsset } from "@/app/open";
 import { assetKind, DELETE_MESSAGE, KIND_LABEL, LIB_FILTERS, matchesFilter, relativeTime, type LibKind } from "./make";
 
@@ -55,14 +54,13 @@ export function useAssets() {
   return { assets, error, refresh, setAssets };
 }
 
+// The Library page only: Make no longer shows a "Recent" slice of it (HomeScreen.tsx).
 export function Library({
-  full,
   assets,
   error,
   refresh,
   onDeleted,
 }: {
-  full: boolean;
   assets: Asset[] | null;
   error: string;
   refresh: () => Promise<void>;
@@ -74,10 +72,7 @@ export function Library({
   const [delError, setDelError] = useState("");
 
   const all = useMemo(() => (assets || []).filter((a) => !gone.has(a.id)), [assets, gone]);
-  const shown = useMemo(() => {
-    const list = full ? all.filter((a) => matchesFilter(a, kind, query)) : all;
-    return full ? list : list.slice(0, 8);
-  }, [all, full, kind, query]);
+  const shown = useMemo(() => all.filter((a) => matchesFilter(a, kind, query)), [all, kind, query]);
 
   const remove = async (a: Asset) => {
     if (!(await askConfirm(DELETE_MESSAGE(a.id)))) return;
@@ -94,43 +89,27 @@ export function Library({
   };
 
   return (
-    <section aria-labelledby="mk-recent" className="w-full max-w-[52rem]">
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2 px-1">
-        <h2 id="mk-recent" className="m-0 text-[0.85rem] font-bold text-ink-2">
-          {full ? "Library" : "Recent"}
-        </h2>
-        {full || !all.length ? null : (
-          <a
-            href="/?view=library"
-            onClick={(e) => {
-              e.preventDefault();
-              navigate({ name: "home", section: "library" });
-            }}
-            className="hit-44 inline-flex items-center rounded-md text-[0.8rem] font-semibold text-blue-deep no-underline outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            See all
-          </a>
-        )}
-      </div>
+    <section aria-labelledby="mk-library" className="w-full max-w-[52rem]">
+      <h2 id="mk-library" className="m-0 mb-3 px-1 text-[0.85rem] font-bold text-ink-2">
+        Library
+      </h2>
 
-      {full ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 px-1">
-          <Tabs value={kind || "all"} onValueChange={(v) => typeof v === "string" && setKind((v === "all" ? "" : v) as LibKind)}>
-            <TabsList variant="hud" aria-label="Show" className="flex-wrap gap-1 rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] p-1">
-              {LIB_FILTERS.map((f) => (
-                <TabsTrigger key={f.id || "all"} variant="hud" value={f.id || "all"} className={KIND_TAB}>
-                  {f.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          <label className="relative block w-full max-w-[16rem]">
-            <span className="sr-only">Search assets</span>
-            <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search assets" className="h-10 rounded-xl bg-white/90 pl-9" />
-          </label>
-        </div>
-      ) : null}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 px-1">
+        <Tabs value={kind || "all"} onValueChange={(v) => typeof v === "string" && setKind((v === "all" ? "" : v) as LibKind)}>
+          <TabsList variant="hud" aria-label="Show" className="flex-wrap gap-1 rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] p-1">
+            {LIB_FILTERS.map((f) => (
+              <TabsTrigger key={f.id || "all"} variant="hud" value={f.id || "all"} className={KIND_TAB}>
+                {f.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <label className="relative block w-full max-w-[16rem]">
+          <span className="sr-only">Search assets</span>
+          <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search assets" className="h-10 rounded-xl bg-white/90 pl-9" />
+        </label>
+      </div>
 
       {error ? <p className="mb-2 px-1 text-[0.8rem] text-danger-text">{error}</p> : null}
       {delError ? (

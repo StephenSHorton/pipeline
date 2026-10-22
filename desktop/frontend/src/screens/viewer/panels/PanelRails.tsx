@@ -1,8 +1,9 @@
 // The left rail (Cleanup, Paint, Detail levels, under the asset card) and the right dock (the Rig check, under the
 // camera stack). One open panel across both (legacy openStep); every panel stays mounted and hides while closed.
 // Phones have no right column (the camera stack is hidden there), so the dock's panels join the left rail.
-import { useCallback, useEffect, useRef, useSyncExternalStore, type ComponentType } from "react";
+import { useCallback, useEffect, useRef, type ComponentType } from "react";
 import { Card } from "@/components/ui/card";
+import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
 import { RigPanel, RigToggle } from "@/screens/asset/rig/RigPanel";
 import { PANEL } from "../classes";
@@ -17,18 +18,6 @@ import { usePanels } from "./store";
 const BODY: Record<PanelId, ComponentType<ViewerPanelProps>> = { cleanup: CleanupPanel, paint: PaintPanel, lods: LodsPanel, rig: RigPanel };
 const TOGGLES: Partial<Record<PanelId, ComponentType<Omit<PanelToggleProps, "panel"> & { props: ViewerPanelProps }>>> = { rig: RigToggle };
 
-const NARROW = "(max-width: 639px)";
-function useNarrow(): boolean {
-  return useSyncExternalStore(
-    (fn) => {
-      const m = matchMedia(NARROW);
-      m.addEventListener("change", fn);
-      return () => m.removeEventListener("change", fn);
-    },
-    () => matchMedia(NARROW).matches,
-    () => false,
-  );
-}
 
 /** The panels one side shows on this stage and screen width. */
 function useSide(side: PanelSide, stage: ViewerPanelBase["stage"]): PanelId[] {

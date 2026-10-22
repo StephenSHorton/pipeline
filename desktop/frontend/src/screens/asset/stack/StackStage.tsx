@@ -1,6 +1,6 @@
 // The Stack stage (legacy #stack-pane and its dock, index.html 2167-2236; the stack paint and palette host code,
-// 5384-5642; stack-lab.js load, 1704-1740). The canvas fills the stage and runs on under the versions strip like
-// the 3D viewer; the stats card sits top left, the dock top right: one toggle per legacy cubby (Sprite stack, Stack,
+// 5384-5642; stack-lab.js load, 1704-1740). The canvas fills the stage (the versions panel floats bottom left,
+// AssetScreen); the stats card sits top left, the dock top right: one toggle per legacy cubby (Sprite stack, Stack,
 // Palette, plus Paint, whose controls legacy kept in the hidden mesh pane), one open at a time, and the shared
 // Game look's Pixel. The stack re-reads on every flow version; "Generating…" shows while a build runs on it.
 import { X } from "lucide-react";
@@ -218,9 +218,9 @@ function StackBody({ stem, flowVersion }: StageProps) {
   const empty = phaseText(phase);
 
   return (
-    <section aria-label={STACK_COPY.pane} className="absolute inset-x-0 top-0 bottom-[calc(-1*var(--strip-h,0px))] overflow-hidden bg-[#0c0d0b]">
+    <section aria-label={STACK_COPY.pane} className="absolute inset-0 overflow-hidden bg-[#0c0d0b]">
       <div ref={host} className={cn("absolute inset-0", paint.on && "cursor-crosshair")} />
-      <div className="pointer-events-none absolute inset-x-0 top-0 bottom-[var(--strip-h,0px)]">
+      <div className="pointer-events-none absolute inset-0">
         <Card size="hud" className={cn(PANEL, "absolute top-3 left-3 max-w-[min(420px,calc(100%-24px))] gap-1 px-4 pt-2.5 pb-3 max-sm:right-3")}>
           <h2 className="m-0 text-[0.95rem] font-semibold text-ink">{STACK_COPY.pane}</h2>
           <p className="m-0 text-[0.8rem] leading-snug text-ink-3 empty:hidden">

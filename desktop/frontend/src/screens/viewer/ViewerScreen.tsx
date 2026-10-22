@@ -5,7 +5,7 @@
 // articulated pivots (articulated.json) it showed have no view here yet.
 import { useLook } from "mokei/clay";
 import { useMaterialColor } from "mokei/theme";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { AnimationClip } from "three";
 import { navigate } from "@/app/router";
 import { outUrl } from "@/lib/api";
@@ -30,7 +30,7 @@ interface Override {
 }
 type Waiter = { resolve: () => void; reject: (err: Error) => void };
 
-export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
+export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: string; versions?: ReactNode }) {
   const { stem, flowVersion } = stage;
   const [version, setVersion] = useState(0);
   // Re-reads the docs without dropping a loadFile override (reload, loadFile); `version` drops it.
@@ -47,7 +47,8 @@ export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
   const [playing, setPlaying] = useState(true);
   const [clay, setClay] = useState(false);
   const [wire, setWire] = useState(false);
-  const [spin, setSpin] = useState(true);
+  // Off until asked for (Stephen: "Turn off spin by default"): the model holds still while you look it over.
+  const [spin, setSpin] = useState(false);
   const [pixel, setPixelState] = useState<PixelLook>(() => readPixelLook());
 
   const setPixel = useCallback((p: PixelLook) => {
@@ -77,7 +78,7 @@ export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
       }),
     [stem],
   );
-  // A pick in the versions strip re-reads the flow: reload the model (the camera stays). Not on the first run.
+  // A pick in the versions panel re-reads the flow: reload the model (the camera stays). Not on the first run.
   const seenFlow = useRef(flowVersion);
   useEffect(() => {
     if (seenFlow.current === flowVersion) return;
@@ -213,14 +214,14 @@ export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
   };
 
   return (
-    // The clay runs on under the asset screen's versions strip (--strip-h, set by TakesStrip), so the stage and the
-    // strip share one ground instead of meeting at a seam; the HUD keeps to the stage above it.
-    <div className="absolute inset-x-0 top-0 bottom-[calc(-1*var(--strip-h,0px))] overflow-hidden">
+    // The clay fills the stage; the versions panel rides in the HUD's left column, so nothing sits under the ground.
+    <div className="absolute inset-0 overflow-hidden">
       <OrbitSurface tool={tool}>
         <Diorama model={model} clips={clips} clip={clip} playing={playing} clay={clay} wire={wire} spin={spin} pixel={pixel} />
       </OrbitSurface>
-      <div className="pointer-events-none absolute inset-x-0 top-0 bottom-[var(--strip-h,0px)]">
+      <div className="pointer-events-none absolute inset-0">
         <Hud
+          versions={versions}
           stem={stem}
           docs={docs}
           load={load}

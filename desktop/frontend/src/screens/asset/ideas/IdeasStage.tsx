@@ -1,6 +1,6 @@
 // The Ideas stage (legacy #ideas-stage, renderIdeas and the #ideas-more form, index.html 2148-2150, 2253-2256,
 // 3585-3735): a full page of drawn ideas, each with Keep and Use, the job's live slot and its waiting slots, then
-// the More ideas bar (prompt, Clear unkept, More ideas) at the bottom. No versions strip here.
+// the More ideas bar (prompt, Clear unkept, More ideas) at the bottom. No versions panel here.
 // A picture opens full size in an in-app lightbox: window.open / target=_blank is unreliable in the Wails
 // WKWebView (gaps B6). Kept is the primary border, In use the primary ring, the live slot the signal accent.
 import { Dialog } from "@base-ui/react/dialog";

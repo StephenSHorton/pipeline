@@ -1,7 +1,7 @@
 // The Export stage (legacy #export-stage, index.html 2152-2156, 3313-3507): a full page of cards saying what
 // out/<stem>/export/ holds, the PS1 and Rigged hero cards with their s&box steps, and the Export / Show in Finder row.
-// The legacy row lived in the versions strip; here it sits at the foot of the page, above that strip, so the lead's
-// "Press Export below." still reads true.
+// The legacy row lived in the versions strip; here it sits at the foot of the page (the versions panel has its own
+// column at the left), so the lead's "Press Export below." still reads true.
 import { FolderOpen, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
