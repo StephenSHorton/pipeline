@@ -101,6 +101,9 @@ rounded box. Through the workbench only:
      runs the facing check, and that check asks ollama.
 5. **Make the PS1 model:** `psx` with
    `{"stem": "mlg-hay_bale_v2", "glb": "out/mlg-hay_bale_v2/textured_photo.glb", "height": 60, "facing": "camera"}`.
+   - Known issue: a clay cylinder currently stalls the decimator (`fast_simplification`, also used by
+     `reduce_mesh.py`). The flat caps of the surface-nets mesh stop it at about half the faces: 102,572 to 52,480
+     at grid 96, so `psx` returns about 52k triangles instead of `faces`. Check `triangles` in the result.
 6. **Check it:** `look {"glb": "out/mlg-hay_bale_v2/workbench/psx.glb"}` and
    `compare_reference` against the photo.
 
