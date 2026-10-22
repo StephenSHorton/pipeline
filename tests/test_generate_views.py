@@ -24,7 +24,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 NO_PICTURE = "3D needs a picture. Draw or add one first."
 REAL_SCRIPTS = ["generate.sh", "_common.sh", "mv_orient.py", "reduce_mesh.py", "reduce.sh", "inspect_glb.py",
-                "psx_lowpoly.py", "key_spill.py"]
+                "psx_lowpoly.py", "key_spill.py", "lods.py"]
 
 HY3D_STUB = r'''
 import os, sys

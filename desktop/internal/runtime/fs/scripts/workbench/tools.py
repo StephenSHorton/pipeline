@@ -5,8 +5,9 @@ Sync tools run in this process and return their answer (clay, eyes, mesh edits, 
 work to the factory on :8766 and return its job_id to poll with job_status; the factory keeps its one job slot.
 
 Every path a caller gives is resolved under the repo root (factory_env.resolve_under_root) and every stem is
-checked (check_stem), so a tool can read only the repo and write only out/<stem>/workbench/. Before writing into an
-asset it asks the factory whether a running job owns that stem and refuses if one does; after the write it asks the
+checked (check_stem), so a tool can read only the repo and write only out/<stem>/workbench/, plus the PSX that psx
+publishes as generate.sh does (out/<stem>/psx.glb, psx/ and its lods.json entry; all three are mesh-stage files, so
+its take holds them). Before writing into an asset it asks the factory whether a running job owns that stem and refuses if one does; after the write it asks the
 factory to snapshot the mesh stage, so each change is a take that can be picked back (pick_take). If the factory is
 not running at all, nothing can be racing the write: it goes ahead, and the result says no take was kept.
 
@@ -38,6 +39,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import flow  # noqa: E402
+import lods  # noqa: E402
 from factory_env import (  # noqa: E402
     PSX_FACING,
     PSX_KEYS,
@@ -54,7 +56,7 @@ from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 FACINGS = sorted(PSX_FACING)
 LODS = ("psx", "mesh", "hero", "lookdev", "game", "proxy", "mv", "clay")
-VIEWS = ("side", "xside", "front", "back", "top", "q")
+VIEWS = ("side", "xside", "front", "back", "top", "bottom", "q")
 STAGES = list(flow.STAGES)
 RENDER_KEEP_S = 600  # a look's folder outlives its answer (the path is in it) by this long
 NOT_YET = ("not yet: {op} arrives with edit.py, after Stephen's critique of the first asset (plan, milestone 1 "
@@ -374,8 +376,9 @@ class Workbench:
         glb = self.target(a)
         views = a.get("views") or list(eyes.LOOK_VIEWS)
         out = self.render_dir() / f"{glb.stem}_look.png"
-        png = eyes.look(glb, views, int(a.get("size") or 384), out)
-        return {"glb": self.rel(glb), "views": views, "png": png, "_image": png}
+        sampling = a.get("sampling") or "pixel"
+        png = eyes.look(glb, views, int(a.get("size") or 384), out, sampling)
+        return {"glb": self.rel(glb), "views": views, "sampling": sampling, "png": png, "_image": png}
 
     def measure(self, a: dict) -> dict:
         from workbench import eyes
@@ -537,20 +540,40 @@ class Workbench:
         glb = self.path(a["glb"], (".glb",))
         name = a.get("name") or re.sub(r"[^A-Za-z0-9_-]+", "_", stem)[:64]
         clean_psx({"name": name})
-        bench = self.bench(stem)
+        folder = self.folder(stem, must_exist=False)
 
         def run() -> dict:
-            out_dir = bench / "psx"
-            if out_dir.is_dir():
-                for p in out_dir.iterdir():
+            # Published where generate.sh's PS1 step puts it (psx.glb, psx/, the lods.json entry), so the app's
+            # Model tabs and pick_glb(stem, "psx") show this model, not an older one beside a workbench copy.
+            # psx_lowpoly writes into a hidden folder first and the files move in when it is done: a take or the
+            # app never reads half a GLB, and a failed cut leaves the published PSX as it was.
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = Path(tempfile.mkdtemp(prefix=".psx_", dir=folder))
+            try:
+                report = bake.psx(self.root, glb, tmp / "psx", tmp / "psx.glb", name, float(a["height"]),
+                                  a["facing"], a.get("faces"), a.get("atlas"))
+                out_dir = folder / "psx"
+                if out_dir.is_dir():  # generate.sh clears psx/ before its cut too: no other name's files linger
+                    for p in out_dir.iterdir():
+                        if p.is_file():
+                            p.unlink()
+                out_dir.mkdir(exist_ok=True)
+                for p in (tmp / "psx").iterdir():
                     if p.is_file():
-                        p.unlink()
-            report = bake.psx(self.root, glb, out_dir, bench / "psx.glb", name, float(a["height"]), a["facing"],
-                              a.get("faces"), a.get("atlas"))
+                        os.replace(p, out_dir / p.name)
+                os.replace(tmp / "psx.glb", folder / "psx.glb")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            # Earlier workbench runs published under workbench/; leaving them would keep two PSX models to mix up.
+            bench = folder / "workbench"
+            (bench / "psx.glb").unlink(missing_ok=True)
+            shutil.rmtree(bench / "psx", ignore_errors=True)
+            item = lods.entry(folder, "psx")
+            lods.put(folder, stem, item)
             # psx.json names its files relative to the folder; the answer gives repo paths.
-            return {"stem": stem, **report, "src": self.rel(glb), "glb": self.rel(bench / "psx.glb"),
+            return {"stem": stem, **report, "src": self.rel(glb), "glb": self.rel(folder / "psx.glb"),
                     "folder": self.rel(out_dir), "obj": self.rel(out_dir / report["obj"]),
-                    "texture": self.rel(out_dir / report["texture"])}
+                    "texture": self.rel(out_dir / report["texture"]), "lod": item}
 
         return self.write(stem, "workbench psx", run)
 
@@ -609,11 +632,15 @@ class Workbench:
         return [
             Tool("asset_info", "An asset's files, shape.json, degraded.json, the photo fit, psx.json, intent, scene "
                  "and takes per stage.", _obj({"stem": STEM}, ("stem",)), self.asset_info),
-            Tool("look", "Contact sheet of textured renders from fixed cameras (side, xside, front, back, top, q). "
-                 "Returns the PNG (path and image). Give stem (its model by lod) or glb.",
+            Tool("look", "Contact sheet of textured renders from fixed cameras (default side, xside, front, back, "
+                 "top, q; bottom on request). Returns the PNG (path and image). Give stem (its model by lod) or glb. "
+                 "sampling pixel (default) samples the texture per pixel, as an engine shows it; face colours each "
+                 "triangle by one texel (the rig sheets' look), which turns a low-poly mesh's thin triangles into "
+                 "stripes.",
                  _obj({**target, "views": {"type": "array", "items": {"type": "string", "enum": list(VIEWS)},
                                            "minItems": 1},
-                       "size": {"type": "integer", "minimum": 64, "maximum": 1024}}), self.look),
+                       "size": {"type": "integer", "minimum": 64, "maximum": 1024},
+                       "sampling": {"type": "string", "enum": ["pixel", "face"]}}), self.look),
             Tool("measure", "Bounds, triangles, pieces, head_offset_pct (sideways head offset, % of body width), "
                  "head_yaw_deg, mirror_iou (left/right symmetry), circularity (top or end view). The creature is "
                  "taken to face +Z unless auto_head.",
@@ -654,8 +681,10 @@ class Workbench:
                        "mirror": {"type": "boolean"}, "erode": {"type": "number", "minimum": 0, "maximum": 0.2},
                        "keep": {"type": "number", "minimum": 0, "maximum": 1}, "first_wins": {"type": "boolean"}},
                       ("stem", "glb", "views")), self.bake_photo),
-            Tool("psx", "Cut a baked GLB down to a PS1 model (psx_lowpoly.py, facing check off): out/<stem>/"
-                 "workbench/psx/<name>.obj + .png + psx.json and workbench/psx.glb. height is in .obj units "
+            Tool("psx", "Cut a baked GLB down to a PS1 model (psx_lowpoly.py, facing check off) and publish it as "
+                 "generate.sh's PS1 step does: out/<stem>/psx.glb, out/<stem>/psx/<name>.obj + .mtl + .png + "
+                 "psx.json, and the PSX entry in lods.json (after Photo bake), so the app's Model tabs show it. It "
+                 "replaces the asset's PSX (pick_take brings back an earlier mesh take's). height is in .obj units "
                  "(s&box inches); facing is where the subject looked in the photo.",
                  _obj({"stem": STEM, "glb": GLB, "height": {"type": "number", "minimum": 0.001, "maximum": 100000},
                        "facing": FACING, "faces": {"type": "integer", "minimum": 1, "maximum": 65536},
