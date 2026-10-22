@@ -9,7 +9,7 @@ import { LoaderCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { headOut, outUrl } from "@/lib/api";
-import { flowEntry, pickTake } from "@/lib/flow";
+import { flowEntry, pickTake, useFlow } from "@/lib/flow";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { TOGGLE } from "@/screens/viewer/classes";
@@ -20,7 +20,7 @@ import type { ViewerPanelProps } from "@/screens/viewer/types";
 import { pauseClipAt, restPose, resumeClip } from "@/viewer/clipSeek";
 import { loadFirstGlb } from "@/viewer/loadGlb";
 import { useViewerTools } from "@/viewer/tools";
-import { checkSheet, loadRigCheck, loadRigPlans, setChoices, sheetFor, useRig } from "./api";
+import { checkSheet, flowFileSet, loadRigCheck, loadRigPlans, setChoices, sheetFor, useRig } from "./api";
 import { recheckRig, renderSheet, rigAsset } from "./actions";
 import {
   boneCardRows,
@@ -227,7 +227,6 @@ export function RigPanel(p: ViewerPanelProps) {
   const [overlay, setOverlay] = useState<RigOverlay | null>(null);
   const ovRef = useRef<RigOverlay | null>(null);
   ovRef.current = overlay;
-  const panelEl = useRef<HTMLDivElement>(null);
   const planRef = useRef<HTMLDivElement>(null);
   const motionRef = useRef<HTMLDivElement>(null);
   const pendingShow = useRef<string | null>(null);
@@ -239,7 +238,8 @@ export function RigPanel(p: ViewerPanelProps) {
   const docs = p.docs;
   useEffect(() => {
     if (!rigged) return;
-    void loadRigCheck(stem);
+    const flow = useFlow.getState();
+    void loadRigCheck(stem, undefined, flowFileSet(flow.stem === stem ? flow.flow : null));
   }, [stem, rigged, flowVersion, docs]);
 
   // A check left to open on (the finish toast's Inspect, a recheck with the panel open): open once this asset's
@@ -296,7 +296,8 @@ export function RigPanel(p: ViewerPanelProps) {
     }
     const ov = RigOverlay.bind(root, doc, tools);
     if (!ov) return;
-    ov.panel = () => panelEl.current;
+    // The panel's card (ViewerPanel's id), so framing keeps the model left of it.
+    ov.panel = () => document.getElementById(p.id);
     ov.onPick = (i) => pick(i, false);
     setOverlay(ov);
     return () => {
@@ -304,7 +305,7 @@ export function RigPanel(p: ViewerPanelProps) {
       setOverlay(null);
     };
     // pick reads the state through sRef; tools is the stable handle.
-  }, [open, doc, model, tools, stem, riggedFile]);
+  }, [open, doc, model, tools, stem, riggedFile, p.id]);
 
   useEffect(() => {
     overlay?.set({ mode: S.mode, bone: S.bone, skel: S.skel });
@@ -561,7 +562,7 @@ export function RigPanel(p: ViewerPanelProps) {
 
   return (
     <ViewerPanel panel="rig" id={p.id} open={open} onClose={p.onClose} className="max-h-[calc(100dvh-210px)]">
-      <div ref={panelEl} className="contents">
+      <div className="contents">
         {doc ? (
           <PanelBody
             p={p}

@@ -3,6 +3,7 @@
 // seam (./finish.ts) can leave a check to open on ("Inspect") and the bar and the panel read the same checks.
 import { create } from "zustand";
 import { factoryJson, headOut, readOutJson, type RigDoc, type RigPlan } from "@/lib/api";
+import type { FlowState } from "@/lib/flow";
 import { SHEET0, SHEET_FILE, type RestInfo, type RigInspectDoc, type SheetState } from "./inspect";
 import {
   choicesOf,
@@ -76,15 +77,22 @@ export function resetRigPlans(): void {
 }
 
 let checkSeq = 0;
+/** Every file the flow lists, for loadRigCheck's gate; null when the flow is not read (then every file is asked). */
+export function flowFileSet(flow: FlowState | null): Set<string> | null {
+  return flow ? new Set(flow.stages.flatMap((s) => s.files ?? [])) : null;
+}
+
 /**
  * Read the checks for the rig version on disk (legacy loadRigCheck): inspect.json and rig.json, then a built
  * template's clips_report.json. Only the newest read lands, and only while `stem` is still the asset asked for.
  */
-export async function loadRigCheck(stem: string, still: () => boolean = () => true): Promise<RigCheckState | null> {
+export async function loadRigCheck(stem: string, still: () => boolean = () => true, files: Set<string> | null = null): Promise<RigCheckState | null> {
   const seq = ++checkSeq;
   const t = Date.now();
-  const [doc, info] = await Promise.all([readOutJson<unknown>(stem, "rig/inspect.json", t), readOutJson<RigInfo>(stem, "rig/rig.json", t)]);
-  const report = templateBuilt(info) ? await readOutJson<{ clips?: Record<string, ClipReport> }>(stem, CLIPS_REPORT, t) : null;
+  // Optional files are read only when the flow lists them (no 404 per load on a version never checked).
+  const opt = <T,>(rel: string) => (!files || files.has(rel) ? readOutJson<T>(stem, rel, t) : Promise.resolve(null));
+  const [doc, info] = await Promise.all([opt<unknown>("rig/inspect.json"), opt<RigInfo>("rig/rig.json")]);
+  const report = templateBuilt(info) ? await opt<{ clips?: Record<string, ClipReport> }>(CLIPS_REPORT) : null;
   if (seq !== checkSeq || !still()) return null;
   const ok = validInspect(doc);
   const state: RigCheckState = { stem, doc: ok ? mergeRigInfo(doc, info) : null, info, made: rigMadeFrom(stem, info, report) };

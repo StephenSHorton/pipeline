@@ -2,16 +2,13 @@
 // 4793-4807, 6609-6615). Side effects only through startJob, toast, the flow store and ./api.ts, so the tests mock
 // those. Rig it and the sheet render are jobs in the factory slot: the server answers 409 when it is taken, and
 // startJob then follows the running job, so neither needs a jobOwns gate.
-import { displayStem, startJob, useJobs } from "@/lib/jobs";
+import { displayStem, onJobEnded, startJob, type Job } from "@/lib/jobs";
 import { useFlow } from "@/lib/flow";
 import { toast } from "@/lib/ui";
 import { useStage } from "@/screens/asset/stage";
 import { openViewerPanel, usePanels } from "@/screens/viewer/panels/store";
-import { loadRigCheck, postRecheck, useRig, checkSheet } from "./api";
+import { checkSheet, flowFileSet, loadRigCheck, postRecheck, useRig } from "./api";
 import { choicesOf, planOptions, renderPath, rigBody, rigKeptHead, rigPath, rigTitle, shownChoice } from "./rig";
-
-/** Rig jobs and sheet renders started here (the sheet's Rendering… state follows its own spec). */
-export const rigSpecs = new WeakSet<object>();
 
 /**
  * Rig it / Re-rig, from the bar or from the panel (Rig it as made, Straighten and rig). Both send the plan the select
@@ -24,7 +21,6 @@ export function rigAsset(stem: string, opts: { straighten?: string } = {}): void
   const cls = shownChoice(choices.choice, check?.made ?? null, planOptions(st.plans));
   const body = rigBody(cls, choices.advanced, { straighten: opts.straighten, keptHead: rigKeptHead(check?.doc?.rig?.rest) });
   const spec = { ...body, stem };
-  rigSpecs.add(spec);
   // Not awaited: startJob follows the job until it ends; the chip shows it meanwhile (the job card lives on Home).
   void startJob(spec, { path: rigPath(stem), kind: "rig", rig: true, title: rigTitle(displayStem(stem)), watch: false });
 }
@@ -45,9 +41,9 @@ export async function recheckRig(stem: string): Promise<void> {
     useRig.setState({ checking: "" });
   }
   if (useStage.getState().stem !== stem) return;
-  await useFlow.getState().load(stem);
+  const flow = await useFlow.getState().load(stem);
   if (wasOpen && !useRig.getState().focus) useRig.setState({ focus: { stem, key: "" } });
-  await loadRigCheck(stem, () => useStage.getState().stem === stem);
+  await loadRigCheck(stem, () => useStage.getState().stem === stem, flowFileSet(flow));
 }
 
 /**
@@ -59,16 +55,21 @@ export async function renderSheet(stem: string): Promise<void> {
   if (st.busy) return;
   useRig.setState({ sheet: { ...st, stem, busy: true, error: "" } });
   const spec = { job: "default", stem };
-  rigSpecs.add(spec);
+  // How this render ended: the job leaves the chip (finish.ts) before startJob resolves, so listen for it.
+  let ended: Job | null = null;
+  const off = onJobEnded((j) => {
+    if (j.spec === spec) ended = j;
+  });
   let error = "";
   try {
     await startJob(spec, { path: renderPath(stem), kind: "render", title: `Rendering the sheet for ${displayStem(stem)}`, watch: false });
-    const j = useJobs.getState().job;
-    // startJob resolves when the job it followed ends; on a 409 that was someone else's job.
-    if (!j || j.spec !== spec) error = "";
-    else if (j.state !== "ok") error = j.error || `The render ${j.state}`;
+    const j = ended as Job | null;
+    // A 409 followed someone else's job instead: nothing of ours to report.
+    if (j && j.state !== "ok") error = j.error || `The render ${j.state}`;
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
+  } finally {
+    off();
   }
   useRig.setState((s) => ({ sheet: { ...s.sheet, busy: false, ok: null, error } }));
   if (useStage.getState().stem === stem) await checkSheet(stem);

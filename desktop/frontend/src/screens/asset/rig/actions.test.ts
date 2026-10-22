@@ -86,7 +86,7 @@ describe("recheckRig", () => {
     usePanels.setState({ open: "rig" });
     serve((m, url) => {
       if (m === "POST" && url === "/rig/cow/inspect") return { status: 200, body: { ok: true } };
-      if (url.startsWith("/flow/cow")) return { status: 200, body: { ok: true, stem: "cow", stages: [] } };
+      if (url.startsWith("/flow/cow")) return { status: 200, body: { ok: true, stem: "cow", stages: [{ stage: "rig", files: ["rig/inspect.json", "rig/rig.json"] }] } };
       if (url.startsWith("/out/cow/rig/inspect.json")) return { status: 200, body: { bones: [], checks: [] } };
       if (url.startsWith("/out/cow/rig/rig.json")) return { status: 200, body: { class: "avian" } };
       return null;
@@ -98,34 +98,51 @@ describe("recheckRig", () => {
     expect(useRig.getState().checking).toBe("");
   });
 
-  it("an error is a toast and the reads still run, as legacy", async () => {
-    serve((m, url) => (m === "POST" ? { status: 409, body: { error: "the factory is busy with another job" } } : url.startsWith("/flow") ? { status: 200, body: { ok: true, stem: "cow", stages: [] } } : null));
+  it("an error is a toast and the reads still run, as legacy (only the files the flow lists)", async () => {
+    const flow = { ok: true, stem: "cow", stages: [{ stage: "rig", files: ["rig/rig.json"] }] };
+    serve((m, url) => (m === "POST" ? { status: 409, body: { error: "the factory is busy with another job" } } : url.startsWith("/flow") ? { status: 200, body: flow } : null));
     await recheckRig("cow");
     expect(h.toast).toHaveBeenCalledWith("the factory is busy with another job");
-    expect(calls.slice(1)).toEqual(["GET /flow/cow", "GET /out/cow/rig/inspect.json", "GET /out/cow/rig/rig.json"]);
+    expect(calls.slice(1)).toEqual(["GET /flow/cow", "GET /out/cow/rig/rig.json"]);
     expect(useRig.getState().check).toMatchObject({ stem: "cow", doc: null });
   });
 });
 
 describe("renderSheet", () => {
+  // The real startJob and followJob, over the fetch stub: the job ends (and leaves the chip) before startJob resolves.
+  const real = async () => (await vi.importActual<typeof import("@/lib/jobs")>("@/lib/jobs")).startJob;
+  const factory = (state: string, error = "") => (m: string, url: string) => {
+    if (m === "POST" && url === "/rig/cow/render") return { status: 202, body: { ok: true, accepted: true, job_id: "r1", state: "running", stem: "cow", kind: "render", status_url: "/status/r1" } };
+    if (url === "/status/r1") return { status: 200, body: { state, stem: "cow", kind: "render", error } };
+    if (m === "HEAD" && url.startsWith("/out/cow/rig/preview/contact_sheet.png")) return { status: state === "ok" ? 200 : 404 };
+    return null;
+  };
+
   it("POST /rig/<stem>/render {job: default} as a render job, then looks for the sheet", async () => {
-    h.startJob.mockImplementationOnce(async (spec) => {
-      useJobs.setState({ job: { id: "r", stem: "cow", kind: "render", state: "ok", progress: null, log: "", spec } });
-    });
-    serve((m, url) => (m === "HEAD" && url.startsWith("/out/cow/rig/preview/contact_sheet.png") ? { status: 200 } : null));
+    h.startJob.mockImplementationOnce(await real());
+    serve(factory("ok"));
     await renderSheet("cow");
     expect(h.startJob).toHaveBeenCalledWith({ job: "default", stem: "cow" }, { path: "/rig/cow/render", kind: "render", title: "Rendering the sheet for cow", watch: false });
-    expect(calls).toEqual(["HEAD /out/cow/rig/preview/contact_sheet.png"]);
+    expect(calls).toEqual(["POST /rig/cow/render", "GET /status/r1", "HEAD /out/cow/rig/preview/contact_sheet.png"]);
     expect(useRig.getState().sheet).toMatchObject({ stem: "cow", ok: true, busy: false, error: "" });
   });
 
-  it("a failed render says so the legacy way", async () => {
-    h.startJob.mockImplementationOnce(async (spec) => {
-      useJobs.setState({ job: { id: "r", stem: "cow", kind: "render", state: "cancelled", progress: null, log: "", spec } });
-    });
-    serve(() => ({ status: 404 }));
+  it("a failed render says so the legacy way, even once its job has left the chip", async () => {
+    h.startJob.mockImplementationOnce(await real());
+    serve(factory("cancelled"));
+    const { onJobEnded } = await vi.importActual<typeof import("@/lib/jobs")>("@/lib/jobs");
+    // finish.ts drops a render's job as it ends, before startJob resolves.
+    const off = onJobEnded(() => useJobs.setState({ job: null }));
     await renderSheet("cow");
+    off();
     expect(useRig.getState().sheet).toMatchObject({ ok: false, busy: false, error: "The render cancelled" });
+  });
+
+  it("the server's error when it will not start", async () => {
+    h.startJob.mockImplementationOnce(await real());
+    serve((m, url) => (m === "POST" && url === "/rig/cow/render" ? { status: 400, body: { ok: false, error: "this asset has no rig yet" } } : null));
+    await renderSheet("cow");
+    expect(useRig.getState().sheet).toMatchObject({ busy: false, error: "this asset has no rig yet" });
   });
 });
 

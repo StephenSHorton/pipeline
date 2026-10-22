@@ -616,9 +616,6 @@ export function headBlock(rest: RestInfo | null | undefined): { read: string; se
 
 /* ------------------------------------------------------------------ Show me */
 
-/** Which part of the panel a Show me scrolls to, for checks proven by a section rather than a view. */
-export const SHOW_SCROLL: Record<string, "plan" | "motion"> = { planner: "plan", far: "motion", floor: "motion", fbx: "motion" };
-
 /**
  * Whether a check has a Show me (rig-inspect.js 762-768). `names` are the skin's bone names; `headUI` is true when
  * the original model can be shown; `dropped` when this version recorded where weight was dropped.

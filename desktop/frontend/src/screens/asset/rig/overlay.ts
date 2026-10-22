@@ -551,8 +551,10 @@ export class RigOverlay {
     let el = (look.cameraElevation * Math.PI) / 180;
     if (id) {
       const v = typeof id === "string" ? VIEWS.find((x) => x[0] === id)![2] : id;
-      // The view is in the model's own space; Spin and the wrapper turn the model, so turn the view with it.
-      const q = this.mesh.parent ? this.mesh.parent.getWorldQuaternion(new Quaternion()) : new Quaternion();
+      // The view is in the model's space, as legacy's scene root was; Spin turns the wrapper, so turn the view with
+      // it (not by the glTF's own node rotations, which sat under legacy's root too).
+      const root = this.tools.root();
+      const q = root ? root.getWorldQuaternion(new Quaternion()) : new Quaternion();
       const dir = new Vector3(v[0], v[1], v[2]).normalize().applyQuaternion(q);
       el = Math.asin(Math.max(-1, Math.min(1, dir.y)));
       el = Math.max((-88 * Math.PI) / 180, Math.min((88 * Math.PI) / 180, el));
