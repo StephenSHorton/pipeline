@@ -11,16 +11,21 @@ CPU path (the default), numpy and PIL only:
   look) and a flat Lambert shade;
 - one ortho camera centre and scale, fixed from the rest-pose bbox (floor included) and shared by every frame and view,
   so anything that grows, sinks or flies away shows as such;
-- a red floor line at y = 0 (edge-on in the side, front and back views; an outline in top and q).
+- a red floor line at y = 0 (edge-on in the side, front and back views; an outline in top, bottom and q).
 
 Modes: `texture`; `groups` (each corner coloured by its top bone's role); `sticks` (faded texture with x-ray joint
-balls and bone lines at 50% alpha, coloured by role); `heat:<bone>` (that bone's weight on a ramp).
+balls and bone lines at 50% alpha, coloured by role); `heat:<bone>` (that bone's weight on a ramp); `texture_px`
+(the texture sampled per pixel: each pixel's UV from its barycentrics, nearest texel, the same flat Lambert shade)
+and `texture_px:unlit` (the same, unshaded). One texel a face is the rig sheets' PS1 feel, but on a low-poly mesh
+it paints a long sliver triangle as one stripe whatever its UVs cover, so a model check (workbench eyes.look)
+wants texture_px: it shows the texture as an engine would.
 
 Views (glTF frame: +Y up, +Z = the creature's forward, +X = its left). These match rig_fit.vlm_cue and brender:
 - side: camera at +X; image right is -Z (a correctly faced head at +Z shows on the LEFT);
 - xside: camera at -X; image right is +Z (head on the RIGHT);
 - front: camera at +Z (the face); image right is +X;  back: camera at -Z; image right is -X;
 - top: camera at +Y; image right is +X, image up is -Z;
+- bottom: camera at -Y; image right is +X, image up is +Z (top's image flipped upside down);
 - q: three-quarter from (+X, +Y/2, +Z); image right is roughly (+X, -Z).
 VIEW_RIGHT gives the world vector of image right per view.
 
@@ -55,14 +60,16 @@ FLOOR = (255, 0, 0)
 CAP = 18  # caption strip height in the contact sheet
 FILL = 0.85  # the rest bbox diagonal spans this share of the image
 FPS = 30
-VIEWS = ("side", "xside", "front", "back", "top", "q")
+VIEWS = ("side", "xside", "front", "back", "top", "bottom", "q")
+PX_MODES = ("texture_px", "texture_px:unlit")
 SHEET_VIEWS = ("side", "front", "q")
 ROLE_RGB = {"leg": (26, 102, 255), "wing": (255, 128, 0), "spine": (255, 255, 26), "head": (255, 26, 255),
             "tail": (26, 255, 77), "other": (255, 255, 255), "root": (110, 110, 110)}
 
 # view -> (direction from the target to the camera, up hint); glTF frame
 _CAM = {"side": ((1, 0, 0), (0, 1, 0)), "xside": ((-1, 0, 0), (0, 1, 0)), "front": ((0, 0, 1), (0, 1, 0)),
-        "back": ((0, 0, -1), (0, 1, 0)), "top": ((0, 1, 0), (0, 0, -1)), "q": ((1, 0.5, 1), (0, 1, 0))}
+        "back": ((0, 0, -1), (0, 1, 0)), "top": ((0, 1, 0), (0, 0, -1)), "bottom": ((0, -1, 0), (0, 0, 1)),
+        "q": ((1, 0.5, 1), (0, 1, 0))}
 EDGE_ON = ("side", "xside", "front", "back")
 
 
@@ -236,26 +243,37 @@ def _chain_roles() -> dict:
 
 # ---------------------------------------------------------------- scene loading
 
-def _texture_colours(doc: dict, binary: bytes, prim: dict, UV: np.ndarray | None, F: np.ndarray) -> np.ndarray:
-    """Per-face RGB 0..255: the base-colour texture at the UV centroid, nearest texel; else the base colour factor."""
+def _material(doc: dict, binary: bytes, prim: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """A primitive's base colour factor (RGB 0..1) as texture mode has always read it (0.72 grey when unset), the
+    factor as glTF defines it (1 when unset: what multiplies the texture in an engine, and in texture_px), and its
+    decoded base-colour texture (uint8 H x W x 3, or None)."""
     mat = doc.get("materials", [{}])[prim["material"]] if "material" in prim and doc.get("materials") else {}
     pbr = mat.get("pbrMetallicRoughness", {})
     factor = np.asarray(pbr.get("baseColorFactor", [0.72, 0.72, 0.72, 1]), float)[:3]
-    col = np.tile(factor * 255, (len(F), 1))
+    gltf_factor = np.asarray(pbr.get("baseColorFactor", [1.0, 1.0, 1.0, 1]), float)[:3]
     try:
         tex_i = pbr["baseColorTexture"]["index"]
         img = doc["images"][doc["textures"][tex_i]["source"]]
         v = doc["bufferViews"][img["bufferView"]]
         o = v.get("byteOffset", 0)
-        tex = np.asarray(Image.open(io.BytesIO(binary[o:o + v["byteLength"]])).convert("RGB")).astype(float)
+        tex = np.asarray(Image.open(io.BytesIO(binary[o:o + v["byteLength"]])).convert("RGB"))
     except (KeyError, IndexError, TypeError, OSError):
-        return col
-    if UV is None:
-        return col
-    uv = UV[F].mean(1)
+        return factor, gltf_factor, None
+    return factor, gltf_factor, tex
+
+
+def _texels(tex: np.ndarray, uv: np.ndarray) -> np.ndarray:
+    """Nearest texels (float RGB 0..255) at (N,2) UVs, wrapped (glTF's default REPEAT); v counts down the image."""
     th, tw = tex.shape[:2]
-    return tex[np.clip(((uv[:, 1] % 1) * th).astype(int), 0, th - 1), np.clip(((uv[:, 0] % 1) * tw).astype(int), 0, tw - 1)] \
-        * factor
+    return tex[np.clip(((uv[:, 1] % 1) * th).astype(int), 0, th - 1),
+               np.clip(((uv[:, 0] % 1) * tw).astype(int), 0, tw - 1)].astype(float)
+
+
+def _texture_colours(factor: np.ndarray, tex: np.ndarray | None, UV: np.ndarray | None, F: np.ndarray) -> np.ndarray:
+    """Per-face RGB 0..255: the base-colour texture at the UV centroid, nearest texel; else the base colour factor."""
+    if tex is None or UV is None:
+        return np.tile(factor * 255, (len(F), 1))
+    return _texels(tex, UV[F].mean(1)) * factor
 
 
 class Item:
@@ -290,8 +308,12 @@ class Item:
                 F = (rig.accessor(d, b, pr["indices"]).reshape(-1, 3) if "indices" in pr
                      else np.arange(len(P) - len(P) % 3).reshape(-1, 3)).astype(np.int64)
                 UV = rig.accessor(d, b, a["TEXCOORD_0"]).astype(float) if "TEXCOORD_0" in a else None
-                m = {"P": P, "F": F, "col": _texture_colours(d, b, pr, UV, F), "skinned": "skin" in n and skin is not None
-                     and "JOINTS_0" in a, "M": rest_world[i]}
+                factor, gltf_factor, tex = _material(d, b, pr)
+                # col is the per-face colour (texture mode); UV, tex and glTF's factor stay for texture_px's
+                # per-pixel sampling, so each texture is decoded once whichever mode draws it.
+                m = {"P": P, "F": F, "col": _texture_colours(factor, tex, UV, F), "UV": UV, "tex": tex,
+                     "factor": gltf_factor, "skinned": "skin" in n and skin is not None and "JOINTS_0" in a,
+                     "M": rest_world[i]}
                 if m["skinned"]:
                     m["J"] = rig.accessor(d, b, a["JOINTS_0"]).astype(int)
                     m["W"] = rig.accessor(d, b, a["WEIGHTS_0"]).astype(float)
@@ -371,10 +393,16 @@ def draw(items: list[Item], posed: list[tuple[list[np.ndarray], np.ndarray]], vi
     allV, allF, cols = [], [], []
     off = 0
     heat_bone = mode.split(":", 1)[1] if mode.startswith("heat:") else None
+    per_pixel = mode in PX_MODES
+    spans = []  # texture_px: (first face, end face, mesh, per-face shade) of each mesh in the shared z-buffer
+    nf = 0
     for it, (Vs, _) in zip(items, posed):
         for m, V in zip(it.meshes, Vs):
             F = m["F"]
-            shade = _shade(V, F, view)
+            shade = np.ones(len(F)) if mode == "texture_px:unlit" else _shade(V, F, view)
+            if per_pixel:
+                spans.append((nf, nf + len(F), m, shade))
+            nf += len(F)
             if mode == "groups":
                 rgb = np.array([ROLE_RGB[x] for x in it.top_roles(m)], float)  # per corner
                 c = rgb[F] * shade[:, None, None]
@@ -402,6 +430,19 @@ def draw(items: list[Item], posed: list[tuple[list[np.ndarray], np.ndarray]], vi
                 base[hit] = C[face[hit], pick]
             else:
                 base[hit] = (C[face[hit]] * B[:, :, None]).sum(1)
+            # texture_px: each pixel's own UV (the corners' UVs by its barycentrics), nearest texel. A low-poly
+            # mesh's long sliver triangles cross many texels; one texel per face paints each as a stripe.
+            fh = face[hit]
+            for f0, f1, m, sh in spans:
+                if m["tex"] is None or m["UV"] is None:
+                    continue  # no texture: the per-face colour above is already the factor
+                sel = (fh >= f0) & (fh < f1)
+                if not sel.any():
+                    continue
+                fl = fh[sel] - f0
+                uv = (m["UV"][m["F"][fl]] * B[sel][:, :, None]).sum(1)
+                rows = np.flatnonzero(hit)[sel]
+                base[rows] = _texels(m["tex"], uv) * m["factor"] * sh[fl, None]
     out = Image.fromarray(np.clip(base, 0, 255).astype(np.uint8).reshape(n, n, 3)).convert("RGBA")
 
     if mode == "sticks":
@@ -656,9 +697,12 @@ def render(asset, job: dict | None = None) -> dict:
 # ---------------------------------------------------------------- textured views (facing)
 
 def textured_views(glb, views=("side", "xside", "front", "back"), size: int = 384, out_dir=None,
-                   floor: bool = False) -> dict:
+                   floor: bool = False, mode: str = "texture") -> dict:
     """Rest-pose textured renders of any GLB (skinned or static) for the facing VLM. Returns {view: png path};
-    see VIEW_RIGHT / the module docstring for which world axis is image right in each view."""
+    see VIEW_RIGHT / the module docstring for which world axis is image right in each view. mode is texture (one
+    texel a face, what the facing VLM has always been shown) or one of PX_MODES (per pixel)."""
+    if mode != "texture" and mode not in PX_MODES:
+        raise ValueError(f"textured_views: mode {mode!r}; texture or one of {PX_MODES}")
     it = Item(Path(glb))
     Vs, jp = it.pose(None, 0.0)
     pts = np.concatenate(Vs) if Vs else jp
@@ -668,7 +712,7 @@ def textured_views(glb, views=("side", "xside", "front", "back"), size: int = 38
     res = {}
     for v in views:
         p = out / f"{Path(glb).stem}_{v}.png"
-        draw([it], [(Vs, jp)], v, "texture", cam, floor).save(p)
+        draw([it], [(Vs, jp)], v, mode, cam, floor).save(p)
         res[v] = str(p)
     return res
 

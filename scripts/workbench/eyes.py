@@ -9,7 +9,8 @@ A single photo leaves Hunyuan to guess depth, and the guesses fail in a few repe
 body's centre line, a left side that isn't the right side mirrored, a round prop that comes out a rounded box. Each
 of those is a number here, so a fix can be checked by measuring again instead of by eye.
 
-- look: textured renders from fixed ortho cameras (rig_render's views and contact sheet).
+- look: textured renders from fixed ortho cameras (rig_render's views and contact sheet), the texture sampled per
+  pixel (rig_render's texture_px) unless sampling is face.
 - measure: bounds, triangles, pieces, head offset and yaw, mirror IoU, circularity. Everything is measured on
   area-weighted surface samples, not vertices: PSX meshes are unwelded, flat-shaded triangle soup, and their vertices
   bunch where the triangles are small. Silhouettes are rasterised triangles. The body frame is the pipeline's
@@ -42,7 +43,8 @@ import rig_render  # noqa: E402
 
 UP = rest_check.UP
 FORWARD = np.array([0.0, 0.0, 1.0])  # psx --facing and rig_render: the creature faces glTF +Z
-LOOK_VIEWS = ("side", "xside", "front", "back", "top", "q")
+LOOK_VIEWS = ("side", "xside", "front", "back", "top", "q")  # the default sheet; bottom is there to ask for
+SAMPLING = {"pixel": "texture_px", "face": "texture"}  # look's sampling -> rig_render mode
 HEAD = 0.15  # the front share of the body length that counts as the head
 SAMPLES = 200_000
 RES = 256
@@ -69,12 +71,16 @@ def samples(mesh: trimesh.Trimesh, n: int = SAMPLES) -> np.ndarray:
 
 # ---------------------------------------------------------------- look
 
-def look(glb, views=LOOK_VIEWS, size: int = 384, out=None) -> str:
-    """Contact sheet of textured renders, three tiles a row. Returns the sheet's path."""
+def look(glb, views=LOOK_VIEWS, size: int = 384, out=None, sampling: str = "pixel") -> str:
+    """Contact sheet of textured renders, three tiles a row. Returns the sheet's path. sampling pixel samples the
+    texture per pixel (what an engine shows); face is rig_render's one texel a face, which paints a PS1 mesh's
+    sliver triangles as stripes however right its UVs are, so it is only for comparing with the rig sheets."""
+    if sampling not in SAMPLING:
+        raise ValueError(f"sampling {sampling!r}; one of {sorted(SAMPLING)}")
     views = list(views)
     out = Path(out) if out else Path(tempfile.mkdtemp(prefix="eyes_")) / f"{Path(glb).stem}_look.png"
     out.parent.mkdir(parents=True, exist_ok=True)
-    tiles = rig_render.textured_views(glb, views, size, out.parent / f"{out.stem}_views")
+    tiles = rig_render.textured_views(glb, views, size, out.parent / f"{out.stem}_views", mode=SAMPLING[sampling])
     cols = min(3, len(views))
     rig_render.contact_sheet([tiles[v] for v in views], -(-len(views) // cols), cols, captions=views, out=out)
     return str(out)
@@ -392,6 +398,7 @@ def main() -> int:
     a.add_argument("-o", "--out")
     a.add_argument("--views", default=",".join(LOOK_VIEWS))
     a.add_argument("--size", type=int, default=384)
+    a.add_argument("--sampling", choices=sorted(SAMPLING), default="pixel")
     a = sub.add_parser("measure")
     a.add_argument("glb")
     a.add_argument("--auto-head", action="store_true",
@@ -403,7 +410,7 @@ def main() -> int:
     a.add_argument("-o", "--out")
     args = ap.parse_args()
     if args.cmd == "look":
-        print(look(args.glb, args.views.split(","), args.size, args.out))
+        print(look(args.glb, args.views.split(","), args.size, args.out, args.sampling))
     elif args.cmd == "measure":
         print(json.dumps(measure(args.glb, toward=None if args.auto_head else FORWARD), indent=1))
     else:
