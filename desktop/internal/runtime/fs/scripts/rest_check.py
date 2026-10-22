@@ -27,15 +27,21 @@ UP = np.array([0.0, 1.0, 0.0])
 TURNED = 4.0  # degrees of head yaw worth straightening
 
 
-def _frame(P: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Centre, forward (toward the head), lateral axis and each point's forward coordinate."""
+def _frame(P: np.ndarray, toward: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Centre, forward (toward the head), lateral axis and each point's forward coordinate. The head end is the one
+    with the highest point, unless `toward` (a known forward, e.g. glTF +Z for a faced mesh) lies within 60 degrees
+    of the long axis: a grazing sheep or pig holds its head below its rump."""
     H = P - np.outer(P @ UP, UP)
     c = H.mean(0)
     _, v = np.linalg.eigh(np.cov((H - c).T))
     fwd = v[:, -1] - UP * (v[:, -1] @ UP)
     fwd /= np.linalg.norm(fwd)
     f = (P - c) @ fwd
-    if (P @ UP)[f > np.quantile(f, 0.85)].max() < (P @ UP)[f < np.quantile(f, 0.15)].max():
+    if toward is not None and abs(fwd @ toward) >= 0.5:
+        flip = fwd @ toward < 0
+    else:
+        flip = (P @ UP)[f > np.quantile(f, 0.85)].max() < (P @ UP)[f < np.quantile(f, 0.15)].max()
+    if flip:
         fwd, f = -fwd, -f
     return c, fwd, np.cross(UP, fwd), f
 
@@ -53,13 +59,13 @@ def _centres(P: np.ndarray, f: np.ndarray, n: int = 20) -> np.ndarray:
     return np.array(out)
 
 
-def measure(P: np.ndarray) -> dict | None:
+def measure(P: np.ndarray, toward: np.ndarray | None = None) -> dict | None:
     """Head yaw/pitch against the body, and left/right mirror error (median, % of body length). None if the mesh
-    is upright (taller than it is long), where this check doesn't apply."""
+    is upright (taller than it is long), where this check doesn't apply. toward: see _frame."""
     P = np.asarray(P, float)
     if np.ptp(P @ UP) > 0.9 * np.ptp(P - np.outer(P @ UP, UP), axis=0).max():
         return None
-    c, fwd, lat, f = _frame(P)
+    c, fwd, lat, f = _frame(P, toward)
     L = float(np.ptp(f))
     cs = _centres(P, f)
     body = cs[4:12]
