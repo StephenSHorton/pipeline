@@ -1,8 +1,8 @@
 // The asset viewer for the 3D and Rig stages: the GLB as a clay diorama (src/viewer/Diorama.tsx) under a glass
 // HUD (./Hud.tsx), with the Cleanup, Paint and Detail levels rail and the Rig check dock (./panels/). Panels reach
 // the model through the tool API (src/viewer/tools.ts), which this screen feeds: the model, the file on screen,
-// and loadFile / reload. The turnaround figures from views.json and the articulated pivots are one link away in
-// the classic view (/legacy.html?asset=<stem>).
+// and loadFile / reload. The articulated pivots (articulated.json) are one link away in the classic view
+// (/legacy.html?asset=<stem>).
 import { useLook } from "mokei/clay";
 import { useMaterialColor } from "mokei/theme";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
@@ -175,7 +175,16 @@ export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
   const info = load.state === "ready" ? load.info : null;
   const isPs1 = !!info && (/^psx/i.test(info.file) || docs?.intent?.output === "ps1");
 
-  const pickLod = useCallback((id: string) => navigate({ name: "asset", stem, lod: id }, { replace: true }), [stem]);
+  // Picking the LOD the URL already names (a loadFile file such as Cleanup's is on screen) reloads the candidates:
+  // navigating to the same URL would change nothing.
+  const pickLod = useCallback(
+    (id: string) => {
+      if (id !== lod) return navigate({ name: "asset", stem, lod: id }, { replace: true });
+      want.current = null;
+      setDocsBump((b) => b + 1);
+    },
+    [stem, lod],
+  );
 
   // The tool API follows the model on screen; a new model disarms the tool. Not while loading: currentFile
   // stays the file on screen until the next one has loaded (legacy loadFrom set it after the parse).
@@ -214,9 +223,6 @@ export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
           stem={stem}
           docs={docs}
           load={load}
-          lods={lods}
-          hasRig={!!docs?.hasRig}
-          onPickLod={pickLod}
           clips={view.clips}
           clip={clip}
           playing={playing}
