@@ -24,6 +24,14 @@ really is: the toes, the narrow end and a red comb (rig_fit.geometric_cues) plus
 renders. If the toes AND the vision model both put the head at -Z, the model is turned a further 180 degrees (a
 re-place at +180: x and z negated) and psx.json records facing_check {flipped: true, why} and facing_source
 'cues'. --facing-check off (or PSX_FACING_CHECK=off) skips it; a failing check never fails the pass.
+
+Legs. --legs clean (default keep) swaps a creature's decimated legs (Hunyuan's lumpy, slanted legs cut to jagged
+facets with flat triangles splayed at the hooves) for straight columns. The legs are found on the detailed placed
+mesh with workbench/edit.py's leg finder; the low faces wholly below the band top and within a leg's reach go, and
+each leg gets an N-sided (--leg-sides) prism on the straight line through its centres, from the floor up into the
+body, radius --leg-scale times the measured leg radius at the top tapering to --leg-taper of that at the floor. The
+columns come out of the --faces budget (the body is decimated to the rest) and bake from their own leg's texels.
+A shape with no legs (a hay bale) keeps its own, with a note in psx.json's legs and degraded.
 """
 from __future__ import annotations
 
@@ -143,8 +151,178 @@ def decimate_head(mesh: trimesh.Trimesh, faces: int, weight: float, f0: float = 
     return trimesh.Trimesh(vertices=back, faces=low.faces, process=False)
 
 
-def bake(high: trimesh.Trimesh, texture: np.ndarray, low: trimesh.Trimesh, atlas: int):
-    """Unwrap the low mesh and fill its atlas from the closest point on the textured high mesh."""
+# --legs clean: the decimated legs (Hunyuan's lumpy, slanted legs cut to a few dozen facets, flat triangles splayed
+# at the hooves) are swapped for one straight tapered prism per leg.
+LEG_FIT = (0.1, 0.75)  # the leg's centre line and radius are read over this share of the band: above the hoof's
+#                        forward bulge, below the wool hanging among the tops of the legs
+LEG_MARGIN = 0.05  # low faces are removed only wholly below the band top less this share of the band
+LEG_REACH = 1.6  # ... and within this many source radii of a leg's centre line
+LEG_PUSH = 0.25  # the column runs this share of the band up into the body, so the hole it leaves is covered
+LEG_BAKE_REACH = 2.5  # a column bakes from high faces within this many source radii of its leg, below the top
+
+
+def column_faces(sides: int) -> int:
+    """Triangles in one leg column: the sides (one band of quads) and a flat bottom cap; no top cap."""
+    return 2 * sides + (sides - 2)
+
+
+def measure_legs(high: trimesh.Trimesh) -> dict:
+    """The legs of the placed high mesh with workbench/edit.py's leg finder: the band top, and per leg a straight
+    centre line (least squares over LEG_FIT of the band, read at the floor and at the top) and its radius (the median
+    over that span of each height's 80th percentile distance from the centre line), and its reach for leg_faces.
+    Raises edit.EditError when the
+    shape has no legs to find (a hay bale, a crate)."""
+    from workbench import edit
+    P = edit._surface(high)
+    floor = float(P[:, 1].min())
+    top = edit.leg_top(high, P)
+    found = edit._Legs(P, floor, top)
+    band = top - floor
+    sel = (P[:, 1] >= floor + LEG_FIT[0] * band) & (P[:, 1] <= floor + LEG_FIT[1] * band)
+    Q = P[sel]
+    lab, _, dist = found.nearest(Q)
+    edges = np.linspace(floor + LEG_FIT[0] * band, floor + LEG_FIT[1] * band, 13)
+    legs = []
+    for i in range(found.n):
+        mine = lab == i
+        y, xz, d = Q[mine, 1], Q[mine][:, [0, 2]], dist[mine]
+        if len(y) < 30:
+            raise edit.EditError(f"leg {i} has too few points over the middle of the band")
+        A = np.stack([y, np.ones_like(y)], axis=1)
+        coef, *_ = np.linalg.lstsq(A, xz, rcond=None)  # xz = y * slope + intercept
+        k = np.digitize(y, edges) - 1
+        per = [float(np.percentile(d[k == b], 80)) for b in range(len(edges) - 1) if (k == b).sum() >= 10]
+        # How far the leg's surface reaches from the straight line at most (its lumps, its bend), for the cut.
+        off = np.linalg.norm(xz - A @ coef, axis=1)
+        radius = float(np.median(per)) if per else float(found.R[i])
+        legs.append({"bottom": np.array([floor, 1.0]) @ coef, "top": np.array([top, 1.0]) @ coef,
+                     "radius": radius, "reach": max(LEG_REACH * radius, 1.3 * float(np.percentile(off, 98)))})
+    return {"floor": floor, "top": top, "legs": legs, "finder": found}
+
+
+def leg_faces(low: trimesh.Trimesh, legs: dict) -> np.ndarray:
+    """Which low faces are leg: every corner below the band top (less LEG_MARGIN of the band) and within a leg's
+    reach of its straight centre line (LEG_REACH source radii, or further when the leg's own surface strays further
+    from the line over LEG_FIT: lumps, a bend), so wool hanging between the legs stays. Then whatever is left
+    wholly below that line and no longer joined to the body (a hoof's splayed flap whose far corner was outside the
+    reach) goes too."""
+    floor, top = legs["floor"], legs["top"]
+    cut = top - LEG_MARGIN * (top - floor)
+    V = np.asarray(low.vertices, float)
+    F = np.asarray(low.faces)
+    inleg = np.zeros(len(V), bool)
+    for leg in legs["legs"]:
+        t = (V[:, 1] - floor) / max(top - floor, 1e-9)
+        c = leg["bottom"][None, :] + t[:, None] * (leg["top"] - leg["bottom"])[None, :]
+        inleg |= np.linalg.norm(V[:, [0, 2]] - c, axis=1) <= leg["reach"]
+    gone = (V[F, 1] < cut).all(1) & inleg[F].all(1)
+    rest = np.nonzero(~gone)[0]
+    if len(rest):
+        part = trimesh.graph.connected_component_labels(trimesh.graph.face_adjacency(F[rest]), node_count=len(rest))
+        top_of = np.full(part.max() + 1, -np.inf)
+        np.maximum.at(top_of, part, V[F[rest], 1].max(1))
+        gone[rest[top_of[part] < cut]] = True
+    return gone
+
+
+def leg_column(bottom: np.ndarray, top: np.ndarray, r_bottom: float, r_top: float, sides: int):
+    """One leg: an N-sided prism with horizontal rings centred on the straight line bottom -> top (xyz), the bottom
+    ring on the floor (bottom's y), radius r_bottom there and r_top at the top, a flat bottom cap, no top cap.
+    A flat side faces +-x (the side view sees a face, not an edge). Outward winding."""
+    a = np.pi / sides + 2 * np.pi * np.arange(sides) / sides
+    ring = np.stack([np.cos(a), np.zeros(sides), np.sin(a)], axis=1)
+    V = np.vstack([bottom + r_bottom * ring, top + r_top * ring])
+    F = []
+    for j in range(sides):
+        p, q = j, (j + 1) % sides
+        F += [[p, q + sides, q], [p, p + sides, q + sides]]
+    F += [[0, j, j + 1] for j in range(1, sides - 1)]  # bottom fan, facing down
+    V, F = np.asarray(V, float), np.asarray(F, np.int64)
+    # Wind outward whatever the ring order: the sides' normals point away from the centre line.
+    tri = V[F[0]]
+    n = np.cross(tri[1] - tri[0], tri[2] - tri[0])
+    mid = (bottom + top) / 2
+    if np.dot(n, tri.mean(0) - mid) < 0:
+        F = F[:, ::-1]
+    return V, F
+
+
+def clean_legs(high: trimesh.Trimesh, faces: int, head_weight: float, sides: int = 6, scale: float = 1.0,
+               taper: float = 0.8):
+    """decimate_head() with the legs replaced by straight columns. Returns (low, info, regions): regions pairs each
+    column's low faces with the high faces of its own leg, for bake() to sample. Raises edit.EditError when the
+    shape has no legs (the caller keeps the decimated legs)."""
+    legs = measure_legs(high)
+    floor, top = legs["floor"], legs["top"]
+    band = top - floor
+    n = len(legs["legs"])
+    cost = n * column_faces(sides)
+    if cost >= faces:
+        from workbench import edit
+        raise edit.EditError(f"{n} leg columns of {sides} sides need {cost} triangles, the budget is {faces}")
+
+    def body(target: int):
+        low = decimate_head(high, target, head_weight)
+        gone = leg_faces(low, legs)
+        kept = trimesh.Trimesh(vertices=low.vertices, faces=np.asarray(low.faces)[~gone], process=False)
+        kept.remove_unreferenced_vertices()
+        return kept, int(gone.sum())
+
+    target = faces - cost
+    kept, removed = body(target)
+    # The decimator spent triangles on legs that went: cut again with those given back to the body, until the total
+    # is within a percent of the budget (never over it).
+    for _ in range(6):
+        short = faces - cost - len(kept.faces)
+        if short <= max(4, faces // 100) or removed == 0:
+            break
+        target += short
+        again, gone = body(target)
+        if len(again.faces) + cost > faces:
+            break
+        kept, removed = again, gone
+    Vs, Fs, regions, info_legs = [np.asarray(kept.vertices, float)], [np.asarray(kept.faces)], [], []
+    off, foff = len(kept.vertices), len(kept.faces)
+    lift = LEG_PUSH * band
+    for leg in legs["legs"]:
+        b = np.array([leg["bottom"][0], floor, leg["bottom"][1]])
+        t = np.array([leg["top"][0], top, leg["top"][1]])
+        t = t + (t - b) * (lift / max(band, 1e-9))  # along the line, so it stays straight
+        r_top = leg["radius"] * scale
+        V, F = leg_column(b, t, r_top * taper, r_top, sides)
+        Vs.append(V)
+        Fs.append(F + off)
+        regions.append(np.arange(foff, foff + len(F)))
+        off += len(V)
+        foff += len(F)
+        info_legs.append({"bottom": [round(float(x), 3) for x in b], "top": [round(float(x), 3) for x in t],
+                          "source_radius": round(leg["radius"], 3), "radius_top": round(r_top, 3),
+                          "radius_bottom": round(r_top * taper, 3),
+                          "slant_deg": round(float(np.degrees(np.arctan2(np.linalg.norm((t - b)[[0, 2]]),
+                                                                        (t - b)[1]))), 1)})
+    low = trimesh.Trimesh(vertices=np.vstack(Vs), faces=np.vstack(Fs), process=False)
+    # Each column bakes from its own leg on the high mesh: high faces below the band top, nearest that leg and
+    # within LEG_BAKE_REACH radii, so a fat column's top texels take the leg and not belly wool beside it.
+    hc = np.asarray(high.triangles_center)
+    lab, _, d = legs["finder"].nearest(hc)
+    src = []
+    for i, leg in enumerate(legs["legs"]):
+        mine = np.nonzero((hc[:, 1] < top) & (lab == i) & (d <= LEG_BAKE_REACH * leg["radius"]))[0]
+        src.append(mine)
+    pairs = [(r, s) for r, s in zip(regions, src) if len(s)]
+    width = float(np.ptp(np.asarray(high.vertices)[:, 0]))
+    info = {"mode": "clean", "legs_found": n, "sides": sides, "scale": scale, "taper": taper,
+            "top_y": round(top, 3), "band": round(band, 3), "faces_removed": removed,
+            "column_triangles": cost, "body_triangles": int(len(kept.faces)),
+            "radius_vs_body_width": round(float(np.median([x["radius_top"] for x in info_legs])) / max(width, 1e-9), 3),
+            "legs": info_legs}
+    return low, info, pairs
+
+
+def bake(high: trimesh.Trimesh, texture: np.ndarray, low: trimesh.Trimesh, atlas: int, regions=None):
+    """Unwrap the low mesh and fill its atlas from the closest point on the textured high mesh. regions, a list of
+    (low face indices, high face indices), makes those low faces take their closest point among those high faces
+    only (clean_legs: a column bakes from its own leg)."""
     pack = xatlas.PackOptions()
     pack.resolution = atlas
     pack.padding = 2
@@ -161,8 +339,8 @@ def bake(high: trimesh.Trimesh, texture: np.ndarray, low: trimesh.Trimesh, atlas
 
     # Every texel centre that lands inside a triangle, as a point on the low mesh.
     px = uvs * atlas
-    points, texels = [], []
-    for f in faces:
+    points, texels, owner = [], [], []
+    for fi, f in enumerate(faces):
         t = px[f]
         x0, y0 = np.floor(t.min(0)).astype(int)
         x1, y1 = np.ceil(t.max(0)).astype(int)
@@ -182,10 +360,24 @@ def bake(high: trimesh.Trimesh, texture: np.ndarray, low: trimesh.Trimesh, atlas
         bary = np.stack([1 - u - w, u, w], axis=1)[inside]
         points.append(bary @ verts[f])
         texels.append(p[inside].astype(int))
+        owner.append(np.full(len(bary), fi))
     points = np.concatenate(points)
     texels = np.concatenate(texels)
 
     closest, _, tri = trimesh.proximity.closest_point(high, points)
+    if regions:
+        # xatlas keeps the input's face order, so a face index here is the low mesh's.
+        if len(faces) != len(low.faces):
+            raise RuntimeError("xatlas changed the face count; can't map regions")
+        owner = np.concatenate(owner)
+        for lows, highs in regions:
+            sel = np.isin(owner, lows)
+            if not sel.any():
+                continue
+            part = trimesh.Trimesh(vertices=high.vertices, faces=np.asarray(high.faces)[highs], process=False)
+            c, _, t = trimesh.proximity.closest_point(part, points[sel])
+            closest[sel] = c
+            tri[sel] = np.asarray(highs)[t]
     bary = trimesh.triangles.points_to_barycentric(high.triangles[tri], closest)
     huv = np.einsum("ij,ijk->ik", bary, np.asarray(high.visual.uv)[high.faces[tri]])
     th, tw = texture.shape[:2]
@@ -382,18 +574,42 @@ def main() -> int:
     ap.add_argument("--facing-check", choices=("auto", "off"), default=None,
                     help="check the placed model's head is at +Z and turn it if the toes and the VLM disagree "
                          "(default auto; PSX_FACING_CHECK=off turns it off)")
+    ap.add_argument("--legs", choices=("keep", "clean"), default="keep",
+                    help="clean: replace each decimated leg with a straight tapered prism (creatures; a shape with no "
+                         "legs keeps its own with a note); keep (default): the decimated legs as they are")
+    ap.add_argument("--leg-sides", type=int, default=6, help="--legs clean: sides of each leg column")
+    ap.add_argument("--leg-scale", type=float, default=1.0,
+                    help="--legs clean: column radius at the top as a multiple of the measured leg radius")
+    ap.add_argument("--leg-taper", type=float, default=0.8,
+                    help="--legs clean: bottom radius over top radius")
     args = ap.parse_args()
+    if args.leg_sides < 3 or args.leg_scale <= 0 or args.leg_taper <= 0:
+        ap.error("--leg-sides is at least 3; --leg-scale and --leg-taper are positive")
 
     high, texture = load_textured(args.src)
     high = place(high, args.height, FACING[args.facing] + args.yaw)
-    low = decimate_head(high, args.faces, args.head_weight)
-    verts, faces, uvs, image, used = bake(high, texture, low, args.atlas)
+    degraded: list[dict] = []
+    legs_info: dict | None = None
+    regions = None
+    low = None
+    if args.legs == "clean":
+        from workbench import edit
+        try:
+            low, legs_info, regions = clean_legs(high, args.faces, args.head_weight, args.leg_sides, args.leg_scale,
+                                                 args.leg_taper)
+        except edit.EditError as e:
+            legs_info = {"mode": "keep", "asked": "clean", "why": str(e)}
+            print(f"psx_lowpoly: --legs clean found no legs to replace ({e}); kept the decimated legs",
+                  file=sys.stderr)
+            degraded.append(degrade("psx", "legs_clean", f"no legs to replace ({e}); kept the decimated legs"))
+    if low is None:
+        low = decimate_head(high, args.faces, args.head_weight)
+    verts, faces, uvs, image, used = bake(high, texture, low, args.atlas, regions)
     png = crunch(image)
 
     gate = args.facing_check or ("off" if (os.environ.get("PSX_FACING_CHECK") or "").lower() in {"off", "0", "no"}
                                  else "auto")
     facing_check: dict = {"skipped": True} if gate == "off" else {}
-    degraded: list[dict] = []
     drawn = drawn_facing(args.src)
     canonical = bool(args.canonical or (drawn.get("canonical") and drawn.get("facing") == args.facing))
     source = args.facing_source or (drawn.get("facing_source") if drawn.get("facing") == args.facing else None)
@@ -451,6 +667,8 @@ def main() -> int:
         "degraded": degraded,
         "size": [round(float(x), 1) for x in size.max(0) - size.min(0)],
     }
+    if legs_info is not None:
+        report["legs"] = legs_info
     (args.out / "psx.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print("PSX_RESULT " + json.dumps(report))
     return 0

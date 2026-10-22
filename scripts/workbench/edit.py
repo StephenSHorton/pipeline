@@ -164,13 +164,17 @@ def _merged(parts: list[tuple[np.ndarray, float]]) -> bool:
 
 def find_legs(P: np.ndarray, floor: float, top: float, grid: int = GRID, slabs: int = 6):
     """Seed masks (xz rasters) of each leg: the sub-band of the lower 85% of the leg band with the most blobs, a blob
-    that pinches in the middle split in two. Returns the seeds; whether that sub-band has a blob too long for one leg
+    that pinches in the middle split in two. When that sub-band has a blob that still looks merged but more blobs than
+    the best sub-band whose blobs all read as single legs, the clean one is taken: merging makes fewer blobs, so the
+    extra ones are a leg broken up (the sheep with shortened legs: wool among the legs at the top of the band shatters
+    one leg into pieces there, while the five sub-bands below agree on four clean legs). Returns the seeds; whether that sub-band has a blob too long for one leg
     that could not be split (legs pressed together along their length); and the splits, each the merged blob's mask
     with its legs' (seed index, xz centre)."""
     r = _Raster(P, grid)
     edges = np.linspace(floor, floor + 0.85 * (top - floor), slabs + 1)
     best: list[np.ndarray] = []
     best_odd, best_groups = False, []
+    clean: tuple[list, list] = ([], [])  # the clean sub-band with the most blobs: (masks, groups)
     for k in range(slabs):
         sel = (P[:, 1] >= edges[k]) & (P[:, 1] < edges[k + 1])
         lab, n = ndimage.label(r.mask(P[sel]))
@@ -205,8 +209,15 @@ def find_legs(P: np.ndarray, floor: float, top: float, grid: int = GRID, slabs: 
                 split = _split_waist(xz, depth=0)
             masks.append(mine)
             parts.append(split[0])
+        odd = _merged(parts)
+        if not odd and len(masks) > len(clean[0]):
+            clean = (masks, groups)
         if len(masks) > len(best):
-            best, best_odd, best_groups = masks, _merged(parts), groups
+            best, best_odd, best_groups = masks, odd, groups
+    # Legs pressed together make fewer blobs, not more. A winning sub-band that looks merged yet has more blobs than
+    # the best clean one is a leg broken into pieces (wool hanging among the legs), so the clean one stands.
+    if best_odd and clean[0] and len(clean[0]) < len(best):
+        return clean[0], False, clean[1]
     return best, best_odd, best_groups
 
 
