@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """retexture.py --first-wins: a real photo bakes over the drawn views instead of being averaged with them, and is
-fitted near its --first-facing, anchored on a drawn side view."""
+fitted near the drawn view it looks like."""
 from __future__ import annotations
 
 import json
@@ -81,21 +81,33 @@ class FirstWinsTests(unittest.TestCase):
         self.assertLess(purple, 0.1)  # the soft seam where the photo's edge fades out
         self.assertEqual([f.get("on_top") for f in fit if Path(f["view"]).name == "photo.png"], [True])
 
-    def test_a_drawn_side_view_anchors_the_photo(self) -> None:
-        # The photo shares the canonical's facing: a drawn side view is fitted first, and the photo is then searched
-        # only within 50 degrees of that facing instead of all the way round, where a mirrored match could win.
-        side = cutout(self.tmp / "right.png", (30, 30, 220))
+    def test_the_photo_is_searched_near_the_view_it_looks_like(self) -> None:
+        # A front photo of a symmetric subject fits the back as well; the drawn view it resembles picks the window.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import retexture
+
+        back = cutout(self.tmp / "back.png", (30, 200, 30))
+        wide = np.zeros((128, 128, 4), np.uint8)
+        wide[44:84, 8:120] = (220, 30, 30, 255)  # the photo's colour, a profile's outline
+        Image.fromarray(wide, "RGBA").save(self.tmp / "right.png")
+        self.drawn = cutout(self.tmp / "front.png", (220, 30, 30))
+        named = [(str(self.tmp / "right.png"), -90.0), (str(self.drawn), 0.0), (str(back), 180.0)]
+        self.assertEqual(retexture.photo_offset(str(self.photo), named), (0.0, str(self.drawn)))
+        self.assertEqual(retexture.photo_offset(str(back), named)[0], 180.0)
+        self.assertEqual(retexture.photo_offset(str(self.tmp / "right.png"), named)[0], -90.0)
+
         out = self.tmp / "out.glb"
+        side = cutout(self.tmp / "right.png", (30, 30, 220))  # the bake: the box looks the same from every side
         proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "retexture.py"), str(self.glb), "-o", str(out),
-                               "--view", str(self.photo), "--first-wins", "--view", str(side),
-                               "--first-facing", "right", "--samples", "20000"],
+                               "--view", str(self.photo), "--first-wins", "--view", str(side), "--view",
+                               str(self.drawn), "--view", str(back), "--samples", "20000"],
                               capture_output=True, text=True, timeout=300)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        fit = json.loads(out.with_suffix(".fit.json").read_text())
-        self.assertEqual([Path(f["view"]).name for f in fit], ["right.png", "photo.png"])
-        gap = (fit[1]["az"] - fit[0]["az"] + 180) % 360 - 180
+        self.assertIn("photo.png looks most like front.png", proc.stdout)
+        fit = {Path(f["view"]).name: f for f in json.loads(out.with_suffix(".fit.json").read_text())}
+        front_az = fit["right.png"]["az"] + 90.0  # right is -90 from the front camera
+        gap = (fit["photo.png"]["az"] - front_az + 180) % 360 - 180
         self.assertLessEqual(abs(gap), 50)
-
 
 if __name__ == "__main__":
     unittest.main()

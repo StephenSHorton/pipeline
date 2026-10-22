@@ -386,8 +386,8 @@ class GenerateViewsTests(unittest.TestCase):
 
     def test_the_views_photo_bakes_first_and_wins(self) -> None:
         # A photo draw's views.json names the photo it drew from: it is cut out and goes first with --first-wins,
-        # keeping the canonical's --first-facing (the views were drawn in its pose, and a free fit of a front
-        # photo can land on the back); the drawn views follow as before.
+        # with no --first-facing (its angle is unknown; retexture finds it near the drawn view it resembles); the
+        # drawn views follow as before.
         self.stub("scripts/shape_mv.sh", SHAPE_MV_OK)
         vj = self.views_json()
         (self.root / "in").mkdir()
@@ -401,7 +401,7 @@ class GenerateViewsTests(unittest.TestCase):
         views = [Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"]
         self.assertEqual(views, ["photo.png", "right.png", "front.png", "back.png", "left.png"])
         self.assertEqual(args[args.index("--view") + 2], "--first-wins")
-        self.assertEqual(args[args.index("--first-facing") + 1], "right")
+        self.assertNotIn("--first-facing", args)
         self.assertNotIn("--mirror", args)
         self.assertEqual(self.degraded_lines(proc), [])
         self.assertTrue(self.out("views", "lifted", "photo.png").is_file())

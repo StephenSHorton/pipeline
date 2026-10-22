@@ -701,10 +701,9 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   # Every named view, canonical first, then the refs. --first-facing says where the first one looks;
   # --mirror only when a side-on picture has no real opposite view.
   # The views' photo goes before them all, with --first-wins: retexture averages the views it bakes, so only that
-  # flag lets the real photo win where it reaches while the drawn views fill what it never saw. The views were
-  # drawn in the photo's pose, so it keeps the canonical's --first-facing: retexture searches it within 50 degrees
-  # of that, anchored on a drawn side view. Fitted freely, a front photo of a left/right symmetric subject can
-  # land on the back, where its silhouette matches as well, and win over the drawn back view.
+  # flag lets the real photo win where it reaches while the drawn views fill what it never saw. Its angle is
+  # unknown (the sheet is drawn in the kind's canonical turnaround, whatever the photo shows), so no --first-facing:
+  # retexture searches it within 50 degrees of the drawn view it looks most like, anchored on a drawn side view.
   VIEW_ARGS=()
   NAMED=()
   FIRST_FACING="$FACING"
@@ -729,7 +728,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   for v in "$OUT/views/lifted"/ref-*.png; do
     [[ -f "$v" ]] && VIEW_ARGS+=(--view "$v")
   done
-  VIEW_ARGS+=(--first-facing "$FIRST_FACING")
+  [[ -n "$PHOTO_VIEW" ]] || VIEW_ARGS+=(--first-facing "$FIRST_FACING")
   OPPOSITE=""
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac
   if [[ -n "$OPPOSITE" && " ${NAMED[*]} " != *" $OPPOSITE "* ]]; then

@@ -252,6 +252,41 @@ def blend(base, accum, weight, keep):
 FACING_OFFSET = {"camera": 0.0, "right": -90.0, "away": 180.0, "left": 90.0}
 
 
+def _thumb(path, size: int = 32) -> tuple[np.ndarray, np.ndarray]:
+    """The cutout cropped to its subject and fitted, aspect kept, centred in a size square: its mask and its colours
+    on grey. The aspect is half the clue: a profile is wide where a front view is narrow."""
+    rgb, alpha, _ = load_photo(path)
+    m = np.zeros((size, size), bool)
+    c = np.full((size, size, 3), 128.0, np.float32)
+    ys, xs = np.where(alpha)
+    if len(xs) == 0:
+        return m, c
+    box = (slice(ys.min(), ys.max() + 1), slice(xs.min(), xs.max() + 1))
+    h, w = alpha[box].shape
+    k = size / max(h, w)
+    th, tw = max(1, round(h * k)), max(1, round(w * k))
+    y0, x0 = (size - th) // 2, (size - tw) // 2
+    a = np.array(Image.fromarray(alpha[box].astype(np.uint8) * 255).resize((tw, th), Image.BILINEAR)) > 127
+    col = np.where(alpha[box][..., None], rgb[box], 128.0).astype(np.uint8)
+    m[y0:y0 + th, x0:x0 + tw] = a
+    c[y0:y0 + th, x0:x0 + tw] = np.asarray(Image.fromarray(col).resize((tw, th), Image.BILINEAR), np.float32)
+    return m, c
+
+
+def photo_offset(photo, named: list[tuple[str, float]]) -> tuple[float, str]:
+    """The offset of the named view (path, offset) the photo looks most like: outline (which way the head points)
+    plus colour (a face from a rump, where front and back outlines mirror). The views were drawn from this photo,
+    so the nearest one is roughly its angle; the fit then searches within 50 degrees of it."""
+    m, c = _thumb(photo)
+    best = None
+    for path, off in named:
+        vm, vc = _thumb(path)
+        score = (1.0 - iou(m, vm)) + float(np.abs(c - vc).mean()) / 255.0
+        if best is None or score < best[0]:
+            best = (score, off, path)
+    return best[1], best[2]
+
+
 def view_offset(stem: str) -> float | None:
     if "front" in stem:
         return FACING_OFFSET["camera"]
@@ -287,15 +322,12 @@ def main() -> int:
     # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
     # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
     # coin-flip, so a front-first free fit can land on the back. Splats accumulate, so order only moves fit.json.
-    # With --first-wins the first view is a real photo, maybe a 3/4 shot: a drawn side view anchors better, and the
-    # photo is then searched only around its --first-facing.
+    # A --first-wins photo of unknown angle is searched around the named view it looks most like (photo_offset):
+    # fitted all the way round, a front photo of a left/right symmetric subject matches the back as well.
     offsets = [view_offset(Path(v).stem.lower()) for v in args.view]
     if args.first_facing is not None:
         offsets[0] = FACING_OFFSET[args.first_facing]
-    sides = [i for i, o in enumerate(offsets) if o is not None and abs(o) == 90.0]
-    if args.first_wins and len(sides) > 1:
-        sides = sides[1:] if sides[0] == 0 else sides
-    side = sides[0] if sides else 0
+    side = next((i for i, o in enumerate(offsets) if o is not None and abs(o) == 90.0), 0)
     order = [side] + [i for i in range(len(args.view)) if i != side]
     top = order.index(0) if args.first_wins else -1  # where the first --view landed in the fit order
     views = [args.view[i] for i in order]
@@ -354,6 +386,11 @@ def main() -> int:
             # Hints are offsets from the FRONT camera, found from the anchor's fit and its known offset
             # (its name, or --first-facing for the pipeline's unnamed lifted.png).
             front_az = (reports[0]["az"] - first_off) % 360
+            if off is None and i == top:
+                named = [(v, o) for v, o in zip(views, offsets) if o is not None]
+                if named:
+                    off, like = photo_offset(view, named)
+                    print(f"retexture: {Path(view).name} looks most like {Path(like).name}; searched around it")
             if off is not None:
                 az_hint = (front_az + off) % 360
         if "top" in stem:
