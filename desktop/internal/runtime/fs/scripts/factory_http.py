@@ -207,7 +207,7 @@ STAGE_LABELS = {
     "retexture": "Bake the photo on",
     "fill": "Fill what the photo missed",
     "psx": "PS1 low-poly",
-    "lods": "Detail levels",
+    "lods": "List the finished models",  # lods.py only: no game / proxy LODs are cut any more
     "inspect": "Check the model",
     "stack": "Sprite stack",
     "preview": "Thumbnail",
