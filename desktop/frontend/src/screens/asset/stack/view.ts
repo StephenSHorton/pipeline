@@ -129,7 +129,9 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
   const state: StackState = { ...initial };
 
   const canvas = document.createElement("canvas");
-  canvas.className = "block size-full touch-none outline-none";
+  // Inline, not a class: setSize(w, h, false) leaves the display size to CSS, and a class on a node built here
+  // only exists if Tailwind's scan picks it up.
+  canvas.style.cssText = "display:block;width:100%;height:100%;touch-action:none;outline:none";
   container.appendChild(canvas);
 
   const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: false });

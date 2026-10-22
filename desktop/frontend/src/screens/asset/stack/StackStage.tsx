@@ -58,8 +58,9 @@ const CUBBIES: StackCubby[] = ["stack-look", "stack-sliders", "stack-palette", "
 const cubbyId = (stem: string, c: StackCubby) => `stack-${c === "stack-look" ? "look" : c.replace("stack-", "")}-${stem}`;
 const PAINT0: PaintMode = { on: false, drop: false, erase: false, color: PAINT_COPY.color.value, radius: PAINT_COPY.radius.value };
 const PBR0: Record<PbrKey, number> = { metal: 0, rough: 0.7, emit: 0 };
-/** A flow re-read this soon after our own Save is the one it queued: the canvas already shows what was saved. */
-const OWN_SAVE_MS = 5000;
+/** A flow re-read this soon after our own Save is the one it queued (factoryJson's /paint/ hook, ~300 ms later):
+ * the canvas already shows what was saved. Short, so a version pick right after a Save still reloads. */
+const OWN_SAVE_MS = 1500;
 
 function readShared(): GameLookState {
   let raw: string | null = null;
@@ -96,6 +97,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
   const [pbr, setPbr] = useState(PBR0);
   const [saving, setSaving] = useState(false);
   const ownSave = useRef(0);
+  const toggles = useRef<Partial<Record<StackCubby, HTMLButtonElement | null>>>({});
   const building = useJobs((s) => buildingStack(s.job, stem));
 
   // One canvas per mount; dispose frees its WebGL context (legacy never did, so every remount would leak one).
@@ -205,6 +207,13 @@ function StackBody({ stem, flowVersion }: StageProps) {
     setSaving(false);
   };
 
+  // Closing a panel while focus is in it hands focus back to its dock toggle, not <body>.
+  const closeCubby = (c: StackCubby) => {
+    const inside = !!document.activeElement?.closest(`#${CSS.escape(cubbyId(stem, c))}`);
+    setOpen((o) => (o === c ? null : o));
+    if (inside) toggles.current[c]?.focus();
+  };
+
   const ready = phase === "ready";
   const empty = phaseText(phase);
 
@@ -233,6 +242,9 @@ function StackBody({ stem, flowVersion }: StageProps) {
               ? CUBBIES.map((c) => (
                   <Button
                     key={c}
+                    ref={(el) => {
+                      toggles.current[c] = el;
+                    }}
                     type="button"
                     variant="hud-ghost"
                     aria-expanded={open === c}
@@ -253,7 +265,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
           {/* The dock is hidden while the pane is empty (legacy setEmpty: sliders.root.hidden). */}
           {ready && meta ? (
             <div className="flex min-h-0 w-full flex-col overflow-y-auto">
-              <Cubby id={cubbyId(stem, "stack-look")} cubby="stack-look" open={open === "stack-look"} onClose={() => setOpen(null)}>
+              <Cubby id={cubbyId(stem, "stack-look")} cubby="stack-look" open={open === "stack-look"} onClose={() => closeCubby("stack-look")}>
                 <p className="m-0 text-[0.8rem] leading-snug text-ink-3">{STACK_COPY.lookBlurb}</p>
                 <Group label="Look">
                   {LOOK_BUTTONS.map((b) => (
@@ -284,7 +296,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
                 </div>
               </Cubby>
 
-              <Cubby id={cubbyId(stem, "stack-sliders")} cubby="stack-sliders" open={open === "stack-sliders"} onClose={() => setOpen(null)}>
+              <Cubby id={cubbyId(stem, "stack-sliders")} cubby="stack-sliders" open={open === "stack-sliders"} onClose={() => closeCubby("stack-sliders")}>
                 {SLIDERS.map((s) => (
                   <Slider
                     key={s.key}
@@ -300,7 +312,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
                 ))}
               </Cubby>
 
-              <Cubby id={cubbyId(stem, "stack-palette")} cubby="stack-palette" open={open === "stack-palette"} onClose={() => setOpen(null)}>
+              <Cubby id={cubbyId(stem, "stack-palette")} cubby="stack-palette" open={open === "stack-palette"} onClose={() => closeCubby("stack-palette")}>
                 <p className="m-0 text-[0.8rem] leading-snug text-ink-3">{STACK_COPY.paletteHint}</p>
                 <Slider
                   label={PALETTE_COPY.count.label}
@@ -336,7 +348,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
                 ))}
               </Cubby>
 
-              <Cubby id={cubbyId(stem, "paint")} cubby="paint" open={open === "paint"} onClose={() => setOpen(null)}>
+              <Cubby id={cubbyId(stem, "paint")} cubby="paint" open={open === "paint"} onClose={() => closeCubby("paint")}>
                 <p className="m-0 text-[0.8rem] leading-snug text-ink-3">{STACK_COPY.paintHint}</p>
                 <Group label={CUBBY_LABELS.paint}>
                   <Toggle on={paint.on} title={PAINT_COPY.paint.title} onClick={() => setPaint((p) => ({ ...p, on: !p.on }))}>
