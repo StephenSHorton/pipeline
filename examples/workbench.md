@@ -38,7 +38,9 @@ Protocol and limits:
 
 ## How writes work
 
-The workbench only ever writes under `out/<stem>/workbench/`. Every write follows the same steps:
+The workbench writes under `out/<stem>/workbench/`, except `psx`: it publishes the PS1 model where generate.sh's
+own PS1 step does (`psx.glb`, `psx/` and the `PSX` entry in `lods.json`), so the app's Model tabs show it. Those
+three are mesh-stage files, so the take after a `psx` holds them. Every write follows the same steps:
 
 1. **Busy check:** it asks the factory `GET /status` and refuses if a running job owns that stem.
 2. **Take:** afterwards it calls `POST /flow/<stem>/snapshot` (stage `mesh`). Each change becomes a take, and
@@ -62,7 +64,7 @@ Paths are relative to the repo root, and nothing outside it is read.
 | tool | args | what |
 |---|---|---|
 | `asset_info` | `stem` | The asset's files plus `shape.json`, `degraded.json`, the photo fit (`textured_photo.fit.json`), `psx/psx.json`, intent and scene. Also lists the takes in each stage. |
-| `look` | `stem` or `glb`, `lod?`, `views?`, `size?` | Contact sheet of textured renders: side, xside, front, back, top, q. |
+| `look` | `stem` or `glb`, `lod?`, `views?`, `size?`, `sampling?` | Contact sheet of textured renders: side, xside, front, back, top, q by default; `bottom` too when `views` asks for it. `sampling: "pixel"` (the default) samples the texture per pixel, as an engine shows it. `"face"` colours each triangle by one texel, like the rig sheets, which turns a PS1 mesh's thin triangles into stripes even when its UVs are right. |
 | `measure` | `stem` or `glb`, `lod?`, `auto_head?` | Bounds, tris, pieces, `head_offset_pct`, `head_yaw_deg`, `mirror_iou`, `circularity`. |
 | `compare_reference` | `stem` or `glb`, `image`, `facing?` | Silhouette IoU against the photo, the regions that are missing or extra, and a reference/model/overlap PNG. |
 | `clay_get` | `stem` | `workbench/clay.json` and the forms with their dims. |
@@ -71,7 +73,7 @@ Paths are relative to the repo root, and nothing outside it is read.
 | `clay_mesh` | `stem`, `grid?`, `height?`, `texture?` | Writes `workbench/clay.glb` with UVs and the blob colours. |
 | `mesh_edit` | `stem`, `src`, `op`, `params?` | Writes `workbench/edit_N.glb`. Ops: `remove_floaters` (`keep`, `min_faces`) and `delete_sphere` (`center`, `radius`). |
 | `bake_photo` | `stem`, `glb`, `views`, `mirror?`, `erode?`, `keep?`, `first_wins?`, `fill?`, `mirror_ends?` | Runs `retexture.py` and writes `workbench/bake_N.glb`. By default every texel gets the photo: with `mirror_ends` (default true) a front-on or back-on first view is also baked, flipped, onto the opposite end, and with `fill: "photo"` (default) `workbench/fill.py` paints a triplanar swatch of the photo's subject on whatever the bake still missed. `fill: "none"` leaves those texels as the base texture. You can state the facing of the first view only; later views are read from their file names. Every view must be a cutout with a transparent background, such as `lifted.png` or `views/lifted/*.png`: an opaque photo is refused, because its background would be baked onto the model. |
-| `psx` | `stem`, `glb`, `height`, `facing`, `faces?`, `atlas?`, `name?` | Runs `psx_lowpoly.py` with its facing check off. Writes `workbench/psx/` and `workbench/psx.glb`. `height` is in .obj units (s&box inches). |
+| `psx` | `stem`, `glb`, `height`, `facing`, `faces?`, `atlas?`, `name?` | Runs `psx_lowpoly.py` with its facing check off and publishes like generate.sh's PS1 step: `psx.glb`, `psx/<name>.obj`, `.mtl`, `.png` and `psx.json`, plus the `PSX` entry in `lods.json` after `Photo bake` (built by `scripts/lods.py`, the code `reduce.sh` uses). It replaces the asset's PSX and removes an older `workbench/psx*`. `height` is in .obj units (s&box inches). |
 | `draw_views` | `stem`, `image`, `prompt`, `intent?` | Factory job (draw model): four turnaround views drawn with the photo as a reference. |
 | `generate` | `image`, `stem?`, `mesh?`, `paint?`, `fill?`, `mirror_ends?`, `quality?`, `psx?`, ... | Factory job: runs `generate.sh`. With `mesh` it uses that GLB as the shape instead of hy3d's. With `paint: false` it unwraps and bakes the photo, so a clay asset loads no model. `fill` defaults to `"photo"` here (`generate.sh --fill photo`): the photo is mirrored onto the far end and a swatch of it fills the rest. |
 | `job_status`, `cancel`, `pick_take` | `job_id?`, `job_id`, `stem` + `stage` + `take` | Poll or stop the factory's job, or pick a take. |
@@ -115,7 +117,7 @@ rounded box. Through the workbench only:
      runs the facing check, and that check asks ollama.
 5. **Make the PS1 model:** `psx` with
    `{"stem": "mlg-hay_bale_v2", "glb": "out/mlg-hay_bale_v2/textured_photo.glb", "height": 60, "facing": "camera"}`.
-6. **Check it:** `look {"glb": "out/mlg-hay_bale_v2/workbench/psx.glb"}` and
+6. **Check it:** `look {"stem": "mlg-hay_bale_v2"}` (its `psx.glb`, and the app's PSX tab shows the same model) and
    `compare_reference` against the photo.
 
 Stop there for review.

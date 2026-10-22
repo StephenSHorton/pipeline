@@ -214,6 +214,102 @@ class ToolTests(Base):
         self.assertTrue(res["isError"])
         self.assertIn("center is required", res["content"][0]["text"])
 
+    def fake_psx(self, faces: int = 1200, fail: bool = False):
+        """Stand in for psx_lowpoly (bake.psx): write what it writes, record where, and answer its report."""
+        seen = []
+
+        def psx(root, glb, out_dir, glb_out, name, height, facing, faces_=None, atlas=None):
+            seen.append({"out_dir": out_dir, "glb_out": glb_out, "name": name, "facing": facing})
+            if fail:
+                raise tools.bake.BakeError("psx_lowpoly exited 1: boom")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for ext in ("obj", "mtl", "png"):
+                (out_dir / f"{name}.{ext}").write_text(ext)
+            report = {"name": name, "obj": f"{name}.obj", "texture": f"{name}.png", "glb": glb_out.name,
+                      "triangles": faces, "atlas": 256, "height": height, "facing": facing}
+            (out_dir / "psx.json").write_text(json.dumps(report))
+            quadruped().export(glb_out)
+            return report
+
+        self.addCleanup(setattr, tools.bake, "psx", tools.bake.psx)
+        tools.bake.psx = psx
+        return seen
+
+    def test_psx_publishes_like_generate(self) -> None:
+        src = self.asset("bale", quadruped(), "textured_photo.glb")
+        folder = self.root / "out" / "bale"
+        (folder / "psx").mkdir()
+        (folder / "psx" / "old_name.obj").write_text("stale")  # another name's cut: cleared, as generate.sh does
+        (folder / "workbench" / "psx").mkdir(parents=True)  # an earlier workbench run's copy: removed
+        (folder / "workbench" / "psx.glb").write_bytes(b"old")
+        (folder / "workbench" / "psx" / "bale.obj").write_text("old")
+        (folder / "lods.json").write_text(json.dumps({"stem": "bale", "lods": [
+            {"id": "paint", "file": "textured_paint.glb", "label": "Painted"},
+            {"id": "photo", "file": "textured_photo.glb", "label": "Photo bake"},
+            {"id": "hero", "file": "mesh.glb", "label": "Hero"}]}))
+        seen = self.fake_psx()
+        out, _ = self.ok("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera"})
+        self.assertEqual(out["glb"], "out/bale/psx.glb")
+        self.assertEqual(out["obj"], "out/bale/psx/bale.obj")
+        self.assertTrue(out["take"]["ok"])
+        self.assertEqual(len(self.factory.snapshots()), 1)
+        # psx_lowpoly wrote into a hidden folder, gone now; the files moved into the published places
+        self.assertTrue(seen[0]["out_dir"].parent.name.startswith(".psx_"))
+        self.assertEqual([p.name for p in folder.iterdir() if p.name.startswith(".")], [])
+        self.assertEqual(sorted(p.name for p in (folder / "psx").iterdir()),
+                         ["bale.mtl", "bale.obj", "bale.png", "psx.json"])
+        self.assertGreater((folder / "psx.glb").stat().st_size, 64)
+        self.assertFalse((folder / "workbench" / "psx.glb").exists())
+        self.assertFalse((folder / "workbench" / "psx").exists())
+        want = {"id": "psx", "file": "psx.glb", "label": "PSX", "faces": 1200, "vertices": None, "has_uvs": True}
+        self.assertEqual(out["lod"], want)
+        doc = json.loads((folder / "lods.json").read_text())
+        self.assertEqual([x["id"] for x in doc["lods"]], ["paint", "photo", "psx", "hero"])
+        self.assertEqual(doc["lods"][2], want)
+        # Again with another budget: the entry is replaced where it stands, not added twice.
+        self.fake_psx(faces=800)
+        self.ok("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera"})
+        doc = json.loads((folder / "lods.json").read_text())
+        self.assertEqual([x["id"] for x in doc["lods"]], ["paint", "photo", "psx", "hero"])
+        self.assertEqual(doc["lods"][2]["faces"], 800)
+        # The stem's model is now this PSX: look and measure by stem see it.
+        self.assertEqual(self.bench.target({"stem": "bale"}), folder / "psx.glb")
+
+    def test_psx_without_lods_json_and_a_failed_cut(self) -> None:
+        src = self.asset("cart", quadruped(), "textured_photo.glb")
+        folder = self.root / "out" / "cart"
+        self.fake_psx(fail=True)
+        res = self.call("psx", {"stem": "cart", "glb": src, "height": 40, "facing": "right"})
+        self.assertTrue(res["isError"])
+        self.assertFalse((folder / "lods.json").exists())
+        self.assertFalse((folder / "psx.glb").exists())
+        self.assertEqual([p.name for p in folder.iterdir() if p.name.startswith(".")], [])
+        self.fake_psx()
+        self.ok("psx", {"stem": "cart", "glb": src, "height": 40, "facing": "right"})
+        doc = json.loads((folder / "lods.json").read_text())
+        self.assertEqual(doc["stem"], "cart")
+        self.assertEqual([x["id"] for x in doc["lods"]], ["psx"])
+
+    def test_psx_refused_while_a_job_writes_the_stem(self) -> None:
+        src = self.asset("bale", quadruped(), "textured_photo.glb")
+        seen = self.fake_psx()
+        self.factory.state = {"ok": True, "state": "running", "stem": "bale", "job_id": "j1"}
+        res = self.call("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera"})
+        self.assertTrue(res["isError"])
+        self.assertIn("a factory job is writing bale", res["content"][0]["text"])
+        self.assertEqual(seen, [])
+        self.assertFalse((self.root / "out" / "bale" / "psx.glb").exists())
+
+    def test_look_samples_per_pixel_by_default(self) -> None:
+        glb = self.asset("synth", quadruped())
+        out, _ = self.ok("look", {"glb": glb, "views": ["top", "bottom"], "size": 64})
+        self.assertEqual(out["sampling"], "pixel")
+        self.assertEqual(out["views"], ["top", "bottom"])
+        out, _ = self.ok("look", {"glb": glb, "views": ["q"], "size": 64, "sampling": "face"})
+        self.assertEqual(out["sampling"], "face")
+        res = self.call("look", {"glb": glb, "sampling": "smooth"})
+        self.assertTrue(res["isError"])
+
     def test_clay_edits_read_under_the_lock(self) -> None:
         # Another client's edit lands between this call's start and its write (here: during the busy check, which
         # runs under the lock). Read outside the lock, the second save would drop it.
