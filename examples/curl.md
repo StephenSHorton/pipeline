@@ -1,4 +1,6 @@
-# Curl the local factory (no MCP)
+# Curl the local factory
+
+Plain HTTP. Claude drives the pipeline through the workbench's MCP server instead: [workbench.md](workbench.md).
 
 Server: `http://127.0.0.1:8766` (loopback only).
 

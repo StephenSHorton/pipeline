@@ -43,7 +43,7 @@ Grok workflow: `/ai-asset-pipeline` with `args.image` and `args.quality`, run fr
 
 HTTP (loopback, curl): `.venv/bin/python scripts/factory_http.py` then the copy-paste commands in **[examples/curl.md](examples/curl.md)** (`/health`, `/inspect/radio`, `POST /generate`, `/glb/radio`). `POST /generate` also takes `"mesh"` (a `.glb` under `out/<stem>/`, used as the shape instead of hy3d's) and `"paint": false` (unwrap instead of paint; only the photo bakes).
 
-MCP: the agent workbench, where Claude makes, measures and fixes assets, lives in `scripts/workbench/` as its own server, a client of the factory.
+MCP: the agent workbench, where Claude makes, measures and fixes assets, lives in `scripts/workbench/` as its own server on `:8768`, a client of the factory: `.venv/bin/python scripts/workbench/mcp_server.py`, then `claude mcp add --transport http workbench http://127.0.0.1:8768/mcp`. Tools and a walkthrough: **[examples/workbench.md](examples/workbench.md)**.
 
 ## Layout
 
