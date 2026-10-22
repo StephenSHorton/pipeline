@@ -219,6 +219,22 @@ class ToolTests(Base):
         self.assertTrue(res["isError"])
         self.assertIn("center is required", res["content"][0]["text"])
 
+    def test_mesh_edit_stretch(self) -> None:
+        src = self.asset("long", quadruped(), "mesh.glb")
+        before = trimesh.load(self.root / src, force="mesh")
+        out, _ = self.ok("mesh_edit", {"stem": "long", "src": src, "op": "stretch",
+                                       "params": {"axis": "z", "factor": 1.5}})
+        after = trimesh.load(self.root / out["glb"], force="mesh")
+        self.assertAlmostEqual(after.extents[2], before.extents[2] * 1.5, places=3)
+        self.assertAlmostEqual(after.extents[1], before.extents[1], places=4)
+        self.assertAlmostEqual(after.bounds.mean(axis=0)[2], before.bounds.mean(axis=0)[2], places=4)  # centred
+        out, _ = self.ok("mesh_edit", {"stem": "long", "src": src, "op": "stretch",
+                                       "params": {"axis": "y", "factor": 0.5}})
+        tall = trimesh.load(self.root / out["glb"], force="mesh")
+        self.assertAlmostEqual(tall.bounds[0][1], before.bounds[0][1], places=4)  # still stands on the floor
+        res = self.call("mesh_edit", {"stem": "long", "src": src, "op": "stretch", "params": {"axis": "w", "factor": 2}})
+        self.assertTrue(res["isError"])
+
     def fake_psx(self, faces: int = 1200, fail: bool = False):
         """Stand in for psx_lowpoly (bake.psx): write what it writes, record where, and answer its report."""
         seen = []

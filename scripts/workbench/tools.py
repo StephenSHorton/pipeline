@@ -527,6 +527,24 @@ class Workbench:
             if errs:
                 raise ArgError("; ".join(errs))
             out_mesh, info = clean_mesh.remove_floaters(mesh, int(params.get("keep", 1)), int(params.get("min_faces", 0)))
+        elif op == "stretch":
+            # Proportions: the drawn views can squash a long animal into a square, so its length needs giving back.
+            errs = check(_obj({"axis": {"type": "string", "enum": ["x", "y", "z"]},
+                               "factor": {"type": "number", "minimum": 0.25, "maximum": 4}}, ("axis", "factor")),
+                         params, "params")
+            if errs:
+                raise ArgError("; ".join(errs))
+            i = "xyz".index(params["axis"])
+            v = np.asarray(mesh.vertices, float).copy()
+            lo, hi = v[:, i].min(), v[:, i].max()
+            # Height grows up from the floor; length and width about the middle, so it stays centred.
+            pivot = lo if i == 1 else (lo + hi) / 2
+            v[:, i] = pivot + (v[:, i] - pivot) * float(params["factor"])
+            out_mesh = mesh.copy()
+            out_mesh.vertices = v
+            info = {"axis": params["axis"], "factor": float(params["factor"]),
+                    "extents_before": [round(float(x), 4) for x in mesh.extents],
+                    "extents_after": [round(float(x), 4) for x in out_mesh.extents]}
         else:
             errs = check(_obj({"center": VEC3, "radius": {"type": "number", "minimum": 0}}, ("center", "radius")),
                          params, "params")
@@ -726,9 +744,11 @@ class Workbench:
                                                                               "minimum": 64, "maximum": 4096}},
                       ("stem",)), self.clay_mesh),
             Tool("mesh_edit", "Edit a GLB into out/<stem>/workbench/edit_N.glb. op remove_floaters (params keep, "
-                 "min_faces) or delete_sphere (params center [x,y,z], radius). straighten_head, symmetrize and "
-                 "nudge are not built yet.",
+                 "min_faces), delete_sphere (params center [x,y,z], radius) or stretch (params axis x|y|z, factor: "
+                 "scales one axis, height up from the floor, the others about the middle; UVs and texture kept). "
+                 "straighten_head, symmetrize and nudge are not built yet.",
                  _obj({"stem": STEM, "src": GLB, "op": {"type": "string", "enum": ["remove_floaters", "delete_sphere",
+                                                                                   "stretch",
                                                                                    "straighten_head", "symmetrize",
                                                                                    "nudge"]},
                        "params": {"type": "object"}}, ("stem", "src", "op")), self.mesh_edit),
