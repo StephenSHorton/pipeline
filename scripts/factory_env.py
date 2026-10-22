@@ -217,6 +217,8 @@ def generate_argv(
     psx: dict[str, Any] | None = None,
     views_json: Path | None = None,
     degraded: list[dict[str, str]] | None = None,
+    mesh: Path | None = None,
+    paint: bool = True,
 ) -> list[str]:
     cmd = [
         str(generate_script(root)),
@@ -242,6 +244,11 @@ def generate_argv(
     # degraded.json and inspect.json beside its own.
     for entry in degraded or []:
         cmd += ["--degraded", f"{entry['stage']} {entry['code']}: {entry['message']}"]
+    # A shape made elsewhere (the workbench's clay) instead of hy3d's; no paint: unwrap, then the photo bake.
+    if mesh:
+        cmd += ["--mesh", str(mesh)]
+    if not paint:
+        cmd += ["--paint", "off"]
     # --quality psx options: facing, height, faces, atlas, up, name.
     for key, value in (psx or {}).items():
         if value not in (None, ""):

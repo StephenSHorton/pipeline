@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""generate.sh with stub binaries: the no-picture guard, turnaround views, the shape fallbacks and loud degradation.
+"""generate.sh with stub binaries: the no-picture guard, turnaround views, the shape fallbacks and loud degradation,
+a supplied mesh (--mesh), no paint (--paint off) and the views' photo baking over the drawn views.
 
 Each test builds a throwaway root (scripts copied from the repo, stub hy3d / lift-subject / shape_mv.sh) so
 generate.sh runs end to end in seconds without a model.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -60,6 +62,23 @@ args = sys.argv[1:]
 root = Path(__file__).resolve().parents[1]
 (root / "retexture.args.json").write_text(json.dumps(args))
 shutil.copy(args[0], args[args.index("-o") + 1])
+'''
+
+# scripts/workbench/unwrap_cli.py <in.glb> -o <out.glb> [--texture N]: UVs and a plain atlas.
+UNWRAP_STUB = r'''
+import json, sys
+from pathlib import Path
+import numpy as np, trimesh
+from PIL import Image
+args = sys.argv[1:]
+root = Path(__file__).resolve().parents[2]
+(root / "unwrap.args.json").write_text(json.dumps(args))
+mesh = trimesh.load(args[0], force="mesh")
+size = int(args[args.index("--texture") + 1]) if "--texture" in args else 1024
+uv = np.random.default_rng(0).random((len(mesh.vertices), 2))
+mat = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (size, size), (128, 128, 128)))
+mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=mat)
+mesh.export(args[args.index("-o") + 1])
 '''
 
 SHAPE_MV_OK = r'''#!/usr/bin/env bash
@@ -364,6 +383,110 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual(views, ["lifted.png"])
         self.assertEqual(args[args.index("--first-facing") + 1], "right")
         self.assertIn("--mirror", args)
+
+    def test_the_views_photo_bakes_first_and_wins(self) -> None:
+        # A photo draw's views.json names the photo it drew from: it is cut out and goes first with --first-wins,
+        # with no --first-facing (its angle is unknown); the drawn views follow as before.
+        self.stub("scripts/shape_mv.sh", SHAPE_MV_OK)
+        vj = self.views_json()
+        (self.root / "in").mkdir()
+        photo = square_png(self.root / "in" / "cow.png")
+        doc = json.loads(vj.read_text())
+        doc["sheet"] = {"reference": {"file": "in/cow.png", "sha256": hashlib.sha256(photo.read_bytes()).hexdigest()}}
+        vj.write_text(json.dumps(doc))
+        proc = self.run_gen("--image", str(self.image), "--views-json", str(vj), "--quality", "textured")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        args = self.retexture_args()
+        views = [Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"]
+        self.assertEqual(views, ["photo.png", "right.png", "front.png", "back.png", "left.png"])
+        self.assertEqual(args[args.index("--view") + 2], "--first-wins")
+        self.assertNotIn("--first-facing", args)
+        self.assertNotIn("--mirror", args)
+        self.assertTrue(self.out("views", "lifted", "photo.png").is_file())
+        roles = {v["id"]: v["role"] for v in json.loads(self.out("views.json").read_text())["views"]}
+        self.assertEqual(roles["photo"], "reference")
+        # A photo changed since the draw is not the subject any more: the drawn views bake alone, as before.
+        square_png(photo, size=64)
+        proc = self.run_gen("--image", str(self.image), "--views-json", str(vj), "--quality", "textured")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("changed since the draw", proc.stdout)
+        args = self.retexture_args()
+        self.assertEqual([Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"][0], "right.png")
+        self.assertEqual(args[args.index("--first-facing") + 1], "right")
+        self.assertNotIn("--first-wins", args)
+
+    def test_a_supplied_mesh_is_the_shape(self) -> None:
+        # The supplied mesh may be a product of the last run, which the clean-up removes: it must survive.
+        prev = self.out("textured_photo.glb")
+        prev.parent.mkdir(parents=True)
+        trimesh.creation.cylinder(radius=0.5, height=1.0).export(prev)
+        faces = len(trimesh.load(prev, force="mesh").faces)
+        proc = self.run_gen("--image", str(self.image), "--mesh", str(prev))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual([c for c in self.hy3d_calls() if c.startswith("shape")], [])
+        self.assertEqual(self.degraded_lines(proc), [], "a supplied mesh is no single-view fallback")
+        shape = json.loads(self.out("shape.json").read_text())
+        self.assertEqual((shape["model"], shape["mode"], shape["source"]), ("supplied", "supplied", str(prev)))
+        self.assertIn("iou", shape["orient"])
+        self.assertEqual(len(trimesh.load(self.out("mesh_hero.glb"), force="mesh").faces), faces)
+        self.assertTrue(self.out("lifted.png").is_file(), "isolate still runs: the bake reads lifted.png")
+
+    def test_a_supplied_mesh_with_views_is_not_turned(self) -> None:
+        self.stub("scripts/shape_mv.sh", SHAPE_MV_OK)
+        clay = self.tmp / "clay.glb"
+        trimesh.creation.box(extents=(1.0, 1.0, 1.0)).export(clay)
+        vj = self.views_json()
+        proc = self.run_gen("--image", str(self.image), "--views-json", str(vj), "--mesh", str(clay),
+                            "--quality", "textured")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse((self.root / "shape_mv.calls").exists())
+        shape = json.loads(self.out("shape.json").read_text())
+        self.assertEqual(shape["mode"], "supplied")
+        self.assertEqual((shape["orient"]["yaw"], shape["orient"]["turned"]), (0, False))
+        self.assertEqual(shape["orient"]["canonical"], "right")
+        # The drawn views still bake, canonical first.
+        args = self.retexture_args()
+        self.assertEqual([Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"][0], "right.png")
+
+    def test_a_bad_mesh_is_refused(self) -> None:
+        txt = self.src / "thing.glb"
+        txt.write_text("not a glb")
+        for bad in (str(txt), str(self.src / "missing.glb"), str(self.image)):
+            with self.subTest(mesh=bad):
+                proc = self.run_gen("--image", str(self.image), "--mesh", bad)
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                self.assertIn("--mesh wants a .glb", proc.stderr)
+                self.assertFalse(self.out().exists())
+
+    def test_paint_off_unwraps_then_bakes(self) -> None:
+        (self.root / "scripts" / "workbench").mkdir()
+        self.stub("scripts/workbench/unwrap_cli.py", UNWRAP_STUB, exe=False)
+        shutil.rmtree(self.root / "weights" / "paint")  # no paint weights needed
+        clay = self.tmp / "clay.glb"
+        trimesh.creation.box(extents=(1.0, 1.0, 1.0)).export(clay)
+        # No hy3d at all: a supplied mesh that is not painted loads no model.
+        (self.root / "bin" / "hy3d").unlink()
+        proc = self.run_gen("--image", str(self.image), "--mesh", str(clay), "--paint", "off", "--quality", "psx")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.hy3d_calls(), [])
+        stages = next(ln for ln in proc.stdout.splitlines() if ln.startswith("STAGES ")).split()[1:]
+        self.assertIn("unwrap", stages)
+        self.assertNotIn("paint", stages)
+        unwrap = json.loads((self.root / "unwrap.args.json").read_text())
+        self.assertEqual(Path(unwrap[0]).name, "mesh_lookdev.glb")
+        self.assertEqual(unwrap[1:], ["-o", str(self.out("textured.glb")), "--texture", "1024"])
+        self.assertEqual(self.retexture_args()[0], str(self.out("textured.glb")))
+        self.assertTrue(self.out("psx.glb").is_file())
+
+    def test_paint_off_needs_the_unwrap_cli_and_no_pbr(self) -> None:
+        proc = self.run_gen("--image", str(self.image), "--paint", "off", "--quality", "textured")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("scripts/workbench/unwrap_cli.py, which is missing", proc.stderr)
+        self.assertFalse(self.out().exists())
+        for args, word in ((("--paint", "off", "--quality", "pbr"), "pbr"), (("--paint", "maybe"), "--paint")):
+            proc = self.run_gen("--image", str(self.image), *args)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn(word, proc.stderr)
 
     def test_missing_paint_weights_fail_without_downloading(self) -> None:
         shutil.rmtree(self.root / "weights" / "paint")

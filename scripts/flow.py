@@ -81,6 +81,9 @@ FILES: dict[str, tuple[str, ...]] = {
         "shape.json",
         "degraded.json",
         "views/lifted/*",
+        # The agent workbench's products (scripts/workbench/): clay, its mesh, edits, the scene.
+        "workbench/*",
+        "workbench/**/*",
     ),
     # rig/template/* is a template built for this model (rig.glb, clips.glb, its reports); of rig/preview/ only the
     # contact sheet and frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be rendered again.

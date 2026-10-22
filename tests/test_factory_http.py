@@ -212,6 +212,18 @@ class FactoryEnvTests(unittest.TestCase):
         )
         self.assertIn("stack", argv)
 
+    def test_generate_argv_mesh_and_paint_off(self) -> None:
+        image = ROOT / "in" / "radio-concept.jpg"
+        mesh = ROOT / "out" / "radio" / "workbench" / "clay.glb"
+        argv = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium", mesh=mesh,
+                                         paint=False)
+        self.assertEqual(argv[argv.index("--mesh") + 1], str(mesh))
+        self.assertEqual(argv[argv.index("--paint") + 1], "off")
+        # The defaults add neither flag: a plain make's argv is as it was.
+        plain = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium")
+        self.assertNotIn("--mesh", plain)
+        self.assertNotIn("--paint", plain)
+
     def test_inspect_glb_function_on_triangle(self) -> None:
         import tempfile
 
@@ -955,6 +967,61 @@ class FactoryHttpTests(unittest.TestCase):
             for proc in procs:
                 if proc.poll() is None:
                     proc.kill()
+
+    # -- A supplied mesh and no paint (the workbench) -------------------------------------------------------------
+
+    def test_generate_takes_a_mesh_under_the_asset_and_paint_off(self) -> None:
+        clay = self.root / "out" / "radio" / "workbench" / "clay.glb"
+        write_triangle_glb(clay)
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "mesh": "out/radio/workbench/clay.glb",
+                                        "paint": False, "quality": "psx"})
+        self.assertEqual(seen["stem"], "radio")  # the mesh's asset, when no stem is given
+        self.assertEqual(seen["mesh"], str(clay.resolve()))
+        self.assertIs(seen["paint"], False)
+        # The shape never ran from one picture: no "one picture" fallback for it.
+        self.assertFalse([d for d in last["degraded"] if d["code"] == "single_view"], last["degraded"])
+        argv = factory_env.generate_argv(self.root, image=Path(seen["image"]), quality="psx", stem=seen["stem"],
+                                         poly="medium", mesh=Path(seen["mesh"]), paint=seen["paint"])
+        self.assertEqual(argv[argv.index("--mesh") + 1], str(clay.resolve()))
+        self.assertIn("off", argv)
+        # Without them a make is as before: paint on, no mesh. The query string's "false" is paint off too.
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "plain"})
+        self.assertIsNone(seen["mesh"])
+        self.assertIs(seen["paint"], True)
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "q", "paint": "false"})
+        self.assertIs(seen["paint"], False)
+
+    def test_generate_refuses_a_mesh_outside_the_asset(self) -> None:
+        write_triangle_glb(self.root / "in" / "loose.glb")
+        write_triangle_glb(self.root / "out" / "other" / "mesh.glb")
+        write_triangle_glb(self.root.parent / f"{self.root.name}-outside.glb")
+        (self.root / "out" / "radio" / "notes.txt").write_text("x")
+        for body, word in (
+            ({"mesh": f"../{self.root.name}-outside.glb"}, "escapes"),
+            ({"mesh": str(self.root.parent / f"{self.root.name}-outside.glb")}, "escapes"),
+            ({"mesh": "in/loose.glb"}, "out/<stem>/"),
+            ({"mesh": "out/mesh.glb"}, "out/<stem>/"),
+            ({"mesh": "out/radio/notes.txt"}, ".glb"),
+            ({"mesh": "out/other/mesh.glb", "stem": "radio"}, "out/radio/"),
+            ({"mesh": "out/radio/missing.glb"}, "no mesh"),
+            ({"mesh": ["out/radio/mesh.glb"]}, "mesh"),
+            ({"mesh": "out/radio/mesh.glb", "paint": "maybe"}, "paint"),
+            ({"mesh": "out/radio/mesh.glb", "paint": False, "quality": "pbr"}, "pbr"),
+            # The picture is still required: isolate and the photo bake read it.
+            ({"mesh": "out/radio/mesh.glb", "image": ""}, "picture"),
+        ):
+            with self.subTest(body=body):
+                status, payload = http_json(self.base + "/generate", method="POST",
+                                            data={"image": "in/radio-concept.jpg", **body})
+                self.assertEqual(status, 400, payload)
+                self.assertIn(word, payload.get("error") or "")
+        _, idle = http_json(self.base + "/status")
+        self.assertEqual(idle.get("state"), "idle")
+
+    def test_unwrap_is_a_labelled_stage(self) -> None:
+        prog = factory_http.parse_progress("STAGES isolate shape reduce unwrap retexture inspect\nSTAGE unwrap x\n")
+        self.assertEqual(prog["stages"][3], {"key": "unwrap", "label": "Unwrap the mesh"})
+        self.assertEqual(prog["stage_index"], 3)
 
     def test_reap_without_a_running_job_does_nothing(self) -> None:
         self.factory.reap()

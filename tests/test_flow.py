@@ -69,6 +69,21 @@ class FlowTest(unittest.TestCase):
         for rel in ("mesh.glb", "shape.json", "degraded.json", "views/lifted/front.png", "views/lifted/left.png"):
             self.assertIn(rel, files)
 
+    def test_mesh_take_carries_the_workbench(self) -> None:
+        # The workbench's clay, its mesh and nested products are the mesh take's, once each, and come back on a pick.
+        for rel in ("workbench/clay.json", "workbench/clay.glb", "workbench/edits/edit_1.glb"):
+            write(self.asset / rel, rel)
+        files = self.stage("mesh")["files"]
+        for rel in ("workbench/clay.json", "workbench/clay.glb", "workbench/edits/edit_1.glb"):
+            self.assertEqual(files.count(rel), 1, rel)
+        self.assertNotIn("workbench/clay.json", self.stage("concept")["files"])
+        flow.snapshot(self.root, "radio", "mesh")
+        write(self.asset / "workbench" / "clay.json", "a later blob")
+        flow.snapshot(self.root, "radio", "mesh")
+        flow.pick(self.root, "radio", "mesh", "t1")
+        self.assertEqual((self.asset / "workbench" / "clay.json").read_text(), "workbench/clay.json")
+        self.assertTrue((self.asset / "workbench" / "edits" / "edit_1.glb").is_file())
+
     def test_old_asset_reads_as_unsaved(self) -> None:
         self.assertTrue(self.stage("concept")["unsaved"])
         self.assertTrue(self.stage("mesh")["live"])
