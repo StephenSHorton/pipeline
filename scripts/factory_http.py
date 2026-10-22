@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from activity import Activity, JobWatch
 from flat2d import drawjob
 from flat2d.routes import handle as handle_flat2d
 from flat2d.sheet import still_backend
@@ -515,6 +516,17 @@ class Factory:
         self._checking: set[str] = set()  # stems whose rig is being checked again (POST /rig/<stem>/inspect)
         self._runner = generate_runner or self._run_generate_sh
         self._sync_draws = 0  # plain POST /2d/generate or /2d/idea drawing right now (they share the model's hook)
+        # What Claude (the workbench posts its tool calls) and the jobs are doing, for the app (GET /activity).
+        self.activity = Activity(self.root / "out" / "_logs" / "activity.jsonl")
+        self.job_watch = JobWatch(self.activity, self.status, self.root)
+
+    def watch_jobs(self, stop: threading.Event, every: float = 1.0) -> None:
+        """The activity entry of the running job, kept current about once a second until stop is set."""
+        while not stop.wait(every):
+            try:
+                self.job_watch.tick()
+            except Exception:  # noqa: BLE001 - the watch never takes the factory down
+                traceback.print_exc()
 
     def health(self) -> dict[str, Any]:
         job = self._snapshot()
@@ -1588,6 +1600,23 @@ def _dispatch(
     if method == "GET" and path == "/health":
         return _json_bytes(factory.health())
 
+    if path == "/activity":
+        if method == "GET":
+            try:
+                since = int((query.get("since") or ["0"])[0])
+            except ValueError:
+                return _json_bytes({"ok": False, "error": "since must be a number"}, 400)
+            return _json_bytes(factory.activity.since(since))
+        if method == "POST":
+            try:
+                raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+                if not isinstance(raw, dict):
+                    raise ValueError("send one entry as an object")
+                entry_id = raw.pop("id", None)
+                return _json_bytes({"ok": True, "entry": factory.activity.put(entry_id, **raw)})
+            except (ValueError, TypeError) as e:
+                return _json_bytes({"ok": False, "error": str(e)}, 400)
+
     if method == "GET" and path == "/assets":
         return _json_bytes(factory.list_assets())
 
@@ -2017,6 +2046,8 @@ def serve(host: str, port: int, root: Path, log_path: Path | None = None) -> Non
     pid_path = root / "out" / "factory_http.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    watch_stop = threading.Event()
+    threading.Thread(target=factory.watch_jobs, args=(watch_stop,), name="job-watch", daemon=True).start()
     handle = stop_handler(factory, httpd)
     before = {sig: signal.signal(sig, handle) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
@@ -2024,6 +2055,7 @@ def serve(host: str, port: int, root: Path, log_path: Path | None = None) -> Non
     finally:
         for sig, old in before.items():
             signal.signal(sig, old)
+        watch_stop.set()
         factory.reap()  # also when serve_forever stopped some other way; after the handlers, so it is not re-entered
         httpd.server_close()
         try:

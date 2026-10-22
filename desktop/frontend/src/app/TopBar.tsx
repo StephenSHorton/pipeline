@@ -4,6 +4,7 @@ import { getHealth, type Health } from "@/lib/api";
 import { healthLabel, jobChipText, shapeMvNote, useJobs } from "@/lib/jobs";
 import { cn } from "@/lib/utils";
 import { StageRail } from "@/screens/asset/StageRail";
+import { ActivityChip } from "./Activity";
 import { onJobChip } from "./open";
 import { navigate, type Route } from "./router";
 
@@ -41,6 +42,7 @@ export function TopBar({ route }: { route: Route }) {
         </div>
       ) : null}
       <div className="flex min-w-0 items-center gap-2">
+        <ActivityChip />
         <JobChip />
         <FactoryPill />
         <nav aria-label="Main" className="flex shrink-0 gap-1 max-sm:gap-0">

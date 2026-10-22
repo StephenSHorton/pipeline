@@ -38,13 +38,14 @@ class FactoryClient:
         self.url = (url or default_url()).rstrip("/")
         self.timeout = timeout
 
-    def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _call(self, method: str, path: str, body: dict[str, Any] | None = None,
+              timeout: float | None = None) -> dict[str, Any]:
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = urllib.request.Request(self.url + path, data=data, method=method)
         if data is not None:
             req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 raw = resp.read()
                 status = resp.status
         except urllib.error.HTTPError as e:
@@ -83,6 +84,10 @@ class FactoryClient:
 
     def pick(self, stem: str, stage: str, take: str) -> dict[str, Any]:
         return self._call("POST", f"/flow/{quote(stem, safe='')}/pick", {"stage": stage, "take": take})
+
+    def activity(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """One line of the app's activity feed (POST /activity). A short timeout: the feed never holds up a tool."""
+        return self._call("POST", "/activity", entry, timeout=2.0)
 
     def writing(self, stem: str) -> bool | None:
         """A running job owns this stem (True), none does (False), or the factory is down (None: no factory, no

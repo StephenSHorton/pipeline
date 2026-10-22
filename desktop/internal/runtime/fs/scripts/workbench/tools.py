@@ -52,6 +52,7 @@ from factory_env import (  # noqa: E402
     stem_dir,
 )
 from workbench import bake, clay, scene  # noqa: E402
+from workbench.narrate import Narrator  # noqa: E402
 from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 FACINGS = sorted(PSX_FACING)
@@ -215,6 +216,8 @@ class Workbench:
         self._locks_guard = threading.Lock()
         self._renders = Path(tempfile.gettempdir()) / f"workbench_renders_{os.getpid()}"
         self.tools: dict[str, Tool] = {t.name: t for t in self._registry()}
+        # Every call is a line in the app's activity feed, so Stephen can watch the work as it happens.
+        self.narrator = Narrator(self.root, getattr(self.factory, "activity", None) or (lambda entry: None))
 
     # ------------------------------------------------------------ calling
 
@@ -226,7 +229,14 @@ class Workbench:
         errs = check(tool.schema, args)
         if errs:
             raise ArgError("; ".join(errs))
-        return plain(tool.fn(args))
+        eid = self.narrator.start(name, args)
+        try:
+            out = plain(tool.fn(args))
+        except Exception as e:
+            self.narrator.end(eid, name, args, None, error_text(e))
+            raise
+        self.narrator.end(eid, name, args, out)
+        return out
 
     def listing(self) -> list[dict]:
         return [{"name": t.name, "description": t.description, "inputSchema": t.schema} for t in self.tools.values()]

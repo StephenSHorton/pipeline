@@ -42,7 +42,7 @@ func TestHandlerReportsStartErrorAsJSON(t *testing.T) {
 }
 
 func TestIsFactoryAPI(t *testing.T) {
-	for _, p := range []string{"/health", "/assets", "/generate", "/upload", "/clean", "/inspect/walker", "/paint/stack", "/2d/status", "/2d/unit/voices/gun.wav", "/flow/radio", "/flow/radio/pick", "/export/radio", "/cancel/ab12cd34", "/intent/radio", "/rig/radio", "/rig/plans", "/facing/detect"} {
+	for _, p := range []string{"/health", "/assets", "/generate", "/upload", "/clean", "/inspect/walker", "/paint/stack", "/2d/status", "/2d/unit/voices/gun.wav", "/flow/radio", "/flow/radio/pick", "/export/radio", "/cancel/ab12cd34", "/intent/radio", "/rig/radio", "/rig/plans", "/facing/detect", "/activity"} {
 		if !IsFactoryAPI(p) {
 			t.Fatalf("%s should be factory API", p)
 		}

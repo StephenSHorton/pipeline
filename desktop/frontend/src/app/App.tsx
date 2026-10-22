@@ -5,7 +5,10 @@ import { SettingsScreen } from "@/screens/settings/SettingsScreen";
 import { checkFactory, useJobs } from "@/lib/jobs";
 import { startUpdateWatch } from "@/screens/settings/update";
 import "@/screens/asset/rig/finish"; // rig and render job finishes, on any screen (chain.ts skips them)
+import { startActivityWatch } from "@/lib/activity";
+import { ActivityDrawer } from "./Activity";
 import { AssetGate } from "./AssetGate";
+import { startFollow } from "./follow";
 import { Overlays } from "./Overlays";
 import { TopBar } from "./TopBar";
 import { useRoute } from "./router";
@@ -16,6 +19,15 @@ export function App() {
   useEffect(() => {
     void checkFactory();
     startUpdateWatch();
+  }, []);
+  // What Claude and the factory are doing (the activity chip and drawer), and Follow Claude.
+  useEffect(() => {
+    const stopWatch = startActivityWatch();
+    const stopFollow = startFollow();
+    return () => {
+      stopFollow();
+      stopWatch();
+    };
   }, []);
   // The job card lives on Home. Leaving Home puts a watched job in the background (the chip keeps it), so a
   // job that ends while you look at another asset does not pull you away from it.
@@ -37,6 +49,7 @@ export function App() {
           <HomeScreen section={route.section} />
         )}
       </main>
+      <ActivityDrawer />
       <Overlays />
     </div>
   );
