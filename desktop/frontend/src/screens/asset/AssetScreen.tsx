@@ -23,8 +23,9 @@ export function AssetScreen({ stem, lod }: { stem: string; lod?: string }) {
   useEffect(() => {
     void openStem(stem);
   }, [stem]);
-  // A job that wrote this asset changes its flow (a new take, a new stage holding files).
-  useEffect(() => onJobFinished((j) => j.stem === stem && void openStem(stem)), [stem]);
+  // A job that wrote this asset changes its flow (a new take, a new stage holding files). Not a sheet render: it
+  // writes rig/preview/ only, and a flow re-read would reload the model under the Rig check.
+  useEffect(() => onJobFinished((j) => j.stem === stem && j.kind !== "render" && void openStem(stem)), [stem]);
 
   if (!stage) return null;
   const props: StageProps = { stem, stage, flow, flowVersion, intent, enter: (s: Stage) => enter(s) };

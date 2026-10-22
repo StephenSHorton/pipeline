@@ -70,7 +70,8 @@ export function ViewerScreen({ lod, ...stage }: StageProps & { lod?: string }) {
   useEffect(
     () =>
       onJobFinished((j) => {
-        if (j.stem !== stem) return;
+        // A sheet render writes rig/preview/ only: the model and the Rig check on it stay as they are.
+        if (j.stem !== stem || j.kind === "render") return;
         want.current = null;
         setVersion((v) => v + 1);
       }),
