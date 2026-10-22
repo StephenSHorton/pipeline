@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Mesh pane game look: low-res pass, iso snap, outlines, shadows. Both viewers ship the same module."""
+"""Mesh pane game look: low-res pass, iso snap, outlines, shadows, in the standalone viewer's module.
+
+The desktop app's copy went with its retired classic page; the app's port (src/screens/asset/stack/gameLook.ts)
+checks its shaders against viewer/pixel-look.js in look.test.ts.
+"""
 from __future__ import annotations
 
 import unittest
@@ -7,17 +11,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "viewer" / "pixel-look.js").read_text(encoding="utf-8")
-DESKTOP_JS = (ROOT / "desktop" / "frontend" / "public" / "pixel-look.js").read_text(encoding="utf-8")
 PAGES = {
     "viewer": (ROOT / "viewer" / "index.html").read_text(encoding="utf-8"),
-    "desktop": (ROOT / "desktop" / "frontend" / "index.html").read_text(encoding="utf-8"),
 }
 
 
 class PixelLookTests(unittest.TestCase):
-    def test_desktop_copy_matches(self) -> None:
-        self.assertEqual(JS, DESKTOP_JS)
-
     def test_pages_wire_the_look(self) -> None:
         for name, html in PAGES.items():
             with self.subTest(name):
@@ -28,12 +27,11 @@ class PixelLookTests(unittest.TestCase):
                 self.assertIn("pixelLook.render();", html)
                 self.assertIn("carveRay.setFromCamera(carveNdc, pixelLook.viewCamera());", html)
 
-    def test_desktop_step_bar_has_a_pixel_switch(self) -> None:
-        self.assertIn('id="game-look-bar"', PAGES["desktop"])
+    def test_step_bar_pixel_switch_is_bound(self) -> None:
         self.assertIn('"game-look-bar": "on"', JS)
 
     def test_stack_pane_uses_the_same_look(self) -> None:
-        for path in (ROOT / "viewer" / "stack-lab.js", ROOT / "desktop" / "frontend" / "public" / "stack-lab.js"):
+        for path in (ROOT / "viewer" / "stack-lab.js",):
             with self.subTest(str(path)):
                 js = path.read_text(encoding="utf-8")
                 self.assertIn('import { createPixelLook } from "./pixel-look.js";', js)

@@ -47,7 +47,7 @@ func TestIsFactoryAPI(t *testing.T) {
 			t.Fatalf("%s should be factory API", p)
 		}
 	}
-	if IsFactoryAPI("/stack-lab.js") {
+	if IsFactoryAPI("/stack-preview.js") {
 		t.Fatal("static file is not factory API")
 	}
 }

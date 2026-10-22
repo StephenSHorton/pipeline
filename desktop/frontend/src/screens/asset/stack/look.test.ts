@@ -63,7 +63,8 @@ describe("shader patches", () => {
 
 describe("the Game look", () => {
   it("draws with pixel-look.js's own shaders", () => {
-    const legacy = readFileSync(path.join(here, "../../../../public/pixel-look.js"), "utf8");
+    // The standalone viewer's module is the reference (the desktop copy went with the classic page).
+    const legacy = readFileSync(path.join(here, "../../../../../../viewer/pixel-look.js"), "utf8");
     expect(legacy).toContain(BLIT_VERT);
     expect(legacy).toContain(BLIT_FRAG);
     expect(BLIT_FRAG).toContain("vUv * lowRes + 1.0 + frac");

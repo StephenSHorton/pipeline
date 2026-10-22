@@ -424,12 +424,6 @@ export function flatUrl(stem: string, rel: string, t?: number | string | false):
   return withQuery(`/2d/${enc(stem)}/${encRel(rel)}`, bust(t));
 }
 
-/** The legacy page, for screens not yet ported. */
-export function legacyUrl(params?: Record<string, string>): string {
-  const q = new URLSearchParams(params).toString();
-  return `/legacy.html${q ? `?${q}` : ""}`;
-}
-
 /* ---------------------------------------------------------------- out/ readers (a miss is null, never an error) */
 
 export async function readOutJson<T>(stem: string, rel: string, t?: number | string | false): Promise<T | null> {

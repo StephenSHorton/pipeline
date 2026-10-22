@@ -1,8 +1,8 @@
 // The asset viewer for the 3D and Rig stages: the GLB as a clay diorama (src/viewer/Diorama.tsx) under a glass
 // HUD (./Hud.tsx), with the Cleanup, Paint and Detail levels rail and the Rig check dock (./panels/). Panels reach
 // the model through the tool API (src/viewer/tools.ts), which this screen feeds: the model, the file on screen,
-// and loadFile / reload. The articulated pivots (articulated.json) are one link away in the classic view
-// (/legacy.html?asset=<stem>).
+// and loadFile / reload. The old non-Mokei page (and its link from the HUD) is retired at Stephen's ask; the
+// articulated pivots (articulated.json) it showed have no view here yet.
 import { useLook } from "mokei/clay";
 import { useMaterialColor } from "mokei/theme";
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";

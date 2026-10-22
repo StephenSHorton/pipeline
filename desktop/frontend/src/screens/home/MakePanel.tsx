@@ -10,7 +10,6 @@ import {
   arrayBufferToBase64,
   drop2d,
   factoryJson,
-  legacyUrl,
   saveIntentQuiet,
   uploadImage,
   type AssetOutput,
@@ -497,11 +496,6 @@ export function MakePanel() {
                   </label>
                 ))}
               </div>
-            ) : null}
-            {kind === "sprite" ? (
-              <a href={legacyUrl()} className="hit-44 inline-flex items-center rounded-md px-1 text-[0.8rem] font-semibold text-blue-deep no-underline outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-ring" title="Motion animates from a video or frames you attach; the classic view takes the clip.">
-                Motion (from a clip) is in the classic view
-              </a>
             ) : null}
           </div>
         ) : null}

@@ -1,5 +1,5 @@
-// The Rig check panel's copy and rules, word for word from public/rig-inspect.js. The "pins" block mirrors
-// tests/test_desktop_shell.py test_rig_stage_surfaces (the rig-inspect.js half), so that test can move here.
+// The Rig check panel's copy and rules, word for word from the retired public/rig-inspect.js. The "pins" block
+// is what tests/test_desktop_shell.py test_rig_stage_surfaces pinned on rig-inspect.js before it went.
 import { describe, expect, it } from "vitest";
 import {
   ARM,
