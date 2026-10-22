@@ -124,11 +124,11 @@ class ProtocolTests(Base):
             for key, prop in s["properties"].items():
                 self.assertTrue("type" in prop or "enum" in prop, f"{t['name']}.{key}")
             json.dumps(s)
-        # generate and bake_photo take delight (a boolean; the workbench defaults it to true).
+        # generate and bake_photo take delight (a boolean, off unless asked: it would lift dark material to grey).
         by_name = {t["name"]: t for t in listed}
         for name in ("generate", "bake_photo"):
             self.assertEqual(by_name[name]["inputSchema"]["properties"]["delight"], {"type": "boolean"}, name)
-            self.assertIn("delight (default true", by_name[name]["description"])
+            self.assertIn("delight (default false", by_name[name]["description"])
 
     def test_bad_arguments(self) -> None:
         self.assertEqual(self.rpc("tools/call", {"name": "nope", "arguments": {}})["error"]["code"],
@@ -433,9 +433,9 @@ class ToolTests(Base):
         out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view, "fill": "none"})
         self.assertIn("--mirror-ends", argvs[-1])
 
-    def test_bake_photo_de_lights_by_default(self) -> None:
-        # A drum's round end in the photo with its right half in shadow: by default retexture and fill both get
-        # --delight 1, and the de-lit bake is brighter where the photo was shaded; delight false is the plain bake.
+    def test_bake_photo_de_lights_when_asked(self) -> None:
+        # A drum's round end in the photo with its right half in shadow: delight true gives retexture and fill both
+        # --delight 1, and the de-lit bake is brighter where the photo was shaded; by default it is the plain bake.
         from PIL import Image
 
         from workbench import mesher
@@ -458,15 +458,16 @@ class ToolTests(Base):
         real = tools.bake._run
         self.addCleanup(setattr, tools.bake, "_run", real)
         tools.bake._run = lambda root, argv, env=None: (argvs.append(argv), real(root, argv, env))[1]
-        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view})
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view, "delight": True})
         self.assertTrue(out["delight"])
         self.assertEqual(out["fill"]["delight"], 1.0)
         retex, fill = argvs[-2], argvs[-1]
         self.assertEqual(retex[retex.index("--delight") + 1], "1")
         self.assertEqual(fill[fill.index("--delight") + 1], "1")
         lit = np.asarray(Image.open((self.root / out["glb"]).with_suffix(".albedo.png")).convert("RGB"), float)
-        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view, "delight": False})
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view})
         self.assertFalse(out["delight"])
+        self.assertNotIn("delight", out["fill"])
         self.assertNotIn("--delight", argvs[-2])
         self.assertNotIn("--delight", argvs[-1])
         plain = np.asarray(Image.open((self.root / out["glb"]).with_suffix(".albedo.png")).convert("RGB"), float)
@@ -495,7 +496,7 @@ class ToolTests(Base):
         self.assertEqual((method, path), ("POST", "/generate"))
         self.assertEqual(body, {"image": "out/bale/photo.png", "quality": "textured", "stem": "bale",
                                 "mesh": "out/bale/workbench/clay.glb", "paint": False, "fill": "photo",
-                                "delight": True, "facing": "right", "psx_height": "40"})
+                                "delight": False, "facing": "right", "psx_height": "40"})
         # The workbench fills by default; fill none and mirror_ends pass through, and a draft (no bake) sends no fill.
         self.ok("generate", {"image": "out/bale/photo.png", "fill": "none", "mirror_ends": False})
         body = self.factory.calls[-1][2]
@@ -503,9 +504,9 @@ class ToolTests(Base):
         self.ok("generate", {"image": "out/bale/photo.png", "quality": "draft"})
         self.assertNotIn("fill", self.factory.calls[-1][2])
         self.assertNotIn("delight", self.factory.calls[-1][2])
-        # De-lit by default; delight false passes through as false.
-        self.ok("generate", {"image": "out/bale/photo.png", "delight": False})
-        self.assertIs(self.factory.calls[-1][2]["delight"], False)
+        # Not de-lit unless asked; delight true passes through as true.
+        self.ok("generate", {"image": "out/bale/photo.png", "delight": True})
+        self.assertIs(self.factory.calls[-1][2]["delight"], True)
         self.assertTrue(self.call("generate", {"image": "out/bale/photo.png", "fill": "swatch"})["isError"])
         res = self.call("generate", {"image": "out/bale/photo.png", "psx": {"facing": "up"}})
         self.assertTrue(res["isError"])

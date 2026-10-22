@@ -41,6 +41,7 @@ REF_PCT = 90.0     # percentile of the illumination taken as the lit level
 KNEE = 0.9         # linear level above which a lifted pixel rolls off toward white instead of clipping
 FLOOR = 1e-4       # linear luminance floor before the log (the shade has near-black pixels)
 WORK_SIGMA = 8.0   # the blur runs on an image shrunk so sigma is about this many pixels
+GUIDE_DIV = 16.0   # the bilateral's guide is blurred at sigma / this: tight, so a hard shadow border stays hard
 
 
 def _to_linear(c: np.ndarray) -> np.ndarray:
@@ -82,11 +83,12 @@ def illumination(logy: np.ndarray, w: np.ndarray, sigma: float) -> np.ndarray:
 
 def illumination_edge(logy: np.ndarray, w: np.ndarray, sigma: float, edge: float = EDGE) -> np.ndarray:
     """Edge-aware illumination: the normalised blur, each neighbour weighted also by how close its lightly smoothed
-    log-luminance (sigma / 4: the straw gone, a shadow's border kept) is to the pixel's own. Piecewise-linear over
+    log-luminance (sigma / 16: the straw gone, a shadow's border kept sharp) is to the pixel's own. A wider guide
+    smears the border: the band beside it gets a mid level, so lit straw there glows and the shade there stays grey. Piecewise-linear over
     LEVELS range levels, each one plain normalised blur with the range weight folded into the mask."""
     if edge <= 0:
         return illumination(logy, w, sigma)
-    guide = illumination(logy, w, sigma / 4.0)
+    guide = illumination(logy, w, sigma / GUIDE_DIV)
     sel = w > 0.5 if (w > 0.5).any() else w > 0
     lo, hi = np.percentile(guide[sel], [0.5, 99.5])
     if hi - lo < 1e-6:
@@ -112,29 +114,33 @@ def _soft(m: np.ndarray) -> np.ndarray:
 
 
 def delight_full(rgba, strength: float = 1.0, scale: float = 0.08, edge: float = EDGE,
-                 max_gain: float = MAX_GAIN) -> tuple[np.ndarray, dict, np.ndarray]:
+                 max_gain: float = MAX_GAIN, report: bool = True) -> tuple[np.ndarray, dict, np.ndarray]:
     """delight(), a summary (the gain the darkest tenth of the subject's illumination got, the variance of its
     low-frequency log-luminance before and after) and each pixel's trust, 0..1.
 
     Trust is how far the lift can vouch for the colour: 1 where the shade asked for at most TRUST_FULL x, falling to
     0 where it asked for TRUST_ZERO x or more (log-linear between). Deep shade is lit by the sky, not the sun: brightened, it comes out the
-    sky's grey-blue, not the material's colour, so a bake should lean on it less (retexture --delight does)."""
+    sky's grey-blue, not the material's colour, so a bake should lean on it less (retexture --delight does).
+
+    report False leaves lowfreq_var_after out of the summary: it re-runs the whole edge-aware blur on the output,
+    as much again as the de-lighting itself, and a bake (retexture.load_photo) never reads it."""
     arr = np.array(rgba.convert("RGBA") if isinstance(rgba, Image.Image) else rgba, dtype=np.uint8, copy=True)
     if arr.ndim != 3 or arr.shape[2] != 4:
         raise ValueError("delight takes an RGBA image")
     alpha = arr[..., 3]
     mask = alpha > 0
+    want_after = report
     report = {"strength": float(strength), "scale": float(scale), "edge": float(edge), "pixels": int(mask.sum())}
     trust = np.ones(alpha.shape, np.float32)
     if not mask.any() or strength == 0:
         return arr, {**report, "shadow_lift": 1.0, "max_gain": 1.0, "capped": 0.0}, trust
-    w = alpha.astype(np.float64) / 255.0
+    w = alpha.astype(np.float32) / 255.0  # float32 throughout: a 2400 px photo is 5.8M pixels
     ys, xs = np.where(alpha >= 128) if (alpha >= 128).any() else np.where(mask)
     diag = float(np.hypot(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1))
     sigma = max(1.0, scale * diag)
 
-    lin = _to_linear(arr[..., :3].astype(np.float64) / 255.0)
-    logy = np.log(np.maximum(_luminance(lin), FLOOR))
+    lin = _to_linear(arr[..., :3].astype(np.float32) / np.float32(255.0))
+    logy = np.log(np.maximum(_luminance(lin), np.float32(FLOOR)))
     illum = illumination_edge(logy, w, sigma, edge)
     solid = w > 0.5
     ref = float(np.percentile(illum[solid if solid.any() else mask], REF_PCT))
@@ -158,8 +164,6 @@ def delight_full(rgba, strength: float = 1.0, scale: float = 0.08, edge: float =
     out = arr.copy()
     out[mask, :3] = rgb[mask]
 
-    after_log = np.log(np.maximum(_luminance(_to_linear(out[..., :3].astype(np.float64) / 255.0)), FLOOR))
-    illum_after = illumination_edge(after_log, w, sigma, edge)
     sel = solid if solid.any() else mask
     dark = sel & (illum <= np.percentile(illum[sel], 10.0))
     report.update({
@@ -168,9 +172,12 @@ def delight_full(rgba, strength: float = 1.0, scale: float = 0.08, edge: float =
         "max_gain": round(float(gain[mask].max()), 3),
         "capped": round(float(capped[mask].mean()), 4),
         "lowfreq_var_before": round(float(illum[sel].var()), 5),
-        "lowfreq_var_after": round(float(illum_after[sel].var()), 5),
         "low_trust": round(float((trust[sel] < 0.5).mean()), 4),
     })
+    if want_after:
+        after_log = np.log(np.maximum(_luminance(_to_linear(out[..., :3].astype(np.float32) / np.float32(255.0))),
+                                      np.float32(FLOOR)))
+        report["lowfreq_var_after"] = round(float(illumination_edge(after_log, w, sigma, edge)[sel].var()), 5)
     return out, report, trust
 
 

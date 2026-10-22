@@ -547,9 +547,10 @@ class Workbench:
         ends = a.get("mirror_ends", True) is not False and bake.end_on(pics[0], facing)
         mirror = bool(a.get("mirror")) or ends
         filling = (a.get("fill") or "photo") == "photo"
-        # The photo's own lighting out before it bakes (and before fill takes its swatch): a side in shadow in the
-        # picture would otherwise bake in as a dark patch (Stephen's call on the hay bale). delight false: as before.
-        delit = a.get("delight", True) is not False
+        # delight true: the photo's own lighting out before it bakes (and before fill takes its swatch), so a side in
+        # shadow in the picture does not bake in as a dark patch (the hay bale). Off unless asked, as in generate.sh:
+        # it cannot tell an evenly lit dark material (a cow's patches, a tyre) from shade, and would lift it to grey.
+        delit = bool(a.get("delight"))
 
         def run() -> dict:
             bench.mkdir(parents=True, exist_ok=True)
@@ -639,8 +640,8 @@ class Workbench:
         fill = a.get("fill") or "photo"
         if body["quality"] != "draft":
             body["fill"] = fill
-            # De-lit by default too (generate.sh --delight on); a draft has no bake to de-light.
-            body["delight"] = a.get("delight", True) is not False
+            # Not de-lit unless asked (generate.sh --delight on), as bake_photo; a draft has no bake to de-light.
+            body["delight"] = bool(a.get("delight"))
         if "mirror_ends" in a:
             body["mirror_ends"] = bool(a["mirror_ends"])
         for key in ("prompt", "poly", "seed", "intent"):
@@ -725,8 +726,9 @@ class Workbench:
                  "front-on or back-on first view, flipped, onto the opposite end; mirror does the same for any view "
                  "(a side-on one onto the far side). fill photo (default) then paints a triplanar swatch of the "
                  "photo's subject onto every texel no photo reached (workbench/fill.py); none leaves them base. "
-                 "delight (default true) takes the photo's own lighting out first (delight.py: shade lifted to the "
-                 "lit level), so a shadowed side does not bake in or reach the swatch; false bakes the photo as is.",
+                 "delight (default false) takes the photo's own lighting out first (delight.py: shade lifted to the "
+                 "lit level), so a shadowed side does not bake in or reach the swatch; ask for it on a photo with a "
+                 "side in shadow (the hay bale), not on one with large dark material (it is lifted to grey too).",
                  _obj({"stem": STEM, "glb": GLB,
                        "views": {"type": "array", "minItems": 1, "items": _obj(
                            {"path": {"type": "string"}, "facing": FACING}, ("path",))},
@@ -752,8 +754,9 @@ class Workbench:
                  "bake), so a clay asset loads no shape or paint model (quality psx may still ask the vision model for the facing, "
                  "inside the job). psx: {facing, height, faces, atlas, up, name}. fill photo (default; not for "
                  "draft) gives every texel the photo: a front-on photo mirrored onto the far end (mirror_ends, "
-                 "default true) and a swatch of it on the rest; delight (default true; not for draft) takes the "
-                 "photo's lighting out before the bake and the fill. Returns a job_id.",
+                 "default true) and a swatch of it on the rest; delight (default false; not for draft) takes the "
+                 "photo's lighting out before the bake and the fill (for a side in shadow, not dark material). "
+                 "Returns a job_id.",
                  _obj({"stem": STEM, "image": {"type": "string"}, "mesh": GLB, "paint": {"type": "boolean"},
                        "fill": FILL, "mirror_ends": {"type": "boolean"}, "delight": {"type": "boolean"},
                        "quality": {"type": "string", "enum": ["draft", "textured", "pbr", "stack", "psx"]},

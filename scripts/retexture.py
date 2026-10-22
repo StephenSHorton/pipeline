@@ -181,7 +181,7 @@ def load_photo(path, delight: float | None = None, with_trust: bool = False):
     trust = np.ones(a.shape, np.float32)
     if delight:
         # After the masks: a lifted shadow on the rim must not read as the white halo dropped above.
-        out, _, trust = _delight.delight_full(arr, strength=float(delight))
+        out, _, trust = _delight.delight_full(arr, strength=float(delight), report=False)
         rgb = out[:, :, :3].astype(np.float32)
     if with_trust:
         return rgb, alpha_fit, alpha_bake, trust

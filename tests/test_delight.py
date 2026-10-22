@@ -125,6 +125,39 @@ class DelightTests(unittest.TestCase):
         _, _, flat = delight.delight_full(self.rgba, strength=0.0)
         self.assertTrue((flat == 1).all())
 
+    def test_a_bake_skips_the_after_summary(self) -> None:
+        # report False (what retexture.load_photo asks for) skips the second edge-aware blur, nothing else.
+        out, report, trust = delight.delight_full(self.rgba)
+        out2, report2, trust2 = delight.delight_full(self.rgba, report=False)
+        np.testing.assert_array_equal(out2, out)
+        np.testing.assert_array_equal(trust2, trust)
+        self.assertNotIn("lowfreq_var_after", report2)
+        self.assertEqual(report2, {k: v for k, v in report.items() if k != "lowfreq_var_after"})
+
+    def test_a_hard_shadow_border_leaves_no_band(self) -> None:
+        # Straw noise under a shadow 4x darker than the lit side, its border hard (the bale's right side). Beside the
+        # border the lit straw must not glow and the shade must come all the way up: a guide blurred too wide gave
+        # both sides a mid level there (lit 1.33x, shade at 0.74 of lit 15 px out), which baked in as grey streaks.
+        n = 600
+        rng = np.random.default_rng(1)
+        yy, xx = np.mgrid[:n, :n].astype(np.float64)
+        mask = (yy - n / 2) ** 2 + (xx - n / 2) ** 2 <= (n * 0.42) ** 2
+        tex = np.clip(0.55 + 0.25 * rng.standard_normal((n, n)), 0.05, 1.0)
+        albedo = np.stack([tex * 0.9, tex * 0.75, tex * 0.4], -1)
+        border = int(n / 2 + 0.1 * n)
+        light = np.where(xx >= border, 0.25, 1.0)
+        rgba = np.zeros((n, n, 4), np.uint8)
+        rgba[..., :3] = np.rint(delight._to_srgb(albedo * light[..., None]) * 255)
+        rgba[..., 3] = np.where(mask, 255, 0)
+        out = delight.delight(rgba)
+        ratio = delight._luminance(delight._to_linear(out[..., :3] / 255.0)) / delight._luminance(albedo)
+        rows = slice(n // 2 - 25, n // 2 + 25)
+        for d in (3, 8):
+            lit = float(np.median(ratio[rows, border - 1 - d]))
+            shade = float(np.median(ratio[rows, border + d]))
+            self.assertLess(lit, 1.12, d)
+            self.assertGreater(shade, 0.88, d)
+
     def test_cli_prints_a_summary(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             src, dst = Path(td) / "in.png", Path(td) / "out.png"
@@ -219,6 +252,16 @@ class RetextureDelightTests(unittest.TestCase):
         self.assertEqual(lit["delight"], 1.0)
         # Same swatch window (the shade is judged on the photo as lit either way), de-lit pixels in it.
         self.assertEqual(lit["swatch"], plain["swatch"])
+        # The pixels the swatch is cut from are the de-lit photo's, the shade judged on the photo as it was lit.
+        seen = []
+        real = fill.pick_swatch
+        with mock.patch.object(fill, "pick_swatch",
+                               lambda rgb, *a, **k: (seen.append((rgb, k.get("shade_rgb"))), real(rgb, *a, **k))[1]):
+            fill.fill_unseen(out, out.with_suffix(".cover.png"), self.photo, self.tmp / "f2.glb", delight=1.0)
+        (rgb, shade_rgb), = seen
+        np.testing.assert_array_equal(rgb, retexture.load_photo(self.photo, 1.0)[0])
+        np.testing.assert_array_equal(shade_rgb, retexture.load_photo(self.photo)[0])
+        self.assertGreater(np.abs(rgb.astype(float) - shade_rgb).max(), 25)
 
     def test_the_swatch_shade_is_judged_on_the_lit_photo(self) -> None:
         from workbench import fill
