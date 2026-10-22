@@ -1,7 +1,7 @@
 // What Claude and the factory are doing, from GET /activity (scripts/activity.py): each workbench tool call Claude
 // makes and each job, as it happens. The store polls every 1.2 s (followJob's pace) with since=<last seq> and
-// replaces entries by id. Listeners hear only changes after the first answer, so the history that first answer
-// carries is shown but never acted on (no jumping to an asset Claude touched an hour ago).
+// replaces entries by id. Listeners hear the changes after the first answer; of the history that first answer
+// carries they hear only what is still running, so nothing jumps to an asset Claude touched an hour ago.
 import { create } from "zustand";
 import { factoryJson } from "@/lib/api";
 
@@ -144,8 +144,9 @@ export function absorb(answer: ActivityAnswer): void {
     now: answer.now || st.now,
     primed: true,
   });
-  if (!st.primed) return;
-  for (const e of fresh.sort((a, b) => a.seq - b.seq)) {
+  // The first answer is history, except what is still running: a window opened mid-job follows that job.
+  const told = st.primed ? fresh : fresh.filter((e) => e.state === "running");
+  for (const e of told.sort((a, b) => a.seq - b.seq)) {
     const prev = before.get(e.id);
     before.set(e.id, e);
     for (const fn of listeners) {

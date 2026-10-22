@@ -6,7 +6,7 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { currentEntry, entryTime, imageUrl, useActivity, type ActivityEntry } from "@/lib/activity";
-import { displayStem } from "@/lib/jobs";
+import { displayStem, useJobs } from "@/lib/jobs";
 import { cn } from "@/lib/utils";
 import { PANEL } from "@/screens/viewer/classes";
 import { navigate } from "./router";
@@ -39,8 +39,11 @@ export function ActivityChip() {
   const now = useActivity((s) => s.now);
   const open = useActivity((s) => s.open);
   const setOpen = useActivity((s) => s.setOpen);
+  const jobId = useJobs((s) => (s.job?.state === "running" ? s.job.id : null));
   if (!entries.length) return null;
-  const cur = currentEntry(entries);
+  // The job chip already shows the app's job with its stage: this chip then just opens the log.
+  const now0 = currentEntry(entries);
+  const cur = now0 && !(now0.source === "job" && now0.job_id === jobId) ? now0 : null;
   const text = cur ? `${who(cur)} · ${displayStem(cur.title)}${entryTime(cur, now) ? ` · ${entryTime(cur, now)}` : ""}` : "Activity";
   return (
     <Button

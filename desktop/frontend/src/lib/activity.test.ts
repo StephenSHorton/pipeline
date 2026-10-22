@@ -35,6 +35,13 @@ describe("times and paths", () => {
 
 describe("absorb", () => {
   beforeEach(() => useActivity.setState({ entries: [], seq: 0, primed: false }));
+  it("tells listeners what is still running in the first answer", () => {
+    const heard: string[] = [];
+    const off = onActivity((x) => heard.push(x.id));
+    absorb({ ok: true, seq: 3, now: 10, entries: [e("old", 2, { state: "ok" }), e("job", 3, { state: "running" })] });
+    off();
+    expect(heard).toEqual(["job"]);
+  });
   it("shows the first answer's history without telling listeners, then tells them each change", () => {
     const heard: string[] = [];
     const off = onActivity((x, prev) => heard.push(`${x.id}:${x.state}:${prev?.state ?? "-"}`));
