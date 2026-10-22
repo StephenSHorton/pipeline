@@ -594,7 +594,8 @@ class Workbench:
             tmp = Path(tempfile.mkdtemp(prefix=".psx_", dir=folder))
             try:
                 report = bake.psx(self.root, glb, tmp / "psx", tmp / "psx.glb", name, float(a["height"]),
-                                  a["facing"], a.get("faces"), a.get("atlas"))
+                                  a["facing"], a.get("faces"), a.get("atlas"),
+                                  **({"head_weight": a["head_weight"]} if a.get("head_weight") else {}))
                 # The cut takes tens of seconds and write() checked the stem only before it. A generate started
                 # meanwhile writes these same files (psx.glb, psx/, lods.json); moving ours in would mix the two.
                 # Asked again here the window shrinks to a few renames; the finally drops the cut, the PSX stays.
@@ -751,10 +752,12 @@ class Workbench:
                  "generate.sh's PS1 step does: out/<stem>/psx.glb, out/<stem>/psx/<name>.obj + .mtl + .png + "
                  "psx.json, and the PSX entry in lods.json (after Photo bake), so the app's Model tabs show it. It "
                  "replaces the asset's PSX (pick_take brings back an earlier mesh take's). height is in .obj units "
-                 "(s&box inches); facing is where the subject looked in the photo.",
+                 "(s&box inches); facing is where the subject looked in the photo. head_weight (creatures; 2 is a good start) "
+                 "gives the head that many times its share of the triangles, so ears and face survive the cut.",
                  _obj({"stem": STEM, "glb": GLB, "height": {"type": "number", "minimum": 0.001, "maximum": 100000},
                        "facing": FACING, "faces": {"type": "integer", "minimum": 1, "maximum": 65536},
                        "atlas": {"type": "integer", "minimum": 1, "maximum": 65536},
+                       "head_weight": {"type": "number", "minimum": 1, "maximum": 4},
                        "name": {"type": "string"}}, ("stem", "glb", "height", "facing")), self.psx),
             Tool("draw_views", "Factory job (loads the draw model): draw the four turnaround views from a photo as "
                  "a reference (POST /2d/draw). Returns a job_id for job_status.",

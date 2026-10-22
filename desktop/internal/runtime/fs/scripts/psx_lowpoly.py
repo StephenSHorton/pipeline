@@ -89,18 +89,58 @@ def to_obj_axes(v: np.ndarray, up: str) -> np.ndarray:
     return np.stack([v[:, 2], v[:, 0], v[:, 1]], axis=1)
 
 
+CRUMB = 0.02  # a piece of the detailed mesh under this share of its area is a crumb Hunyuan left floating
+SLIVER = 0.001  # after decimation, pieces under this share of the area (or of one face) are slivers
+
+
+def _keep(mesh: trimesh.Trimesh, ok) -> trimesh.Trimesh:
+    parts = mesh.split(only_watertight=False)
+    if len(parts) <= 1:
+        return mesh
+    keep = [p for p in parts if ok(p)] or [max(parts, key=lambda p: p.area)]
+    return keep[0] if len(keep) == 1 else trimesh.util.concatenate(keep)
+
+
 def decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     plain = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=True)
     if len(plain.faces) <= faces:
         return plain
+    # Hunyuan leaves floating crumbs; at a PS1 budget every triangle on one counts. Drop them on the detailed
+    # mesh, where a crumb really is a separate piece.
+    plain = _keep(plain, lambda p: p.area >= CRUMB * plain.area)
     low = simplify(plain, faces)
     low.remove_unreferenced_vertices()
-    # Hunyuan leaves floating crumbs; at a PS1 budget every triangle on one counts. Keep the big pieces.
-    parts = low.split(only_watertight=False)
-    if len(parts) > 1:
-        keep = [p for p in parts if p.area >= 0.02 * low.area] or [max(parts, key=lambda p: p.area)]
-        low = trimesh.util.concatenate(keep)
-    return low
+    # Decimation pinches thin parts (a sheep's leg below the hock, its ears) down to a vertex or two, and split()
+    # joins by edges, so they come out as pieces of their own. They are the model: keep them, drop only slivers.
+    return _keep(low, lambda p: len(p.faces) > 1 and p.area >= SLIVER * low.area)
+
+
+def smoothstep(t: np.ndarray) -> np.ndarray:
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def decimate_head(mesh: trimesh.Trimesh, faces: int, weight: float, f0: float = 0.72, f1: float = 0.80) -> trimesh.Trimesh:
+    """decimate() with the head given a bigger share of the budget: the front of the placed model (the head looks
+    down +Z) is scaled up `weight` times across and up before decimating, then the low mesh is scaled back. The
+    scale ramps in over the front f0..f1 of the length and leaves the depth alone, so the mapping stays exact."""
+    if weight == 1.0:
+        return decimate(mesh, faces)
+    v = np.asarray(mesh.vertices, float)
+    lo, hi = float(v[:, 2].min()), float(v[:, 2].max())
+    span = max(hi - lo, 1e-9)
+    centre = v[(v[:, 2] - lo) / span > f1].mean(axis=0)
+
+    def scale(p: np.ndarray) -> np.ndarray:
+        return 1.0 + (weight - 1.0) * smoothstep(((p[:, 2] - lo) / span - f0) / (f1 - f0))
+
+    warped = mesh.copy()
+    warped.vertices = v.copy()
+    warped.vertices[:, :2] = centre[:2] + (v[:, :2] - centre[:2]) * scale(v)[:, None]
+    low = decimate(warped, faces)
+    back = np.asarray(low.vertices, float).copy()
+    back[:, :2] = centre[:2] + (back[:, :2] - centre[:2]) / scale(back)[:, None]
+    return trimesh.Trimesh(vertices=back, faces=low.faces, process=False)
 
 
 def bake(high: trimesh.Trimesh, texture: np.ndarray, low: trimesh.Trimesh, atlas: int):
@@ -330,6 +370,8 @@ def main() -> int:
                     help="where the subject looks in the photo; it is turned to look down the model's front")
     ap.add_argument("--faces", type=int, default=1200, help="triangle budget (PS1 props ran a few hundred to ~1.5k)")
     ap.add_argument("--atlas", type=int, default=256, help="texture size; the PS1 topped out at 256")
+    ap.add_argument("--head-weight", type=float, default=1.0,
+                    help="give a creature's head this many times its share of the triangles (ears, face); 1 = off")
     ap.add_argument("--yaw", type=float, default=0, help="extra turn about the up axis, degrees")
     ap.add_argument("--up", choices=("z", "y"), default="y", help=".obj axes: y = glTF, Y up, +Z front (s&box); z = Z up, +X front (Source)")
     ap.add_argument("--glb", dest="glb_out", type=Path, default=None, help="also write the model as a GLB here")
@@ -344,7 +386,7 @@ def main() -> int:
 
     high, texture = load_textured(args.src)
     high = place(high, args.height, FACING[args.facing] + args.yaw)
-    low = decimate(high, args.faces)
+    low = decimate_head(high, args.faces, args.head_weight)
     verts, faces, uvs, image, used = bake(high, texture, low, args.atlas)
     png = crunch(image)
 

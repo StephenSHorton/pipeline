@@ -105,7 +105,7 @@ def fill(root: Path, glb: Path, photo: Path, out: Path, keep: float | None = Non
 
 
 def psx(root: Path, glb: Path, out_dir: Path, glb_out: Path, name: str, height: float, facing: str,
-        faces: int | None = None, atlas: int | None = None) -> dict:
+        faces: int | None = None, atlas: int | None = None, head_weight: float | None = None) -> dict:
     """psx_lowpoly.py with its facing check off. Returns psx.json's report (the PSX_RESULT line)."""
     argv = [str(SCRIPTS / "psx_lowpoly.py"), str(glb), "--out", str(out_dir), "--name", name,
             "--height", str(height), "--facing", facing, "--glb", str(glb_out), "--facing-check", "off"]
@@ -113,6 +113,8 @@ def psx(root: Path, glb: Path, out_dir: Path, glb_out: Path, name: str, height: 
         argv += ["--faces", str(faces)]
     if atlas:
         argv += ["--atlas", str(atlas)]
+    if head_weight and head_weight != 1.0:
+        argv += ["--head-weight", str(head_weight)]
     out_dir.mkdir(parents=True, exist_ok=True)
     log = _run(root, argv, env={"PSX_FACING_CHECK": "off"})
     for line in reversed(log.splitlines()):
