@@ -78,18 +78,22 @@ export async function readAssetDocs(stem: string): Promise<AssetDocs> {
   };
 }
 
-/** null while loading. Re-read when `version` changes (after a rename, a job on this asset, or a panel's reload). */
+/**
+ * null until the first read lands. Re-read when `version` changes (after a rename, a job on this asset, or a
+ * panel's reload); the last docs stay up while the next read runs, so the HUD and the panels do not blank on
+ * every Carve. Another stem never sees this stem's docs.
+ */
 export function useAssetDocs(stem: string, version: number | string = 0): AssetDocs | null {
-  const [docs, setDocs] = useState<{ key: string; docs: AssetDocs } | null>(null);
+  const [docs, setDocs] = useState<{ stem: string; docs: AssetDocs } | null>(null);
   const key = `${stem}#${version}`;
   useEffect(() => {
     let live = true;
     void readAssetDocs(stem).then((d) => {
-      if (live) setDocs({ key, docs: d });
+      if (live) setDocs({ stem, docs: d });
     });
     return () => {
       live = false;
     };
   }, [stem, key]);
-  return docs && docs.key === key ? docs.docs : null;
+  return docs && docs.stem === stem ? docs.docs : null;
 }

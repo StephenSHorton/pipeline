@@ -1,5 +1,6 @@
-// The viewer panels' copy and open rules, word for word from the legacy cubbies (index.html 2090-2142) and
-// openStep (5817-5829), minus its bugs: no hide/tray, nothing stays hidden after a job.
+// The viewer panels' copy and open rules. The titles and the Rig check's × are word for word from the legacy
+// cubbies (index.html 2090-2142) and rig-inspect.js 896; "Close <title>" is new, after the Audio panel. The open
+// rules are legacy openStep (5817-5829) minus its bugs: no hide/tray, nothing stays hidden after a job.
 import { afterEach, describe, expect, it } from "vitest";
 import { closeLabel, closeTitle, openOn, PANEL_TITLES, panelDomId, panelsFor, RIG_CLOSE_LABEL, RIG_CLOSE_TITLE, togglePanel } from "./panels";
 import { openViewerPanel, usePanels } from "./store";
