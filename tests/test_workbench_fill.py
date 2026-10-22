@@ -124,6 +124,44 @@ class FillTests(unittest.TestCase):
         gap = np.abs(out[unseen].mean(0) - self.albedo[hit].mean(0))
         self.assertLess(float(gap.max()), 25.0, gap)
 
+    def test_charts_join_up_inside_and_split_at_seams(self) -> None:
+        f, tx, ty, pos = self.texels
+        mesh = trimesh.load(self.glb, force="mesh", process=False)
+        verts, faces, uvs = np.asarray(mesh.vertices), np.asarray(mesh.faces), np.asarray(mesh.visual.uv)
+        charts = fill.uv_charts(verts, uvs, faces)
+        self.assertGreater(len(np.unique(charts)), 1)   # a drum unwraps into several charts
+        # A triangle soup (no shared vertices) groups into the same charts.
+        soup = fill.uv_charts(verts[faces].reshape(-1, 3), uvs[faces].reshape(-1, 2), np.arange(faces.size).reshape(-1, 3))
+        pairs = set(zip(charts.tolist(), soup.tolist()))
+        self.assertEqual(len(pairs), len(np.unique(charts)))
+
+    def test_the_photo_does_not_leak_to_a_chart_beside_it_in_the_atlas(self) -> None:
+        # Only the largest chart is baked, in a strong blue; the charts packed next to it are unseen. Their texels
+        # within a feather of it in the atlas (another part of the model) must look like the rest of their chart.
+        mesh = trimesh.load(self.glb, force="mesh", process=False)
+        f, tx, ty, pos = self.texels
+        charts = fill.uv_charts(np.asarray(mesh.vertices), np.asarray(mesh.visual.uv), np.asarray(mesh.faces))
+        chart = np.full((SIZE, SIZE), -1)
+        chart[ty, tx] = charts[f]
+        big = chart == int(np.argmax(np.bincount(charts[f])))
+        albedo = np.zeros((SIZE, SIZE, 3), np.uint8)
+        albedo[:] = BASE
+        albedo[big] = (40, 60, 220)
+        cover = np.where(big, 255, 0).astype(np.uint8)
+        mesh.visual.material.baseColorTexture = Image.fromarray(albedo, "RGB")
+        mesh.export(self.glb)
+        Image.fromarray(cover, "L").save(self.cover)
+        out = self.filled().astype(float)
+        from scipy import ndimage
+        d = ndimage.distance_transform_edt(~big)
+        other = (chart >= 0) & ~big
+        near, far = other & (d <= 6), other & (d > 20)
+        self.assertGreater(int(near.sum()), 50, "the drum's charts should pack within a feather of the big one")
+        blue = lambda m: float((out[m][:, 2] - out[m][:, 0]).mean())  # noqa: E731
+        # Leaning on the atlas neighbour made this band about 60 bluer than the rest; same chart only, about 0.
+        self.assertLess(abs(blue(near) - blue(far)), 10.0, (blue(near), blue(far)))
+        np.testing.assert_array_equal(out[big], albedo[big].astype(float))
+
     def test_swatch_avoids_the_shade_and_tiles(self) -> None:
         rgb = np.asarray(Image.open(straw_photo(self.tmp / "shade.png", shadow=True)).convert("RGBA"))
         mask = rgb[..., 3] > 220

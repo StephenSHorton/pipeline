@@ -13,7 +13,9 @@ it tile, and paints it onto every texel whose coverage (retexture's <out>.cover.
 - gained per channel to the mean of the photo texels along the boundary, so the filled side is the same colour
   and brightness as the baked one;
 - feathered across the coverage ramp (and a few texels past it), replacing the base colour retexture faded in
-  there rather than mixing with it. Texels at or above keep are left exactly as they were.
+  there rather than mixing with it. The feather and the base it replaces come only from the texel's own UV chart:
+  charts sit a few texels apart in the atlas, and a neighbour there is some unrelated part of the model. Texels at
+  or above keep are left exactly as they were.
 
 Atlas gutters (texels in no triangle) take the nearest filled colour, so bilinear and mip lookups at seams never
 reach the old base. No model is loaded.
@@ -32,6 +34,8 @@ import numpy as np
 import trimesh
 from PIL import Image
 from scipy import ndimage
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import retexture  # noqa: E402
@@ -70,6 +74,24 @@ def smooth_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
         np.add.at(acc, inv[faces[:, c]], fn)
     n = acc[inv]
     return n / (np.linalg.norm(n, axis=1, keepdims=True) + 1e-12)
+
+
+def uv_charts(vertices: np.ndarray, uvs: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """The UV chart of each face: connected components of faces that share a vertex with the same position and UV.
+
+    Keyed by (position, UV) rather than by vertex index, so a mesh stored as a triangle soup still joins up inside
+    its charts, while copies split along a seam (same position, different UV) stay apart."""
+    if not len(faces):
+        return np.zeros(0, np.int64)
+    span = np.ptp(vertices, axis=0).max() + 1e-12
+    key = np.concatenate([np.round(vertices / span * 1e6), np.round(uvs * 1e6)], axis=1).astype(np.int64)
+    _, inv = np.unique(key, axis=0, return_inverse=True)
+    fv = inv.reshape(-1)[faces]
+    n = int(fv.max()) + 1
+    rows = np.concatenate([fv[:, 0], fv[:, 1]])
+    cols = np.concatenate([fv[:, 1], fv[:, 2]])
+    _, label = connected_components(coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n)), directed=False)
+    return label[fv[:, 0]].astype(np.int64)
 
 
 def pick_swatch(rgb: np.ndarray, mask: np.ndarray, side: int | None = None) -> tuple[np.ndarray, tuple[int, int, int]]:
@@ -196,6 +218,8 @@ def fill_unseen(glb_in, cover_png, photo_rgba, glb_out, keep: float = KEEP, shar
 
     in_tri = np.zeros((th, tw), bool)
     in_tri[ty, tx] = True
+    chart = np.full((th, tw), -1, np.int64)   # -1: a gutter texel, in no chart
+    chart[ty, tx] = uv_charts(verts, uvs, faces)[f]
     hit = cover >= keep
     seen = hit[ty, tx]
     before = float(seen.mean()) if len(seen) else 0.0
@@ -232,26 +256,42 @@ def fill_unseen(glb_in, cover_png, photo_rgba, glb_out, keep: float = KEEP, shar
 
     out = albedo.copy()
     if unseen_map.any():
-        # The base under retexture's fade: the nearest texel the photo did not touch at all.
+        # Per chart, inside its own box: in the atlas the nearest texel (or the blur's reach) is often across the
+        # 2-4 texel gap xatlas packs charts with, on another part of the model. Leaning on that would paint a
+        # stripe of unrelated photo along the seam on the unseen side, the restart-at-every-chart-edge look the
+        # triplanar fill exists to avoid.
+        base = albedo.copy()          # a chart with no bare texel: the texel itself, as with none anywhere
+        edge = np.zeros_like(albedo)
+        lean = np.zeros((th, tw), np.float32)
         bare = in_tri & (cover <= 0.0)
-        if bare.any():
-            _, (by, bx) = ndimage.distance_transform_edt(~bare, return_indices=True)
-            base = albedo[by, bx]
-        else:
-            base = albedo
+        boxes = ndimage.find_objects(chart + 1)  # chart c is label c + 1; gutters (-1) are 0, skipped
+        sig = FEATHER / 2.0
+        for c in np.unique(chart[unseen_map]):
+            cb = boxes[c]
+            mine = chart[cb] == c
+            need = unseen_map[cb] & mine
+            own = albedo[cb]
+            # The base under retexture's fade: the nearest texel of this chart the photo did not touch at all.
+            b = bare[cb] & mine
+            if b.any():
+                _, (by, bx) = ndimage.distance_transform_edt(~b, return_indices=True)
+                base[cb][need] = own[by[need], bx[need]]
+            h = hit[cb] & mine
+            if h.any():
+                # A few texels past the ramp the photo's edge colour still leans in, so the hand-off is no line.
+                # Normalised blur of this chart's photo texels: a smooth colour field, not a nearest copy's streaks.
+                hw = ndimage.gaussian_filter(h.astype(np.float32), sig, mode="constant")
+                e = np.stack([ndimage.gaussian_filter(own[..., k] * h, sig, mode="constant") for k in range(3)], -1)
+                e /= np.maximum(hw, 1e-6)[..., None]
+                d = ndimage.distance_transform_edt(~h)   # every photo texel of the chart is inside its box
+                lc = 0.6 * np.exp(-0.5 * (d / FEATHER) ** 2) * (hw > 1e-3)
+                edge[cb][need] = e[need]
+                lean[cb][need] = lc[need]
         t = np.clip(cover / keep, 0.0, 1.0)[..., None]
         # On the ramp the texel is t * photo + (1 - t) * base: swap the base share for the fill.
         mixed = albedo + (1.0 - t) * (fillmap - base)
-        if hit.any():
-            # A few texels past the ramp the photo's edge colour still leans in, so the hand-off is no line.
-            # Normalised blur of the photo texels: a smooth colour field, not the streaks a nearest copy would give.
-            sig = FEATHER / 2.0
-            hw = ndimage.gaussian_filter((hit & in_tri).astype(np.float32), sig)
-            edge = np.stack([ndimage.gaussian_filter(albedo[..., c] * (hit & in_tri), sig) for c in range(3)], -1)
-            edge /= np.maximum(hw, 1e-6)[..., None]
-            d = ndimage.distance_transform_edt(~hit)
-            lean = (0.6 * np.exp(-0.5 * (d / FEATHER) ** 2) * (hw > 1e-3))[..., None] * (t < 1.0)
-            mixed = mixed * (1.0 - lean) + edge * lean
+        lean = lean[..., None] * (t < 1.0)
+        mixed = mixed * (1.0 - lean) + edge * lean
         out[unseen_map] = mixed[unseen_map]
 
     # Gutters: the nearest texel that is in a triangle or baked, so no lookup at a seam reaches the old base.
