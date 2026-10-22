@@ -9,8 +9,9 @@ describe("Detail levels copy (legacy index.html 2131, 2136, 4969-4972, 5255)", (
   });
 
   it("labels a LOD with its face count, as lodLabel did", () => {
-    expect(lodLabel({ label: "Game", faces: 5000 })).toBe(`Game ${(5000).toLocaleString()}`);
-    expect(lodLabel({ label: "PSX", faces: 1184 })).toBe(`PSX ${(1184).toLocaleString()}`);
+    // Node ships full ICU and runs en-US here, so the legacy examples pin literally.
+    expect(lodLabel({ label: "Game", faces: 5000 })).toBe("Game 5,000");
+    expect(lodLabel({ label: "PSX", faces: 1184 })).toBe("PSX 1,184");
     expect(lodLabel({ label: "Hero" })).toBe("Hero");
     // A falsy count adds nothing (legacy `item.faces ? …`).
     expect(lodLabel({ label: "Proxy", faces: 0 })).toBe("Proxy");

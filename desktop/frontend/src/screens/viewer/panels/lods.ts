@@ -8,8 +8,8 @@ import { RIGGED } from "@/viewer/candidates";
 /** The cubby's hint, word for word (index.html 2136). */
 export const LODS_HINT = "Show another version of the model. PSX is the PS1 low-poly; Hero is the full sculpt; Game is the reduced one.";
 
-/** The LOD list's aria-label (legacy had a bare div; the buttons need a group name). */
-export const LODS_LIST_LABEL = "Detail levels";
+/** The LOD list's aria-label (legacy had a bare div). "Model", as the HUD's old tabs: the region is "Detail levels". */
+export const LODS_LIST_LABEL = "Model";
 
 /** The turnaround's aria-label (legacy aside#ref had none). */
 export const TURNAROUND_LABEL = "Turnaround";
