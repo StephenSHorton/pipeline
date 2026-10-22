@@ -126,6 +126,18 @@ class ThickenTests(unittest.TestCase):
         with self.assertRaises(edit.EditError):
             edit.thicken_legs(trimesh.creation.box([1, 1, 2]), 1.5)
 
+    def test_overlapping_pair_is_refused_not_splayed(self) -> None:
+        # Front pair overlapping (one round-ish blob), rear pair apart: the blob is two legs, not one fat one.
+        r = 0.08
+        for ov in (0.02, 0.05, 0.08):
+            body = trimesh.creation.icosphere(subdivisions=4)
+            body.apply_scale([1.0, 0.35, 0.4])
+            body.apply_translation([0, 0.8, 0])
+            head = trimesh.creation.icosphere(subdivisions=3, radius=0.22).apply_translation([1.15, 1.05, 0])
+            legs = [tube(0.6, -(r - ov / 2), r=r), tube(0.6, r - ov / 2, r=r), tube(-0.6, -0.22, r=r), tube(-0.6, 0.22, r=r)]
+            with self.subTest(overlap=ov), self.assertRaisesRegex(edit.EditError, "touch along their length"):
+                edit.thicken_legs(trimesh.util.concatenate([body, head, *legs]), 1.5)
+
     def test_close_legs_each_about_its_own_centre(self) -> None:
         """Legs nearly touching (or touching) make one footprint blob; it is split at the waist, so each leg
         thickens about its own centre instead of the pair splaying apart about their middle."""

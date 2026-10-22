@@ -30,9 +30,10 @@ from scipy import ndimage
 BODY_SHARE = 0.2  # a section this share of the widest one is body, not legs
 NECK_SHARE = 0.8  # a section this share of the body's width is where the neck begins
 WAIST_SHARE = 0.55  # a blob whose middle is narrower than this share of both sides is two legs touching
-LEG_ASPECT = 1.8  # a footprint blob this long, with no waist and MERGED_SIZE times the others, is legs together
+LEG_ASPECT = 1.8  # kept for callers; a blob past SPLIT_ASPECT with no waist and MERGED_SIZE times the others is legs together
 LEG_ASPECT_ALONE = 2.4  # this long is legs pressed together whatever the others are
 MERGED_SIZE = 1.6
+MERGED_ASPECT = 1.25  # with MERGED_SIZE: two legs overlapping heavily make a blob barely longer than wide
 SPLIT_ASPECT = 1.5  # only a blob this much longer than wide is tried for a waist
 WAIST_GRID = 80  # raster cells along a blob's long axis for the waist test
 FOOT_SHARE = 0.35
@@ -155,7 +156,7 @@ def _merged(parts: list[tuple[np.ndarray, float]]) -> bool:
     sizes = np.array([float(len(q)) for q, _ in parts])
     for i, (_, aspect) in enumerate(parts):
         others = np.delete(sizes, i)
-        if aspect > LEG_ASPECT_ALONE or (aspect > LEG_ASPECT and len(others) and
+        if aspect > LEG_ASPECT_ALONE or (aspect > MERGED_ASPECT and len(others) and
                                          sizes[i] > MERGED_SIZE * float(np.median(others))):
             return True
     return False

@@ -51,7 +51,7 @@ from factory_env import (  # noqa: E402
     resolve_under_root,
     stem_dir,
 )
-from workbench import bake, clay, scene  # noqa: E402
+from workbench import bake, clay, edit, scene  # noqa: E402
 from workbench.narrate import Narrator  # noqa: E402
 from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
@@ -61,8 +61,8 @@ LODS = ("psx", "mesh", "hero", "lookdev", "mv", "clay")
 VIEWS = ("side", "xside", "front", "back", "top", "bottom", "q")
 STAGES = list(flow.STAGES)
 RENDER_KEEP_S = 600  # a look's folder outlives its answer (the path is in it) by this long
-NOT_YET = ("not yet: {op} arrives with edit.py, after Stephen's critique of the first asset (plan, milestone 1 "
-           "step 6). Use remove_floaters or delete_sphere, or rebuild the shape as clay.")
+NOT_YET = ("not yet: {op} is not built. Use remove_floaters, delete_sphere, stretch, thicken_legs, shorten_legs or "
+           "widen_head, or rebuild the shape as clay.")
 
 
 class ToolError(ValueError):
@@ -545,6 +545,24 @@ class Workbench:
             info = {"axis": params["axis"], "factor": float(params["factor"]),
                     "extents_before": [round(float(x), 4) for x in mesh.extents],
                     "extents_after": [round(float(x), 4) for x in out_mesh.extents]}
+        elif op in edit.OPS:
+            # Proportions from a critique (the sheep: legs too thin, too tall, head too narrow). Only vertices move.
+            frac = {"type": "number", "minimum": 0.02, "maximum": 0.98}
+            spec = {"thicken_legs": ({"factor": {"type": "number", "minimum": 1, "maximum": 3}, "top": frac},
+                                     ("factor",)),
+                    "shorten_legs": ({"factor": {"type": "number", "minimum": 0.4, "maximum": 1}, "top": frac},
+                                     ("factor",)),
+                    "widen_head": ({"factor": {"type": "number", "minimum": 1, "maximum": 2}, "start": frac,
+                                    "ramp": {"type": "number", "minimum": 0.01, "maximum": 0.5},
+                                    "head": {"type": "string", "enum": sorted(edit.AXES)}}, ("factor",))}[op]
+            errs = check(_obj(*spec), params, "params")
+            if errs:
+                raise ArgError("; ".join(errs))
+            try:
+                out_mesh, info = edit.apply(mesh, op, **{k: params[k] for k in spec[0] if k in params})
+            except edit.EditError as e:
+                raise ToolError(f"{op}: {e}") from None
+            info.pop("op", None)
         else:
             errs = check(_obj({"center": VEC3, "radius": {"type": "number", "minimum": 0}}, ("center", "radius")),
                          params, "params")
@@ -746,9 +764,21 @@ class Workbench:
             Tool("mesh_edit", "Edit a GLB into out/<stem>/workbench/edit_N.glb. op remove_floaters (params keep, "
                  "min_faces), delete_sphere (params center [x,y,z], radius) or stretch (params axis x|y|z, factor: "
                  "scales one axis, height up from the floor, the others about the middle; UVs and texture kept). "
+                 "Proportion ops (workbench/edit.py; only vertices move, so UVs and texture are kept): thicken_legs "
+                 "(params factor 1..3, top?) scales each leg's x,z about its own centre line, fading to 1 over the "
+                 "top 15% of the leg band, feet stay on the floor; shorten_legs (factor 0.4..1, top?) squashes the "
+                 "leg band toward the floor and lowers the body by the height removed, smoothly at the join; "
+                 "widen_head (factor 1..2, start?, ramp? default 0.1, head? +x|-x|+z|-z) scales the head's lateral "
+                 "axis about its centre line, ramping in from start to start + ramp along the length (0 rump, 1 "
+                 "nose). top (share of height where legs meet belly), start and head are read from the shape when "
+                 "omitted; the answer says what was found (top, legs and their centres, start, head end). When the "
+                 "shape doesn't show them (fewer than two legs, legs it can't tell apart, no head end that rises "
+                 "above the body or ends that look alike, no neck) the op refuses and says why: give top, head or "
+                 "start. "
                  "straighten_head, symmetrize and nudge are not built yet.",
                  _obj({"stem": STEM, "src": GLB, "op": {"type": "string", "enum": ["remove_floaters", "delete_sphere",
-                                                                                   "stretch",
+                                                                                   "stretch", "thicken_legs",
+                                                                                   "shorten_legs", "widen_head",
                                                                                    "straighten_head", "symmetrize",
                                                                                    "nudge"]},
                        "params": {"type": "object"}}, ("stem", "src", "op")), self.mesh_edit),
