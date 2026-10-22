@@ -64,6 +64,23 @@ def photo_mask(path: Path) -> np.ndarray:
     return m
 
 
+def cut_off(mask: np.ndarray) -> list[str]:
+    """The frame edges the subject touches: there its outline is the frame's, not the animal's (hooves cut off at the
+    bottom, a tail out at the side), so its height/length is not to be trusted."""
+    edges = {"top": mask[0].any(), "bottom": mask[-1].any(), "left": mask[:, 0].any(), "right": mask[:, -1].any()}
+    return [k for k, hit in edges.items() if hit]
+
+
+def body(mesh: trimesh.Trimesh, share: float = 0.02) -> trimesh.Trimesh:
+    """The pieces of at least `share` of the area (reduce_mesh's rule): a floating crumb past the rump must not
+    count as length."""
+    parts = mesh.split(only_watertight=False)
+    if len(parts) <= 1:
+        return mesh
+    keep = [p for p in parts if p.area >= share * mesh.area] or [max(parts, key=lambda p: p.area)]
+    return trimesh.util.concatenate(keep)
+
+
 def aspect(mask: np.ndarray) -> float:
     ys, xs = np.nonzero(mask)
     return float((ys.max() - ys.min() + 1) / (xs.max() - xs.min() + 1))
@@ -146,11 +163,12 @@ def main() -> int:
 
     side_az = 0.0 if args.canonical in ("left", "right") else 90.0
     axis = length_axis(side_az)
-    centre = mesh.bounds.mean(0)
-    v = mesh.vertices - centre
+    solid = body(mesh)
+    centre = solid.bounds.mean(0)
+    v = solid.vertices - centre
     height = float(np.ptp(v[:, 1]))
     length = float(np.ptp(v @ axis))
-    pts, _ = trimesh.sample.sample_surface(mesh, args.samples, seed=0)
+    pts, _ = trimesh.sample.sample_surface(solid, args.samples, seed=0)
     pts = np.asarray(pts) - centre
 
     photo_aspect = aspect(photo)
@@ -163,6 +181,11 @@ def main() -> int:
                    "side_on": side_on, "match": m,
                    "angles": {str(t): [round(s, 4), round(f, 3)] for t, (s, f) in scores.items()}})
 
+    edges = cut_off(photo)
+    if side_on and edges:
+        why = f"the photo's subject runs off the frame ({', '.join(edges)}); its height/length is not trusted"
+        side_on = False
+        result["cut_off"] = edges
     if side_on:
         # The fine search at the side angle: the IoU's own best stretch must agree with the box ratio, else the
         # photo's box is off (a stick, a shadow, a cropped hoof) and the ratio is not to be trusted.
@@ -183,7 +206,8 @@ def main() -> int:
         T[:3, 3] = centre - T[:3, :3] @ centre
         mesh.apply_transform(T)
         mesh.export(str(args.out or args.mesh))
-        v = mesh.vertices - mesh.bounds.mean(0)
+        solid = body(mesh)
+        v = solid.vertices - solid.bounds.mean(0)
         after = float(np.ptp(v[:, 1]) / max(np.ptp(v @ axis), 1e-9))
         result.update({"applied": True, "factor": round(factor, 4), "mesh_aspect_after": round(after, 4)})
         why = "side-on photo; length scaled" + (f" (clamped from {raw:.3f})" if result["clamped"] else "")

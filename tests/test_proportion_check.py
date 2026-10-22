@@ -45,8 +45,9 @@ def squashed(f: float) -> trimesh.Trimesh:
     return m
 
 
-def photo_png(path: Path, az: float) -> Path:
-    """An RGBA cut-out of the true creature from az, padded like a photo's cut-out."""
+def photo_png(path: Path, az: float, cut_bottom: float = 0.0) -> Path:
+    """An RGBA cut-out of the true creature from az, padded like a photo's cut-out. cut_bottom: that share of the
+    subject's height runs off the bottom of the frame (hooves cut off)."""
     pts, _ = trimesh.sample.sample_surface(creature(), 120_000, seed=1)
     mask = silhouette(np.asarray(pts), az, res=480)
     ys, xs = np.nonzero(mask)
@@ -54,6 +55,8 @@ def photo_png(path: Path, az: float) -> Path:
     a = np.zeros((crop.shape[0] + 80, crop.shape[1] + 120, 4), np.uint8)
     a[40:-40, 60:-60, :3] = 200
     a[40:-40, 60:-60, 3] = crop * 255
+    if cut_bottom:
+        a = a[: 40 + int(crop.shape[0] * (1 - cut_bottom))]
     Image.fromarray(a, "RGBA").save(path)
     return path
 
@@ -72,10 +75,10 @@ class ProportionCheck(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def run_check(self, mesh: trimesh.Trimesh, az: float, *extra: str):
+    def run_check(self, mesh: trimesh.Trimesh, az: float, *extra: str, cut_bottom: float = 0.0):
         glb = self.dir / "mesh_hero.glb"
         mesh.export(glb)
-        photo = photo_png(self.dir / "photo.png", az)
+        photo = photo_png(self.dir / "photo.png", az, cut_bottom)
         sj = self.dir / "shape.json"
         sj.write_text(json.dumps({"model": "stub", "orient": {"yaw": 90}}))
         proc = subprocess.run([sys.executable, str(SCRIPT), str(glb), "--photo", str(photo), "--canonical", "right",
@@ -101,6 +104,21 @@ class ProportionCheck(unittest.TestCase):
         self.assertAlmostEqual(prop["mesh_aspect_after"], aspect_xy(after), places=3)
         self.assertIn("as long", out)
         self.assertIn("PROPORTION ", out)
+
+    def test_a_photo_cut_off_by_the_frame_is_not_trusted(self) -> None:
+        before = squashed(0.7)
+        prop, after, out = self.run_check(before, 0.0, cut_bottom=0.06)
+        self.assertFalse(prop["applied"], prop)
+        self.assertEqual(prop["cut_off"], ["bottom"])
+        self.assertIn("runs off the frame", prop["reason"])
+        np.testing.assert_allclose(after.vertices, before.vertices, atol=1e-6)
+
+    def test_a_floating_crumb_does_not_count_as_length(self) -> None:
+        crumb = trimesh.creation.icosphere(subdivisions=1, radius=0.01)
+        crumb.apply_translation((-0.75 * 2.0 * 0.7, 0.9, 0.0))  # well past the squashed rump
+        prop, after, _ = self.run_check(trimesh.util.concatenate([squashed(0.7), crumb]), 0.0)
+        self.assertTrue(prop["applied"], prop)
+        self.assertAlmostEqual(prop["factor"], 1 / 0.7, delta=0.03 / 0.7)
 
     def test_the_mirrored_side_also_restores(self) -> None:
         prop, after, _ = self.run_check(squashed(0.7), 180.0)
