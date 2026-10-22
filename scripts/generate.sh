@@ -670,6 +670,17 @@ elif [[ $ORC -ne 0 ]]; then
   degrade shape orient_failed "mv_orient.py exited $ORC; the shape was left as generated"
 fi
 
+# The drawn turnaround can squash a long animal (each view drawn in a square quarter of one sheet): a side-on
+# photo's height/length puts the length back. Only a multi-view shape with the views' photo, turned (orient ran,
+# ORC 0 or 3), and not a supplied mesh (made and measured in its own frame). A front-on or 3/4 photo, or a length
+# already within 5%, leaves the hero alone; the reason lands in shape.json "proportion".
+if [[ -z "$MESH_IN" && "$USE_MV" -eq 1 && -f "$OUT/views/lifted/photo.png" && ( $ORC -eq 0 || $ORC -eq 3 ) ]]; then
+  if ! "$PYTHON" "$ROOT/scripts/proportion_check.py" "$HERO" --photo "$OUT/views/lifted/photo.png" \
+       --canonical "$ORIENT_CANON" --json "$OUT/shape.json"; then
+    degrade shape proportion_failed "the photo's proportion check failed; the shape keeps the drawn length"
+  fi
+fi
+
 stage reduce "Reducing the mesh"
 # reduce_mesh.py drops the pieces under 2% of the area (shape models leave floating crumbs) before it decimates.
 if [[ -n "$FACES" ]]; then
