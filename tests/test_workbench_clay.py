@@ -203,5 +203,19 @@ class UnwrapCliTests(unittest.TestCase):
     ]
 
 
+class Decimate(unittest.TestCase):
+    """Clay has exactly flat areas (a cylinder's caps); quadric decimation used to stall at about half the faces
+    there, so a clay hay bale came out of the PS1 pass with ~52k triangles instead of 1,200."""
+
+    def test_clay_cylinder_reaches_a_ps1_budget(self) -> None:
+        from psx_lowpoly import decimate
+        from reduce_mesh import reduce_mesh
+        bale = clay.from_json([{"name": "bale", "form": {"type": "Cylinder", "radius": 0.5, "height": 1.0},
+                                "rotation": [0, 0, 90]}])
+        mesh = mesher.mesh_clay(bale, grid=64)
+        self.assertLessEqual(len(decimate(mesh, 1200).faces), 1800)
+        self.assertLessEqual(len(reduce_mesh(mesh, 6000).faces), 9000)
+
+
 if __name__ == "__main__":
     unittest.main()

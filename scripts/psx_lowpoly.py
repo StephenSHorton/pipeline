@@ -42,6 +42,7 @@ from PIL import Image
 from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # facing.py, rig*.py next to this file
+from reduce_mesh import simplify  # noqa: E402
 
 # Degrees about +Y (glTF up) that turn the subject to look down +Z, by where it looks in the photo.
 FACING = {"camera": 0.0, "right": -90.0, "left": 90.0, "away": 180.0}
@@ -92,7 +93,7 @@ def decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     plain = trimesh.Trimesh(vertices=mesh.vertices, faces=mesh.faces, process=True)
     if len(plain.faces) <= faces:
         return plain
-    low = plain.simplify_quadric_decimation(face_count=faces)
+    low = simplify(plain, faces)
     low.remove_unreferenced_vertices()
     # Hunyuan leaves floating crumbs; at a PS1 budget every triangle on one counts. Keep the big pieces.
     parts = low.split(only_watertight=False)

@@ -165,10 +165,24 @@ def rebake(high: trimesh.Trimesh, texture: Image.Image, low: trimesh.Trimesh, at
     return trimesh.Trimesh(vertices=verts, faces=faces, visual=visual, process=False)
 
 
+def simplify(mesh: trimesh.Trimesh, target: int) -> trimesh.Trimesh:
+    """Quadric decimation to about target faces. Exactly flat areas (a clay cylinder's caps, a box's sides)
+    give every edge there zero error, and the decimator stalls at about half the faces. Hunyuan meshes are never
+    exactly flat, so this only shows on authored shapes; the fix is to retry once with the vertices nudged by a
+    millionth of the mesh size (seeded, so the result is repeatable), far below anything a texel can show."""
+    low = mesh.simplify_quadric_decimation(face_count=target)
+    if len(low.faces) <= 1.5 * target:
+        return low
+    nudged = mesh.copy()
+    rng = np.random.default_rng(0)
+    nudged.vertices = mesh.vertices + rng.normal(scale=1e-6 * float(mesh.scale or 1.0), size=mesh.vertices.shape)
+    return nudged.simplify_quadric_decimation(face_count=target)
+
+
 def reduce_mesh(mesh: trimesh.Trimesh, target: int) -> trimesh.Trimesh:
     if target <= 0 or len(mesh.faces) <= target:
         return mesh
-    return mesh.simplify_quadric_decimation(face_count=target)
+    return simplify(mesh, target)
 
 
 def main() -> int:
