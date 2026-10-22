@@ -13,7 +13,7 @@ are the ones the stages already wrote.
       2d/sounds/        sound per piece
       2d/voices/        spoken line per piece
       stack/            sheet.png (layers bottom to top), stack.json, preview.png
-      3d/               model.glb, game.glb, proxy.glb, pixel.glb, rigged.glb, psx.glb
+      3d/               model.glb, pixel.glb, rigged.glb, psx.glb (finished models only: no game / proxy LODs)
       3d/psx/           <name>.obj + .mtl + .png: the PS1 low-poly (Y up, +Z front unless psx.axes says)
       3d/rig/           <name>.fbx (+ .png): the rigged model with every clip, for s&box ModelDoc
 
@@ -39,12 +39,11 @@ FORMAT = "pipeline-asset"
 VERSION = 1
 
 CONCEPT = ("lifted.png", "flat/source.png", "input.png", "input.jpg", "input.jpeg", "input.webp")
-# Each 3D role takes the first file that exists.
+# Each 3D role takes the first file that exists. No game / proxy roles: those LODs are no longer made, and an older
+# asset's leftover mesh_game.glb / mesh_proxy.glb are not exported either (one rule for every asset).
 MESHES: dict[str, tuple[str, ...]] = {
     # The photo bake beats Hunyuan's paint: it is the real picture where the camera saw it, the paint elsewhere.
     "model": ("textured_paint.glb", "textured_photo.glb", "pbr.glb", "textured.glb", "mesh.glb", "mesh_hero.glb", "mesh_mv.glb"),
-    "game": ("textured_game.glb", "mesh_game.glb"),
-    "proxy": ("mesh_proxy.glb",),
     "pixel": ("pixel.glb",),
     "rigged": ("rigged.glb", "m2m.glb", "anigen_keep.glb", "anigen.glb", "unirig.glb"),
 }

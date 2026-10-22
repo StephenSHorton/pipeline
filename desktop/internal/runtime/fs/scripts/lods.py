@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""out/<stem>/lods.json: the detail levels the app's Model tabs list, in order.
+"""out/<stem>/lods.json: the finished models the app's Model tabs list, in order.
 
-    .venv/bin/python scripts/lods.py out/S            # rebuild it from the files there (what reduce.sh runs)
+    .venv/bin/python scripts/lods.py out/S            # rebuild it from the files there (reduce.sh, generate's lods stage)
 
-reduce.sh (generate.sh's lods stage) rebuilds the whole list from what the folder holds; a tool that adds one model
+reduce.sh and generate.sh's lods stage rebuild the whole list from what the folder holds; a tool that adds one model
 later (the workbench's psx) upserts just that entry with put(), so the entries the app added on its own (paint_save's
 Painted, clean_mesh's Clean) survive. Both build the entry with entry(), so a PSX the workbench publishes reads
 exactly like one generate.sh made.
+
+Only finished models: the photo bake (else the paint it would have gone on) and the PS1 low-poly. The hero and
+lookdev meshes are steps on the way there, not models to pick, and game / proxy are no longer made (Stephen: no
+arbitrary copies at other triangle counts). An older lods.json that lists them still reads; the app hides them.
 """
 from __future__ import annotations
 
@@ -17,21 +21,10 @@ from pathlib import Path
 # (id, candidate files, label, metadata files) in the list's order. The first candidate file that exists is the
 # entry; its faces / vertices / has_uvs come from the first metadata file that exists.
 SPECS: tuple[tuple[str, tuple[str, ...], str, tuple[str, ...]], ...] = (
-    ("pbr", ("pbr.glb",), "PBR", ("inspect_pbr.json",)),
-    ("mv", ("mesh_mv.glb",), "2mv", ("shape_mv.json",)),
-    ("photo", ("textured_photo.glb",), "Photo bake", ()),
+    # The photo bake is what the asset ships; with no bake (a make without the photo step), the paint it goes on.
+    ("photo", ("textured_photo.glb", "textured.glb", "pbr.glb"), "Photo bake", ()),
     # PS1 low-poly: psx_lowpoly.py (generate --quality psx, or the workbench's psx tool).
     ("psx", ("psx.glb",), "PSX", ("psx/psx.json",)),
-    ("keep", ("anigen_keep.glb",), "Keep-weights", ("anigen_keep.json",)),
-    ("anigen", ("anigen.glb",), "AniGen", ()),
-    ("m2m", ("m2m.glb",), "Mesh2Motion", ("m2m.json",)),
-    ("hero", ("mesh.glb",), "Hero", ("inspect.json",)),
-    ("lookdev", ("textured.glb", "mesh_lookdev.glb", "mesh_lod.glb"), "Lookdev",
-     ("inspect_textured.json", "lod_lookdev.json")),
-    ("quad", ("mesh_quad.glb",), "Quads", ()),
-    ("game", ("textured_game.glb", "mesh_game.glb"), "Game", ("lod_textured_game.json", "lod_game.json")),
-    ("proxy", ("mesh_proxy.glb",), "Proxy", ("lod_proxy.json",)),
-    ("born-game", ("mesh_born_game.glb",), "Born game", ("lod_born_game.json",)),
 )
 SPEC = {s[0]: s for s in SPECS}
 
@@ -58,14 +51,8 @@ def entry(out: Path, lid: str, files: tuple[str, ...] | list[str] | None = None)
 def build(out: Path, stem: str) -> dict:
     """The whole document from the folder's files, as generate.sh's lods stage writes it."""
     lods = []
-    for lid, cands, _, _ in SPECS:
-        files = cands
-        if lid == "game":
-            # Quadric decimation drops UVs, so don't advertise a "textured" game LOD unless UVs survived.
-            tg = out / "lod_textured_game.json"
-            if not (tg.is_file() and json.loads(tg.read_text()).get("has_uvs")):
-                files = ("mesh_game.glb",)
-        item = entry(out, lid, files)
+    for lid, _, _, _ in SPECS:
+        item = entry(out, lid)
         if item:
             lods.append(item)
     if (out / "stack" / "stack.json").is_file():

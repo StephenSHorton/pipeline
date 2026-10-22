@@ -98,16 +98,16 @@ def json_degraded(path: str | Path) -> list[dict[str, str]]:
             add_degraded(out, coerce_degraded(item))
     return out
 
+# GET /glb?lod=: the file each name serves. game / proxy LODs are no longer made (reduce.sh cuts only lookdev), so
+# those names fall through to DEFAULT_GLB like any unknown one, and nothing here reaches for their files.
 LOD_FILES = {
     "mesh": ("mesh.glb",),
     "hero": ("mesh_hero.glb", "mesh.glb"),
     "lookdev": ("mesh_lookdev.glb", "mesh.glb"),
-    "game": ("mesh_game.glb", "mesh.glb"),
-    "proxy": ("mesh_proxy.glb", "mesh.glb"),
     "mv": ("mesh_mv.glb", "mesh_hero.glb", "mesh.glb"),
     "psx": ("psx.glb",),
 }
-DEFAULT_GLB = ("mesh.glb", "mesh_hero.glb", "mesh_mv.glb", "mesh_proxy.glb")
+DEFAULT_GLB = ("mesh.glb", "mesh_hero.glb", "mesh_mv.glb")
 
 # UI labels High / Medium / Low. Canonical CLI names stay hero / lookdev / proxy.
 # Medium is lookdev: same fidelity class, lower octree so shape is faster.

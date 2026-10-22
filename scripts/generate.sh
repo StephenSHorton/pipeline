@@ -386,6 +386,8 @@ done
 rm -f "$OUT/shape.json" "$OUT/textured.glb" "$OUT/pbr.glb" "$OUT/textured_photo.glb" "$OUT/textured_photo.albedo.png" \
   "$OUT/textured_photo.fit.json" "$OUT/textured_photo.cover.png" "$OUT/textured_photo.fill.json" "$OUT/textured_game.glb" "$OUT/lod_textured_game.json" "$OUT/mesh_quad.glb" \
   "$OUT/psx.glb" "$OUT/mesh_mv.glb"
+# Game / proxy LODs are no longer made; a remake of an older asset drops them so no stale copy outlives its shape.
+rm -f "$OUT/mesh_game.glb" "$OUT/lod_game.json" "$OUT/mesh_proxy.glb" "$OUT/lod_proxy.json"
 
 USE_MV=0
 if ((${#VIEW_IDS[@]})); then
@@ -676,7 +678,7 @@ if [[ -n "$FACES" ]]; then
 else
   "$PYTHON" "$ROOT/scripts/reduce_mesh.py" "$HERO" -o "$MESH" --min-piece 0.02
 fi
-echo "generate: reduce LODs"
+echo "generate: lookdev mesh"
 "$ROOT/scripts/reduce.sh" "$STEM"
 
 FINAL="$MESH"
@@ -805,9 +807,11 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
       --facing "$FACING" --faces "$PSX_FACES" --atlas "$PSX_ATLAS" --up "$PSX_UP" --glb "$OUT/psx.glb"
     FINAL="$OUT/psx.glb"
   fi
-  stage lods "Writing detail levels"
-  echo "generate: refresh LODs with textured game"
-  "$ROOT/scripts/reduce.sh" "$STEM"
+  # The photo bake and the PS1 model exist only now, so list them; reduce.sh above listed what was there before
+  # paint. Just the list: the meshes are already cut (no more game / proxy copies to re-make).
+  stage lods "Listing the finished models"
+  echo "generate: list the finished models"
+  "$PYTHON" "$ROOT/scripts/lods.py" "$OUT"
 fi
 
 INSPECT="$OUT/inspect.json"

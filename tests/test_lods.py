@@ -32,17 +32,25 @@ class Lods(unittest.TestCase):
         (self.out / name).parent.mkdir(parents=True, exist_ok=True)
         (self.out / name).write_text(json.dumps(doc))
 
-    def test_build_order_and_metadata(self) -> None:
-        self.touch("mesh.glb", "textured_photo.glb", "psx.glb", "textured_game.glb", "mesh_game.glb", "mesh_proxy.glb")
+    def test_build_lists_only_finished_models(self) -> None:
+        # An older asset's hero / lookdev / game / proxy files are not models to pick: only the photo bake and PSX.
+        self.touch("mesh.glb", "mesh_lookdev.glb", "textured.glb", "textured_photo.glb", "psx.glb",
+                   "textured_game.glb", "mesh_game.glb", "mesh_proxy.glb", "mesh_mv.glb", "anigen.glb")
         self.meta("psx/psx.json", {"triangles": 1200, "atlas": 256})
-        self.meta("lod_textured_game.json", {"faces": 12000, "vertices": 6845, "has_uvs": False})
-        self.meta("lod_game.json", {"faces": 12000, "vertices": 6800, "has_uvs": False})
         self.meta("stack/stack.json", {})
         doc = lods.build(self.out, "bale")
-        self.assertEqual([x["id"] for x in doc["lods"]], ["photo", "psx", "hero", "game", "proxy", "stack"])
+        self.assertEqual([x["id"] for x in doc["lods"]], ["photo", "psx", "stack"])
+        self.assertEqual(doc["lods"][0], {"id": "photo", "file": "textured_photo.glb", "label": "Photo bake"})
         self.assertEqual(doc["lods"][1], {"id": "psx", "file": "psx.glb", "label": "PSX", "faces": 1200,
                                           "vertices": None, "has_uvs": True})
-        self.assertEqual(doc["lods"][3]["file"], "mesh_game.glb")  # the textured game LOD lost its UVs
+
+    def test_photo_bake_falls_back_to_the_paint(self) -> None:
+        self.touch("mesh.glb", "textured.glb")
+        self.assertEqual(lods.build(self.out, "bale")["lods"],
+                         [{"id": "photo", "file": "textured.glb", "label": "Photo bake"}])
+        (self.out / "textured.glb").unlink()
+        self.touch("pbr.glb")
+        self.assertEqual(lods.build(self.out, "bale")["lods"][0]["file"], "pbr.glb")
 
     def test_put_after_photo_replacing_in_place(self) -> None:
         self.meta("lods.json", {"stem": "bale", "lods": [
@@ -69,17 +77,24 @@ class Lods(unittest.TestCase):
         self.touch("textured_photo.glb", "mesh.glb", "psx.glb")
         lods.put(self.out, "bale", {"id": "psx", "file": "psx.glb", "label": "PSX", "faces": 9})
         doc = json.loads((self.out / "lods.json").read_text())
-        self.assertEqual([x["id"] for x in doc["lods"]], ["photo", "psx", "hero"])
+        self.assertEqual([x["id"] for x in doc["lods"]], ["photo", "psx"])  # the hero is a step, not a model
         self.assertEqual(doc["lods"][1]["faces"], 9)  # the given entry, not build()'s
 
     def test_cli_is_what_reduce_runs(self) -> None:
         self.assertIn('"$ROOT/scripts/lods.py" "$OUT"', (ROOT / "scripts" / "reduce.sh").read_text())
-        self.touch("mesh.glb")
+        self.assertIn('"$ROOT/scripts/lods.py" "$OUT"', (ROOT / "scripts" / "generate.sh").read_text())
+        self.touch("mesh.glb", "textured_photo.glb")
         res = subprocess.run([sys.executable, str(ROOT / "scripts" / "lods.py"), str(self.out)],
                              capture_output=True, text=True, check=True)
         self.assertIn("reduce: wrote", res.stdout)
         self.assertEqual(json.loads((self.out / "lods.json").read_text()),
-                         {"stem": "bale", "lods": [{"id": "hero", "file": "mesh.glb", "label": "Hero"}]})
+                         {"stem": "bale", "lods": [{"id": "photo", "file": "textured_photo.glb", "label": "Photo bake"}]})
+
+    def test_reduce_makes_no_game_or_proxy(self) -> None:
+        text = (ROOT / "scripts" / "reduce.sh").read_text()
+        self.assertIn("--preset lookdev", text)
+        for gone in ("--preset game", "--preset proxy", "mesh_game.glb", "mesh_proxy.glb", "textured_game.glb"):
+            self.assertNotIn(gone, text)
 
 
 if __name__ == "__main__":

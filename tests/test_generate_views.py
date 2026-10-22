@@ -381,8 +381,13 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertNotIn("--mirror", args)
         self.assertIn("remesh: off (opt-in)", proc.stdout)
         self.assertEqual(self.degraded_lines(proc), [])
-        lod = json.loads(self.out("lod_textured_game.json").read_text())
-        self.assertTrue(lod["has_uvs"])
+        # The lods stage lists the finished models only; no game / proxy copies are cut any more.
+        ids = [x["id"] for x in json.loads(self.out("lods.json").read_text())["lods"]]
+        self.assertEqual(ids[0], "photo")
+        self.assertNotIn("hero", ids)
+        for gone in ("textured_game.glb", "mesh_game.glb", "mesh_proxy.glb"):
+            self.assertFalse(self.out(gone).exists(), gone)
+        self.assertEqual(proc.stdout.count("=== reduce lookdev"), 1)  # one reduce per make, not two
 
     def test_retexture_mirrors_a_lone_side_view(self) -> None:
         proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--facing", "right")
