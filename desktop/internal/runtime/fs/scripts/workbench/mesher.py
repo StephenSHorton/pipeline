@@ -52,11 +52,50 @@ def gradient(fn, p: np.ndarray, eps: float) -> np.ndarray:
     return g
 
 
+def join_checkerboards(d: np.ndarray, h: float, rounds: int = 64) -> np.ndarray:
+    """Samples with no cell face whose corners alternate inside / outside around it.
+
+    On such a face all four edges cross, so the two cells either side of it share four quads and the edge between
+    their vertices gets four triangles: the mesh is no longer watertight. Smooth blobs almost never do this, but
+    noise wobbling a cap that lies along a grid plane does. The fix joins the two inside corners: the outside corner
+    nearest the surface is moved just inside. That moves the surface by under a cell, and since samples only ever
+    go outside -> inside, the loop must end.
+    """
+    d = d.copy()
+    for _ in range(rounds):
+        inside = d < 0
+        flip = np.zeros(d.shape, bool)
+        for a in range(3):
+            b, c = (a + 1) % 3, (a + 2) % 3
+
+            def corner(ob: int, oc: int):
+                sl = [slice(None)] * 3
+                sl[b] = slice(ob, d.shape[b] - 1 + ob)
+                sl[c] = slice(oc, d.shape[c] - 1 + oc)
+                return tuple(sl)
+
+            ring = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)]
+            s = [inside[r] for r in ring]
+            checker = (s[0] == s[2]) & (s[1] == s[3]) & (s[0] != s[1])
+            if not checker.any():
+                continue
+            # The outside pair's member nearer the surface (smaller distance) is the one to pull in.
+            v = [np.where(inside[r], np.inf, d[r]) for r in ring]
+            pick = np.argmin(np.stack(v), axis=0)
+            for k, r in enumerate(ring):
+                flip[r] |= checker & (pick == k)
+        if not flip.any():
+            return d
+        d[flip] = -1e-9 * h
+    return d
+
+
 def surface_nets(fn, lo: np.ndarray, h: float, n: np.ndarray):
     """Vertices (V, 3) and outward triangles (F, 3) of fn's zero set on the grid lo + h * index."""
     axes = [lo[a] + h * np.arange(n[a]) for a in range(3)]
     X, Y, Z = np.meshgrid(*axes, indexing="ij")
     d = fn(np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)).reshape(tuple(n))
+    d = join_checkerboards(d, h)
     inside = d < 0
     cells = tuple(n - 1)
     total = np.zeros(cells + (3,))
@@ -146,7 +185,8 @@ def mesh_clay(blobs, grid: int = 96, project: int = 3) -> trimesh.Trimesh:
     g = gradient(fn, verts, eps)
     normals = g / np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
     mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-    mesh.merge_vertices()
+    # No merge_vertices: surface nets already gives one vertex per cell, and after projection two cells on a noisy
+    # surface can land on the same point; merging them pinches the mesh (an edge with four triangles).
     mesh.remove_unreferenced_vertices()
     if mesh.volume < 0:
         mesh.invert()

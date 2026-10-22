@@ -172,9 +172,12 @@ BLOB = {
     "type": "object",
     "description": "a clay blob (Clide3D field names). form: {type: Sphere|Ellipsoid|Capsule|Box|Torus|Cylinder, "
                    "and its dims: Sphere radius; Ellipsoid radii [x,y,z]; Capsule radius, height; Box size [x,y,z], "
-                   "rounding; Torus major, minor; Cylinder radius, height (along local Y)}. op add|carve, blend "
+                   "rounding; Torus major, minor; Cylinder radius, height (along local Y), rounding (rim radius, m), "
+                   "bulge (barrel: radius grows by bulge*radius at mid-height, -0.5..1)}. op add|carve, blend "
                    "(smooth-min radius, m), color [r,g,b] 0..1 or 0..255 or '#rrggbb', mirror (also across X=0), "
-                   "translation [x,y,z] m, rotation [x,y,z] Euler XYZ degrees. Y is up, +Z is the front.",
+                   "translation [x,y,z] m, rotation [x,y,z] Euler XYZ degrees, noise {amp, scale, seed, octaves} "
+                   "(surface wobble in the blob's frame; amp is clamped to keep it a distance). Y is up, +Z is the "
+                   "front. For ground contact carve a wide Box under the floor (its blend rounds the edge).",
     "properties": {
         "name": {"type": "string"},
         "form": {"type": "object"},
@@ -184,6 +187,14 @@ BLOB = {
         "mirror": {"type": "boolean"},
         "translation": VEC3,
         "rotation": VEC3,
+        "noise": {"type": ["object", "null"],
+                  "description": "amp: most the surface moves (m); scale: feature size (m), keep it at least 4 grid "
+                                 "cells; seed: integer; octaves 1-4 (default 2). amp 0 or null turns it off.",
+                  "properties": {"amp": {"type": "number", "minimum": 0},
+                                 "scale": {"type": "number", "minimum": 0},   # clay refuses 0 itself
+                                 "seed": {"type": "integer"},
+                                 "octaves": {"type": "integer", "minimum": 1, "maximum": 4}},
+                  "additionalProperties": False},
     },
     "required": ["name", "form"],
     "additionalProperties": False,
@@ -452,6 +463,9 @@ class Workbench:
                     same = form.get("type", d["form"]["type"]) == d["form"]["type"]
                     d["form"] = {**d["form"], **form} if same else dict(form)
                     d["form"].pop("note", None)
+                if isinstance(patch.get("noise"), dict) and d.get("noise"):
+                    # Like form: {"amp": 0.02} changes the amp and keeps the seed the bale was tuned with.
+                    patch["noise"] = {**d["noise"], **patch["noise"]}
                 d.update(patch)
                 blobs[i] = clay.Blob.from_dict(d)
                 clay.from_json([b.to_dict() for b in blobs])  # a rename onto another blob's name
@@ -629,7 +643,8 @@ class Workbench:
                  _obj({"stem": STEM, "blobs": {"type": "array", "items": BLOB, "minItems": 1},
                        "replace": {"type": "boolean"}}, ("stem", "blobs")), self.clay_set),
             Tool("clay_edit", "Change one blob: patch holds the fields to change (form merges unless its type "
-                 "changes; name renames). patch {remove: true} deletes it.",
+                 "changes; noise merges too, and noise null or amp 0 turns it off; name renames). patch "
+                 "{remove: true} deletes it.",
                  _obj({"stem": STEM, "name": {"type": "string"}, "patch": {"type": "object"}},
                       ("stem", "name", "patch")), self.clay_edit),
             Tool("clay_mesh", "Mesh the clay to out/<stem>/workbench/clay.glb: surface nets, UVs, blob colours "

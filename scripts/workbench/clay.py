@@ -11,6 +11,19 @@ Field names follow Clide3D (github.com/addamb/clide3d) so the two projects can s
 has no Cylinder; its nearest form is a Lathe (a revolved profile), so a Cylinder is saved with a note
 saying so, and a Lathe with cylinder dims loads as a Cylinder.
 
+Three things keep a blocked-out shape from reading as a CAD primitive:
+- A Cylinder's `rounding` (rim radius, like Box's) and `bulge` (barrel: the radius grows by bulge * radius at
+  mid-height, back to the plain radius at the caps). A rolled bale has soft rims and a fat middle.
+- A blob's `noise`: {amp, scale, seed, octaves}, seeded gradient noise added to that blob's distance, so the
+  surface wanders by up to `amp` metres in features about `scale` across. It lives on the blob, in the blob's
+  own frame, rather than on the whole clay: Clide3D's noise is a sculpt brush applied to a finished mesh, but
+  here a blob's noise moves and mirrors with the blob, a smooth part can sit beside a rough one, and a carve
+  (a cut face, a ground plane) stays as clean as it was authored. Clide3D blobs have no noise field and
+  ignore it.
+- Ground contact is a carve, not a field: a wide Box carved away below the floor gives a flat contact patch,
+  and its `blend` rounds the sag edge. A flatten field on the blob would be a plane in the blob's own frame,
+  which tilts with its rotation; a carve is in world space and already composes.
+
 Units are metres, Y is up, rotation is Euler XYZ in degrees, colour is sRGB 0..1.
 """
 from __future__ import annotations
@@ -29,8 +42,12 @@ FORMS = {
     "Capsule": {"radius": None, "height": None},   # height: total, caps included, along local Y
     "Box": {"size": None, "rounding": 0.0},        # size: [x, y, z]
     "Torus": {"major": None, "minor": None},       # ring in the local XZ plane
-    "Cylinder": {"radius": None, "height": None},  # along local Y
+    "Cylinder": {"radius": None, "height": None, "rounding": 0.0, "bulge": 0.0},  # along local Y
 }
+# Dims added after clay.json files existed: written only when they differ from the default, so an old file
+# loads and saves back byte for byte. (Box's rounding predates this and is always written.)
+OPTIONAL_DIMS = {("Cylinder", "rounding"), ("Cylinder", "bulge")}
+BULGE_RANGE = (-0.5, 1.0)   # -0.5 pinches the waist to half; past 1 the barrel is nearly a ball
 LATHE_NOTE = "Clide3D has no Cylinder; it calls this a Lathe (a revolved rectangle profile)."
 OPS = ("add", "carve")
 
@@ -62,7 +79,9 @@ class Form:
         return cls(kind, dims)
 
     def to_dict(self) -> dict:
-        out = {"type": self.type, **self.dims}
+        dims = {k: v for k, v in self.dims.items()
+                if (self.type, k) not in OPTIONAL_DIMS or v != FORMS[self.type][k]}
+        out = {"type": self.type, **dims}
         if self.type == "Cylinder":
             out["note"] = LATHE_NOTE
         return out
@@ -73,8 +92,11 @@ class Form:
             return np.full(3, d["radius"])
         if self.type == "Ellipsoid":
             return np.abs(np.asarray(d["radii"]))
-        if self.type in ("Capsule", "Cylinder"):
+        if self.type == "Capsule":
             return np.array([d["radius"], max(d["height"] / 2, d["radius"]), d["radius"]])
+        if self.type == "Cylinder":
+            r = d["radius"] * (1 + max(_bulge(d), 0.0))
+            return np.array([r, max(d["height"] / 2, d["radius"]), r])
         if self.type == "Box":
             return np.abs(np.asarray(d["size"])) / 2
         r = d["major"] + d["minor"]
@@ -106,9 +128,116 @@ class Form:
         if self.type == "Torus":
             ring = np.hypot(x, z) - d["major"]
             return np.hypot(ring, y) - d["minor"]
-        # Cylinder
-        q = np.stack([np.hypot(x, z) - d["radius"], np.abs(y) - d["height"] / 2], axis=1)
-        return np.minimum(q.max(axis=1), 0.0) + np.linalg.norm(np.maximum(q, 0.0), axis=1)
+        # Cylinder. Rounding is the Box trick in 2D (shrink by the rim radius, take the distance, grow back), so a
+        # rounded straight cylinder is still exact.
+        r, half = d["radius"], d["height"] / 2
+        rr = min(max(d["rounding"], 0.0), r, half)
+        radial = np.hypot(x, z) - r
+        bulge = _bulge(d)
+        if bulge:
+            # Barrel: a parabola in y, bulge * r at the middle and 0 at the caps (staves meet the lid at an angle,
+            # as on a real barrel). Measured straight out, a sloped wall reads too far by sqrt(1 + slope^2);
+            # dividing by it keeps the estimate close for gentle bulges (no longer exact).
+            t = np.clip(y / half, -1.0, 1.0)
+            radial = radial - bulge * r * (1.0 - t * t)
+            slope = 2.0 * bulge * r * t / half
+            radial = radial / np.sqrt(1.0 + slope * slope)
+        q = np.stack([radial + rr, np.abs(y) - half + rr], axis=1)
+        return np.minimum(q.max(axis=1), 0.0) + np.linalg.norm(np.maximum(q, 0.0), axis=1) - rr
+
+
+def _bulge(d: dict) -> float:
+    return float(np.clip(d.get("bulge", 0.0), *BULGE_RANGE))
+
+
+# ------------------------------------------------------------ noise
+# Gradient (Perlin) noise from an integer hash rather than a permutation table drawn from an RNG: a seed gives
+# the same surface on every machine and numpy version, and nothing is kept between calls.
+_GRADIENTS = np.array([[1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0], [1, 0, 1], [-1, 0, 1], [1, 0, -1],
+                       [-1, 0, -1], [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1]], dtype=np.float64)
+# Measured over 400k points: one octave stays within about +-1 and its slope under 3.1 per lattice cell.
+NOISE_PEAK_SLOPE = 3.1
+# The most a blob's noise may tilt its distance field. At 0.5 the field's gradient stays between 0.5 and 1.5,
+# so it is still a usable distance estimate: surface nets, the projection step and blends all behave.
+NOISE_MAX_SLOPE = 0.5
+OCTAVES = (1, 4)
+
+
+def _hash(ix: np.ndarray, iy: np.ndarray, iz: np.ndarray, seed: int) -> np.ndarray:
+    # Negative lattice indices wrap to uint32 the same way everywhere, and uint32 array products wrap silently.
+    h = ((ix.astype(np.uint32) * np.uint32(0x8DA6B343)) ^ (iy.astype(np.uint32) * np.uint32(0xD8163841))
+         ^ (iz.astype(np.uint32) * np.uint32(0xCB1AB31F)) ^ np.uint32((seed * 0x9E3779B9) & 0xFFFFFFFF))
+    h ^= h >> np.uint32(15)
+    h *= np.uint32(0x2C1B3C6D)
+    h ^= h >> np.uint32(12)
+    h *= np.uint32(0x297A2D39)
+    h ^= h >> np.uint32(15)
+    return h
+
+
+def perlin(p: np.ndarray, seed: int) -> np.ndarray:
+    """One octave of gradient noise at points (N, 3), lattice spacing 1, values within about +-1."""
+    i = np.floor(p).astype(np.int64)
+    f = p - i
+    u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0)   # quintic fade: no creases along the lattice planes
+    corner = []
+    for c in range(8):
+        o = np.array([c & 1, (c >> 1) & 1, (c >> 2) & 1])
+        g = _GRADIENTS[_hash(i[:, 0] + o[0], i[:, 1] + o[1], i[:, 2] + o[2], seed) % np.uint32(12)]
+        corner.append((g * (f - o)).sum(axis=1))
+    x = [corner[k] + (corner[k + 1] - corner[k]) * u[:, 0] for k in (0, 2, 4, 6)]
+    y = [x[k] + (x[k + 1] - x[k]) * u[:, 1] for k in (0, 2)]
+    return y[0] + (y[1] - y[0]) * u[:, 2]
+
+
+@dataclass
+class Noise:
+    """Displacement noise on a blob: up to about `amp` metres, features about `scale` metres across."""
+    amp: float
+    scale: float
+    seed: int = 0
+    octaves: int = 2
+
+    @staticmethod
+    def max_amp(scale: float, octaves: int) -> float:
+        """Largest amp whose slope stays under NOISE_MAX_SLOPE. Octave k has weight 0.5^k at frequency 2^k and
+        the sum is divided by its weights, so the worst-case slope is peak * octaves / weights / scale."""
+        weights = sum(0.5 ** k for k in range(octaves))
+        return NOISE_MAX_SLOPE * scale * weights / (NOISE_PEAK_SLOPE * octaves)
+
+    @classmethod
+    def from_dict(cls, d, blob: str) -> "Noise | None":
+        if d is None:
+            return None
+        if not isinstance(d, dict):
+            raise ValueError(f"blob {blob!r}: noise must be {{amp, scale, seed?, octaves?}}")
+        if "scale" not in d:
+            raise ValueError(f"blob {blob!r}: noise needs 'scale' (feature size, m)")
+        scale = float(d["scale"])
+        if scale <= 0:
+            raise ValueError(f"blob {blob!r}: noise scale must be > 0")
+        octaves = int(d.get("octaves", 2))
+        if not OCTAVES[0] <= octaves <= OCTAVES[1]:
+            raise ValueError(f"blob {blob!r}: noise octaves must be {OCTAVES[0]}..{OCTAVES[1]}")
+        amp = float(d.get("amp", 0.0))
+        if amp <= 0:
+            return None   # amp 0 is how clay_edit switches noise off
+        # Clamped here, so clay.json records the noise that was actually meshed.
+        amp = round(min(amp, cls.max_amp(scale, octaves)), 6)
+        return cls(amp=amp, scale=scale, seed=int(d.get("seed", 0)), octaves=octaves)
+
+    def to_dict(self) -> dict:
+        return {"amp": self.amp, "scale": self.scale, "seed": self.seed, "octaves": self.octaves}
+
+    def __call__(self, p: np.ndarray) -> np.ndarray:
+        """Displacement at local points (N, 3), within about +-amp."""
+        total = np.zeros(len(p))
+        weights = 0.0
+        for k in range(self.octaves):
+            # Each octave gets its own seed and a fractional offset, so lattice points never line up across them.
+            total += 0.5 ** k * perlin(p * (2.0 ** k / self.scale) + 0.31 * (k + 1), self.seed * 4 + k)
+            weights += 0.5 ** k
+        return self.amp * total / weights
 
 
 def _vec3(value, name: str) -> list[float]:
@@ -143,6 +272,7 @@ class Blob:
     mirror: bool = False
     translation: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
     rotation: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    noise: Noise | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Blob":
@@ -162,10 +292,11 @@ class Blob:
             mirror=bool(d.get("mirror", False)),
             translation=_vec3(d.get("translation", [0, 0, 0]), "translation"),
             rotation=_vec3(d.get("rotation", [0, 0, 0]), "rotation"),
+            noise=Noise.from_dict(d.get("noise"), str(d["name"])),
         )
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "name": self.name,
             "form": self.form.to_dict(),
             "op": self.op,
@@ -175,6 +306,9 @@ class Blob:
             "translation": list(self.translation),
             "rotation": list(self.rotation),
         }
+        if self.noise is not None:  # only when set, so a clay.json from before noise saves back unchanged
+            out["noise"] = self.noise.to_dict()
+        return out
 
     def _rot(self) -> Rotation:
         return Rotation.from_euler("xyz", self.rotation, degrees=True)
@@ -183,13 +317,18 @@ class Blob:
         """This blob's own distance at world points, mirror copy included."""
         inv = self._rot().inv()
         t = np.asarray(self.translation, dtype=np.float64)
-        d = self.form.sdf(inv.apply(p - t))
+        d = self._local_sdf(inv.apply(p - t))
         if self.mirror:
             # The reflected copy seen from p is the original seen from p reflected; min() is right even when
             # the blob straddles X = 0 (|x| folding is not).
             q = p * np.array([-1.0, 1.0, 1.0])
-            d = np.minimum(d, self.form.sdf(inv.apply(q - t)))
+            d = np.minimum(d, self._local_sdf(inv.apply(q - t)))
         return d
+
+    def _local_sdf(self, local: np.ndarray) -> np.ndarray:
+        # Noise is read in the blob's own frame: it travels with the blob, and the mirror copy is its reflection.
+        d = self.form.sdf(local)
+        return d + self.noise(local) if self.noise is not None else d
 
     def bounds(self) -> tuple[np.ndarray, np.ndarray]:
         half = np.abs(self._rot().as_matrix()) @ self.form.half_extent()
@@ -198,7 +337,8 @@ class Blob:
         if self.mirror:
             lo = np.minimum(lo, (t * [-1, 1, 1]) - half)
             hi = np.maximum(hi, (t * [-1, 1, 1]) + half)
-        return lo - self.blend, hi + self.blend
+        pad = self.blend + (self.noise.amp if self.noise is not None else 0.0)
+        return lo - pad, hi + pad
 
 
 def smin(a: np.ndarray, b: np.ndarray, k: float) -> np.ndarray:

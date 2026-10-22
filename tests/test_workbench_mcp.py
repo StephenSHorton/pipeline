@@ -177,6 +177,17 @@ class ToolTests(Base):
         self.assertAlmostEqual(float(np.ptp(loaded.vertices[:, 1])), 1.0, places=2)
         scene = json.loads((glb.parent / "scene.json").read_text())
         self.assertEqual(scene["objects"][0]["kind"], "clay")
+        # Character fields go through the schema, and a noise patch keeps the seed it does not mention.
+        self.ok("clay_edit", {"stem": "bale", "name": "bale", "patch": {
+            "form": {"rounding": 0.1, "bulge": 0.05}, "noise": {"amp": 0.01, "scale": 0.15, "seed": 4}}})
+        self.ok("clay_edit", {"stem": "bale", "name": "bale", "patch": {"noise": {"amp": 0.012}}})
+        got, _ = self.ok("clay_get", {"stem": "bale"})
+        self.assertEqual(got["blobs"][0]["noise"]["seed"], 4)
+        self.assertEqual(got["blobs"][0]["noise"]["amp"], 0.012)
+        self.assertEqual(got["blobs"][0]["form"]["bulge"], 0.05)
+        self.ok("clay_edit", {"stem": "bale", "name": "bale", "patch": {"noise": None}})
+        got, _ = self.ok("clay_get", {"stem": "bale"})
+        self.assertNotIn("noise", got["blobs"][0])
         self.assertEqual(scene["objects"][0]["mesh"], "clay.glb")
         self.assertEqual([p.name for p in glb.parent.iterdir() if p.name.startswith(".")], [])  # no temp left
         snaps = self.factory.snapshots()
