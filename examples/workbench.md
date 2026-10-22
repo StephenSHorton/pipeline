@@ -90,7 +90,9 @@ Not built yet:
 ## Walkthrough: the hay bale
 
 The current bale (`out/mlg-hay_bale/psx.glb`) came from one photo, so Hunyuan guessed its depth and made a
-rounded box. Through the workbench only:
+rounded box. Through the workbench only, in the same asset: every write below is kept as a new version of
+`mlg-hay_bale` (the app's Versions panel; `pick_take` goes back), so never make a sibling asset such as
+`mlg-hay_bale_v2` to compare.
 
 1. **Measure the current bale:** `measure {"stem": "mlg-hay_bale"}` gives `circularity 0.71` from the side.
    A round bale should be above 0.9.
@@ -98,17 +100,17 @@ rounded box. Through the workbench only:
    A plain cylinder reads as a CAD part ("it looks like a giant cylinder"), so give it soft rims, a slight barrel,
    a straw wobble, and a flat patch where it sits on the ground (see [Clay character](#clay-character)):
    ```json
-   {"stem": "mlg-hay_bale_v2", "replace": true, "blobs": [
+   {"stem": "mlg-hay_bale", "replace": true, "blobs": [
      {"name": "bale", "form": {"type": "Cylinder", "radius": 0.75, "height": 1.2, "rounding": 0.12, "bulge": 0.05},
       "rotation": [90, 0, 0], "color": "#c8a24f", "noise": {"amp": 0.015, "scale": 0.15, "seed": 1}},
      {"name": "ground", "op": "carve", "form": {"type": "Box", "size": [4, 1, 4]},
       "translation": [0, -1.23, 0], "blend": 0.04}]}
    ```
-3. **Mesh it:** `clay_mesh {"stem": "mlg-hay_bale_v2", "height": 1.5}`, then `measure` it with `lod: "clay"`.
+3. **Mesh it:** `clay_mesh {"stem": "mlg-hay_bale", "height": 1.5}`, then `measure` it with `lod: "clay"`.
    Circularity from the end is about 0.94 (0.99 for the plain cylinder; the flat bottom and the wobble take
    the rest). `height` scales what is left after the ground cut, so it is the resting height.
 4. **Bake the photo on with the pipeline:** `generate` with
-   `{"stem": "mlg-hay_bale_v2", "image": "in/mlg/hay_bale.jpg", "mesh": "out/mlg-hay_bale_v2/workbench/clay.glb",
+   `{"stem": "mlg-hay_bale", "image": "in/mlg/hay_bale.jpg", "mesh": "out/mlg-hay_bale/workbench/clay.glb",
    "paint": false, "quality": "textured"}`. No model loads. Poll `job_status` until it is done.
    - The workbench sends `fill: "photo"`: the photo of the round end is mirrored onto the other end and a swatch
      of its straw covers the rolled side. Without it (the first remake) everything the photo did not see stayed
@@ -118,8 +120,8 @@ rounded box. Through the workbench only:
    - Use `quality: "textured"` plus the `psx` tool rather than `quality: "psx"`, because generate.sh's own PS1 step
      runs the facing check, and that check asks ollama.
 5. **Make the PS1 model:** `psx` with
-   `{"stem": "mlg-hay_bale_v2", "glb": "out/mlg-hay_bale_v2/textured_photo.glb", "height": 60, "facing": "camera"}`.
-6. **Check it:** `look {"stem": "mlg-hay_bale_v2"}` (its `psx.glb`, and the app's PSX tab shows the same model) and
+   `{"stem": "mlg-hay_bale", "glb": "out/mlg-hay_bale/textured_photo.glb", "height": 60, "facing": "camera"}`.
+6. **Check it:** `look {"stem": "mlg-hay_bale"}` (its `psx.glb`, and the app's PSX tab shows the same model) and
    `compare_reference` against the photo.
 
 Stop there for review.
