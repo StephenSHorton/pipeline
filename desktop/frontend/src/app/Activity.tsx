@@ -77,7 +77,10 @@ export function ActivityDrawer() {
         size="hud"
         role="region"
         aria-label="Activity"
-        className={cn(PANEL, "min-h-0 flex-1 rounded-[20px] bg-card p-0 text-ink")}
+        // The card colour is 90% white and a HUD panel has no blur: over the page colour it reads as solid, so
+        // the viewer's toolbar underneath never shows through the list.
+        className={cn(PANEL, "min-h-0 flex-1 rounded-[20px] p-0 text-ink")}
+        style={{ background: "linear-gradient(var(--card), var(--card)), var(--background)" }}
       >
         <div className="flex items-center gap-2 border-b border-[var(--topbar-border)] py-2 pr-2 pl-4">
           <h2 className="flex-1 text-[0.95rem] font-semibold">Activity</h2>
