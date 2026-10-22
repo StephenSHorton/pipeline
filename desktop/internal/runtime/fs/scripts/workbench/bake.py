@@ -51,10 +51,11 @@ def _run(root: Path, argv: list[str], env: dict[str, str] | None = None) -> str:
 
 def retexture(root: Path, glb: Path, out: Path, views: list[Path], first_facing: str | None = None,
               mirror: bool = False, erode: float | None = None, keep: float | None = None,
-              first_wins: bool = False, mirror_ends: bool = False) -> dict:
+              first_wins: bool = False, mirror_ends: bool = False, delight: bool = False) -> dict:
     """retexture.py glb -o out --view ... Only the first view's facing can be stated; the others are read from
     their file names (front, back, left, right, side), as retexture does. mirror_ends (with mirror) passes
-    --mirror-ends: a front-on or back-on view mirrors onto the opposite end, not through the z mid-plane."""
+    --mirror-ends: a front-on or back-on view mirrors onto the opposite end, not through the z mid-plane. delight
+    passes --delight 1: every view's own lighting is taken out before it bakes (delight.py)."""
     argv = [str(SCRIPTS / "retexture.py"), str(glb), "-o", str(out)]
     for v in views:
         argv += ["--view", str(v)]
@@ -70,6 +71,8 @@ def retexture(root: Path, glb: Path, out: Path, views: list[Path], first_facing:
         argv += ["--keep", str(keep)]
     if first_wins and len(views) > 1:
         argv.append("--first-wins")
+    if delight:
+        argv += ["--delight", "1"]
     log = _run(root, argv)
     if not out.is_file():
         raise BakeError("retexture wrote no GLB")
@@ -84,12 +87,15 @@ def retexture(root: Path, glb: Path, out: Path, views: list[Path], first_facing:
     return info
 
 
-def fill(root: Path, glb: Path, photo: Path, out: Path, keep: float | None = None) -> dict:
-    """fill.py glb --photo photo -o out (glb's .cover.png from retexture). Returns its .fill.json report."""
+def fill(root: Path, glb: Path, photo: Path, out: Path, keep: float | None = None, delight: bool = False) -> dict:
+    """fill.py glb --photo photo -o out (glb's .cover.png from retexture). Returns its .fill.json report. delight
+    (as the bake had it) takes the swatch from the de-lit photo."""
     argv = [str(SCRIPTS / "workbench" / "fill.py"), str(glb), "-o", str(out), "--photo", str(photo),
             "--cover", str(glb.with_suffix(".cover.png"))]
     if keep is not None:
         argv += ["--keep", str(keep)]
+    if delight:
+        argv += ["--delight", "1"]
     _run(root, argv)
     report = out.with_suffix(".fill.json")
     try:

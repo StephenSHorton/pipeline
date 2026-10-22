@@ -124,6 +124,11 @@ class ProtocolTests(Base):
             for key, prop in s["properties"].items():
                 self.assertTrue("type" in prop or "enum" in prop, f"{t['name']}.{key}")
             json.dumps(s)
+        # generate and bake_photo take delight (a boolean; the workbench defaults it to true).
+        by_name = {t["name"]: t for t in listed}
+        for name in ("generate", "bake_photo"):
+            self.assertEqual(by_name[name]["inputSchema"]["properties"]["delight"], {"type": "boolean"}, name)
+            self.assertIn("delight (default true", by_name[name]["description"])
 
     def test_bad_arguments(self) -> None:
         self.assertEqual(self.rpc("tools/call", {"name": "nope", "arguments": {}})["error"]["code"],
@@ -428,6 +433,45 @@ class ToolTests(Base):
         out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view, "fill": "none"})
         self.assertIn("--mirror-ends", argvs[-1])
 
+    def test_bake_photo_de_lights_by_default(self) -> None:
+        # A drum's round end in the photo with its right half in shadow: by default retexture and fill both get
+        # --delight 1, and the de-lit bake is brighter where the photo was shaded; delight false is the plain bake.
+        from PIL import Image
+
+        from workbench import mesher
+
+        drum = trimesh.creation.cylinder(radius=0.5, height=0.6, sections=24)
+        vmap, faces, uvs = mesher.unwrap(drum.vertices, drum.faces, 256)
+        mesh = trimesh.Trimesh(np.asarray(drum.vertices)[vmap], faces, process=False)
+        mat = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (256, 256), (200, 160, 80)))
+        mesh.visual = trimesh.visual.TextureVisuals(uv=uvs, material=mat)
+        glb = self.asset("bale", mesh, "textured.glb")
+        rng = np.random.default_rng(0)
+        a = np.zeros((128, 128, 4), np.uint8)
+        yy, xx = np.mgrid[:128, :128]
+        shade = np.where(xx > 64, 0.25, 1.0)[..., None]
+        a[..., :3] = np.clip(rng.normal((120, 150, 60), 15, (128, 128, 3)) * shade, 0, 255).astype(np.uint8)
+        a[..., 3] = np.where((yy - 64) ** 2 + (xx - 64) ** 2 <= 54 ** 2, 255, 0)
+        Image.fromarray(a, "RGBA").save(self.root / "out" / "bale" / "lifted.png")
+        view = [{"path": "out/bale/lifted.png", "facing": "camera"}]
+        argvs = []
+        real = tools.bake._run
+        self.addCleanup(setattr, tools.bake, "_run", real)
+        tools.bake._run = lambda root, argv, env=None: (argvs.append(argv), real(root, argv, env))[1]
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view})
+        self.assertTrue(out["delight"])
+        self.assertEqual(out["fill"]["delight"], 1.0)
+        retex, fill = argvs[-2], argvs[-1]
+        self.assertEqual(retex[retex.index("--delight") + 1], "1")
+        self.assertEqual(fill[fill.index("--delight") + 1], "1")
+        lit = np.asarray(Image.open((self.root / out["glb"]).with_suffix(".albedo.png")).convert("RGB"), float)
+        out, _ = self.ok("bake_photo", {"stem": "bale", "glb": glb, "views": view, "delight": False})
+        self.assertFalse(out["delight"])
+        self.assertNotIn("--delight", argvs[-2])
+        self.assertNotIn("--delight", argvs[-1])
+        plain = np.asarray(Image.open((self.root / out["glb"]).with_suffix(".albedo.png")).convert("RGB"), float)
+        self.assertGreater(lit.mean(), plain.mean() + 3)
+
     def test_old_render_folders_are_removed(self) -> None:
         glb = self.asset("synth", quadruped())
         first, _ = self.ok("look", {"glb": glb, "views": ["side"], "size": 64})
@@ -451,13 +495,17 @@ class ToolTests(Base):
         self.assertEqual((method, path), ("POST", "/generate"))
         self.assertEqual(body, {"image": "out/bale/photo.png", "quality": "textured", "stem": "bale",
                                 "mesh": "out/bale/workbench/clay.glb", "paint": False, "fill": "photo",
-                                "facing": "right", "psx_height": "40"})
+                                "delight": True, "facing": "right", "psx_height": "40"})
         # The workbench fills by default; fill none and mirror_ends pass through, and a draft (no bake) sends no fill.
         self.ok("generate", {"image": "out/bale/photo.png", "fill": "none", "mirror_ends": False})
         body = self.factory.calls[-1][2]
         self.assertEqual((body["fill"], body["mirror_ends"]), ("none", False))
         self.ok("generate", {"image": "out/bale/photo.png", "quality": "draft"})
         self.assertNotIn("fill", self.factory.calls[-1][2])
+        self.assertNotIn("delight", self.factory.calls[-1][2])
+        # De-lit by default; delight false passes through as false.
+        self.ok("generate", {"image": "out/bale/photo.png", "delight": False})
+        self.assertIs(self.factory.calls[-1][2]["delight"], False)
         self.assertTrue(self.call("generate", {"image": "out/bale/photo.png", "fill": "swatch"})["isError"])
         res = self.call("generate", {"image": "out/bale/photo.png", "psx": {"facing": "up"}})
         self.assertTrue(res["isError"])

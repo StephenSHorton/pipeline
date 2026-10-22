@@ -9,6 +9,8 @@
 # --fill photo gives every texel the photo: a front-on (or back-on) photo is also mirrored onto the opposite end
 # (--mirror-ends off keeps it to the one end), and scripts/workbench/fill.py paints a swatch of the photo's own
 # subject onto whatever the bake still did not reach. Off by default: a make without it is as before.
+# --delight on takes the photo's own lighting out before the bake (scripts/delight.py, retexture --delight and the
+# fill's swatch): a side in shadow in the picture does not bake in as a dark patch. Off by default, as before.
 # Anything that falls back prints 'DEGRADED <stage> <code>: <message>' and lands in out/<stem>/degraded.json and
 # inspect.json's "degraded".
 set -euo pipefail
@@ -43,10 +45,11 @@ MESH_IN=""
 PAINT="on"
 FILL="none"
 MIRROR_ENDS=""
+DELIGHT="off"
 NO_PICTURE="3D needs a picture. Draw or add one first."
 
 usage() {
-  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N] [--mesh <glb>] [--paint on|off] [--fill photo|none] [--mirror-ends on|off]" >&2
+  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N] [--mesh <glb>] [--paint on|off] [--fill photo|none] [--mirror-ends on|off] [--delight on|off]" >&2
   echo "       psx: [--facing camera|right|left|away] [--psx-height N] [--psx-faces N] [--psx-atlas N] [--psx-up z|y] [--psx-name name]" >&2
   exit 2
 }
@@ -77,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --paint) PAINT="$2"; shift 2 ;;
     --fill) FILL="$2"; shift 2 ;;
     --mirror-ends) MIRROR_ENDS="$2"; shift 2 ;;
+    --delight) DELIGHT="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -137,6 +141,10 @@ case "$MIRROR_ENDS" in
   "") [[ "$FILL" == "photo" ]] && MIRROR_ENDS="on" || MIRROR_ENDS="off" ;;
   on|off) ;;
   *) echo "generate: unknown --mirror-ends $MIRROR_ENDS (on|off)" >&2; exit 2 ;;
+esac
+case "$DELIGHT" in
+  on|off) ;;
+  *) echo "generate: unknown --delight $DELIGHT (on|off)" >&2; exit 2 ;;
 esac
 FILL_CLI="$ROOT/scripts/workbench/fill.py"
 if [[ "$FILL" == "photo" && ! -f "$FILL_CLI" ]]; then
@@ -765,6 +773,10 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   fi
   # Drop the cutout's edge ring at PS1 sizes.
   [[ "$WANT_PSX" -eq 1 ]] && VIEW_ARGS+=(--erode 0.008)
+  # Every view de-lit before it bakes (last: the fill below reads the first picture at VIEW_ARGS[1]).
+  DELIGHT_ARGS=()
+  [[ "$DELIGHT" == "on" ]] && DELIGHT_ARGS=(--delight 1)
+  VIEW_ARGS+=(${DELIGHT_ARGS[@]+"${DELIGHT_ARGS[@]}"})
   echo "generate: retexture with ${PHOTO_VIEW:+the photo (wins), then }${NAMED[*]}${OPPOSITE:+ (mirror: $([[ " ${VIEW_ARGS[*]} " == *" --mirror "* ]] && echo on || echo off))}"
   if "$PYTHON" "$ROOT/scripts/retexture.py" "$TEXTURED" -o "$OUT/textured_photo.glb" "${VIEW_ARGS[@]}"; then
     [[ -f "$OUT/textured_photo.glb" ]] && FINAL="$OUT/textured_photo.glb"
@@ -778,7 +790,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
     if [[ "$FINAL" != "$OUT/textured_photo.glb" ]]; then
       degrade fill skipped "no photo bake to fill; the texture is used as is"
     elif "$PYTHON" "$FILL_CLI" "$OUT/textured_photo.glb" -o "$OUT/textured_photo.glb" --photo "$FILL_PHOTO" \
-         --cover "$OUT/textured_photo.cover.png"; then
+         --cover "$OUT/textured_photo.cover.png" ${DELIGHT_ARGS[@]+"${DELIGHT_ARGS[@]}"}; then
       echo "generate: filled the texels the photo missed from $(basename "$FILL_PHOTO")"
     else
       degrade fill failed "filling what the photo missed failed; those texels keep the base texture"

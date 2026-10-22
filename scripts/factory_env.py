@@ -221,6 +221,7 @@ def generate_argv(
     paint: bool = True,
     fill: str | None = None,
     mirror_ends: bool | None = None,
+    delight: bool | None = None,
 ) -> list[str]:
     cmd = [
         str(generate_script(root)),
@@ -257,6 +258,9 @@ def generate_argv(
         cmd += ["--fill", "photo"]
     if mirror_ends is not None:
         cmd += ["--mirror-ends", "on" if mirror_ends else "off"]
+    # The photo's lighting out before the bake; only when stated (generate.sh's default is off, a make as before).
+    if delight is not None:
+        cmd += ["--delight", "on" if delight else "off"]
     # --quality psx options: facing, height, faces, atlas, up, name.
     for key, value in (psx or {}).items():
         if value not in (None, ""):

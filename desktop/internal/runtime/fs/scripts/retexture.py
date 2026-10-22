@@ -7,6 +7,12 @@ generated atlas. Multiple --view images (front/back/top) stack. --mirror also ba
 photo, flipped, onto the far side; with --mirror-ends a front-on (or back-on) one goes onto the opposite end. --first-wins puts the first --view (a real photo) over the
 others instead of averaging it in: the rest (drawn views) fill only where it did not reach.
 
+--delight [strength] takes the photo's own lighting out of every --view before it is baked (scripts/delight.py: the
+shade lifted toward the lit level), drawn views as well as the photo; off, the bake is as before. The silhouette fit
+and the bake mask come from the untouched alpha, so the cameras are the same. Deep shade that needed a lift near
+delight's cap (sky-lit, grey-blue once brightened) splats with its trust as weight, so where it is all the photo had
+the texel's coverage drops below --keep and fill.py paints the material there instead.
+
 Next to the albedo it writes <out>.cover.png: each texel's photo confidence (splat weight, mirror included, clipped
 to 1) as 0..255, so a later pass (workbench/fill.py) knows which texels no photo reached (below --keep * 255).
 """
@@ -22,6 +28,9 @@ import numpy as np
 import trimesh
 from PIL import Image
 from scipy import ndimage
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import delight as _delight  # noqa: E402
 
 
 def look_at(eye, target, up=np.array([0.0, 1.0, 0.0], dtype=np.float32)):
@@ -153,7 +162,10 @@ def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None
     return best
 
 
-def load_photo(path):
+def load_photo(path, delight: float | None = None, with_trust: bool = False):
+    """(rgb, alpha_fit, alpha_bake) of a cut-out. delight > 0: rgb with the photo's shading taken out (delight.py);
+    both masks still come from the photo as it is, so the fit and the bake mask are the same as without.
+    with_trust: a fourth item, delight's per-pixel trust (all ones without delight)."""
     im = Image.open(path).convert("RGBA")
     arr = np.array(im)
     rgb = arr[:, :, :3].astype(np.float32)
@@ -166,6 +178,13 @@ def load_photo(path):
     ring = max(2, int(round(0.008 * max(a.shape))))
     rim = solid & ~ndimage.binary_erosion(solid, iterations=ring)
     alpha_bake = solid & ~(rim & (luma >= 245))
+    trust = np.ones(a.shape, np.float32)
+    if delight:
+        # After the masks: a lifted shadow on the rim must not read as the white halo dropped above.
+        out, _, trust = _delight.delight_full(arr, strength=float(delight))
+        rgb = out[:, :, :3].astype(np.float32)
+    if with_trust:
+        return rgb, alpha_fit, alpha_bake, trust
     return rgb, alpha_fit, alpha_bake
 
 
@@ -191,8 +210,9 @@ def register(pts, vp, alpha_fit):
     return px, py, ndc[:, 2], inb
 
 
-def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, name):
-    """Project one photo from one camera into the atlas accumulators. Returns visible sample count."""
+def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, name, trust=None):
+    """Project one photo from one camera into the atlas accumulators. Returns visible sample count. trust (per photo
+    pixel, 0..1, from delight) scales each sample's weight."""
     th, tw = weight.shape
     ph, pw = rgb.shape[:2]
     vp = perspective(np.deg2rad(40.0), 1.0, 0.05, 40.0) @ look_at(eye, center)
@@ -219,6 +239,8 @@ def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weig
     tx = tx.astype(np.int32)
     ty = ty.astype(np.int32)
     conf = np.clip((ndotv[winners] - 0.12) / 0.55, 0.0, 1.0)
+    if trust is not None:
+        conf = conf * trust[py[winners], px[winners]]
     col = rgb[py[winners], px[winners]]
     for ox in range(-2, 3):
         for oy in range(-2, 3):
@@ -340,6 +362,11 @@ def main() -> int:
     ap.add_argument("--first-wins", action="store_true",
                     help="the first --view bakes over the others, which fill only where it did not land "
                          "(a real photo over drawn views); a weak camera fit for it is averaged in as usual")
+    ap.add_argument("--delight", type=float, nargs="?", const=1.0, default=None, metavar="STRENGTH",
+                    help="take the photo's lighting out of every --view before baking it (delight.py; 1 when given "
+                         "bare, 0 or absent: off): its shade comes up to the lit level instead of baking in as a "
+                         "dark patch, and shade too deep to lift splats with less weight (fill.py covers it). The "
+                         "fit and bake mask use the untouched alpha, so the cameras do not change")
     args = ap.parse_args()
     # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
     # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
@@ -396,7 +423,8 @@ def main() -> int:
     reports = []
 
     for i, (view, off) in enumerate(zip(views, offsets)):
-        rgb, alpha_fit, alpha_bake = load_photo(view)
+        rgb, alpha_fit, alpha_bake, trust = load_photo(view, args.delight, with_trust=True)
+        trust = trust if args.delight else None
         ph, pw = rgb.shape[:2]
         if args.erode > 0:
             r = max(1, int(round(args.erode * max(ph, pw))))
@@ -432,7 +460,7 @@ def main() -> int:
 
         eye = eye_on_sphere(center, rad, az, el)
         acc, wgt = (accum_t, weight_t) if on_top else (accum, weight)
-        splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, acc, wgt, Path(view).name)
+        splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, acc, wgt, Path(view).name, trust)
         if args.mirror:
             # Side-on photo of a near-symmetric subject: the far side is the near side reflected through the
             # sagittal plane (glTF z = centre), so the reflected camera sees it as the photo flipped left-right.
@@ -441,7 +469,8 @@ def main() -> int:
             meye = eye_on_sphere(center, rad, mirror_az(az, off, args.mirror_ends), el)
             splat(pts, nrm, uv_pts, meye, center, rgb[:, ::-1].copy(), alpha_fit[:, ::-1].copy(),
                   alpha_bake[:, ::-1].copy(),
-                  accum_m, weight_m, Path(view).name + " (mirrored)")
+                  accum_m, weight_m, Path(view).name + " (mirrored)",
+                  None if trust is None else trust[:, ::-1].copy())
 
     base = albedo
     if args.mirror:

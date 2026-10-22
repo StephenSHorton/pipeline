@@ -232,6 +232,13 @@ class FactoryEnvTests(unittest.TestCase):
                                            fill="photo", mirror_ends=False)
         self.assertEqual(filled[filled.index("--fill") + 1], "photo")
         self.assertEqual(filled[filled.index("--mirror-ends") + 1], "off")
+        # delight: only when stated, on or off.
+        self.assertNotIn("--delight", plain)
+        delit = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium",
+                                          fill="photo", delight=True)
+        self.assertEqual(delit[delit.index("--delight") + 1], "on")
+        off = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium", delight=False)
+        self.assertEqual(off[off.index("--delight") + 1], "off")
 
     def test_inspect_glb_function_on_triangle(self) -> None:
         import tempfile
@@ -1015,6 +1022,20 @@ class FactoryHttpTests(unittest.TestCase):
         seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "fill": "none"})
         self.assertEqual(seen["fill"], "none")
 
+    def test_generate_takes_delight(self) -> None:
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "quality": "textured"})
+        self.assertIsNone(seen["delight"])
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "quality": "textured",
+                                        "fill": "photo", "delight": True})
+        self.assertIs(seen["delight"], True)
+        self.assertIs(last.get("delight"), True)
+        argv = factory_env.generate_argv(self.root, image=Path(seen["image"]), quality="textured", stem="f",
+                                         poly="medium", delight=seen["delight"])
+        self.assertEqual(argv[argv.index("--delight") + 1], "on")
+        # The query string's "off" is false.
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "delight": "off"})
+        self.assertIs(seen["delight"], False)
+
     def test_generate_refuses_a_bad_fill(self) -> None:
         for body, word in (
             ({"fill": "swatch"}, "fill"),
@@ -1022,6 +1043,9 @@ class FactoryHttpTests(unittest.TestCase):
             ({"fill": "photo", "quality": "draft"}, "draft"),
             ({"fill": "photo", "mirror_ends": "maybe"}, "mirror_ends"),
             ({"fill": "photo", "mirror_ends": 1}, "mirror_ends"),
+            ({"delight": "maybe"}, "delight"),
+            ({"delight": 1}, "delight"),
+            ({"delight": [True]}, "delight"),
         ):
             with self.subTest(body=body):
                 status, payload = http_json(self.base + "/generate", method="POST",

@@ -557,8 +557,32 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertIn("DEGRADED fill failed", [ln.split(":")[0] for ln in self.degraded_lines(proc)])
         self.assertIn("GENERATE_RESULT " + str(self.out("textured_photo.glb")), proc.stdout)
 
+    def test_delight_on_de_lights_the_bake_and_the_fill(self) -> None:
+        (self.root / "scripts" / "workbench").mkdir()
+        self.stub("scripts/workbench/fill.py", FILL_STUB, exe=False)
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--fill", "photo", "--delight", "on")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        args = self.retexture_args()
+        # Last, after the view arguments, so the fill still reads the first picture at VIEW_ARGS[1].
+        self.assertEqual(args[-2:], ["--delight", "1"])
+        self.assertEqual(args[:5], [str(self.out("textured.glb")), "-o", str(self.out("textured_photo.glb")),
+                                    "--view", str(self.out("lifted.png"))])
+        fill_args = json.loads((self.root / "fill.args.json").read_text())
+        glb = str(self.out("textured_photo.glb"))
+        self.assertEqual(fill_args, [glb, "-o", glb, "--photo", str(self.out("lifted.png")),
+                                     "--cover", str(self.out("textured_photo.cover.png")), "--delight", "1"])
+        # Without --fill the bake is still de-lit; --delight off is the plain argv.
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--delight", "on")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.retexture_args()[-2:], ["--delight", "1"])
+        proc = self.run_gen("--image", str(self.image), "--quality", "textured", "--delight", "off")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.retexture_args(), [str(self.out("textured.glb")), "-o", str(self.out("textured_photo.glb")),
+                                                 "--view", str(self.out("lifted.png")), "--first-facing", "camera"])
+
     def test_fill_and_mirror_ends_are_checked(self) -> None:
         for args, code, word in ((("--fill", "swatch"), 2, "--fill"), (("--mirror-ends", "maybe"), 2, "--mirror-ends"),
+                                 (("--delight", "yes"), 2, "--delight"),
                                  (("--fill", "photo"), 1, "fill.py, which is missing")):
             with self.subTest(args=args):
                 proc = self.run_gen("--image", str(self.image), "--quality", "textured", *args)

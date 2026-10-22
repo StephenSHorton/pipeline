@@ -17,10 +17,13 @@ it tile, and paints it onto every texel whose coverage (retexture's <out>.cover.
   charts sit a few texels apart in the atlas, and a neighbour there is some unrelated part of the model. Texels at
   or above keep are left exactly as they were.
 
+With --delight (as the bake had it) the swatch comes from the photo with its lighting taken out (scripts/delight.py),
+the same pixels retexture --delight baked, so a shadowed side cannot darken the fill either.
+
 Atlas gutters (texels in no triangle) take the nearest filled colour, so bilinear and mip lookups at seams never
 reach the old base. No model is loaded.
 
-    fill.py textured_photo.glb --photo lifted.png -o textured_photo.glb [--cover textured_photo.cover.png]
+    fill.py textured_photo.glb --photo lifted.png -o textured_photo.glb [--cover textured_photo.cover.png] [--delight [1]]
 """
 from __future__ import annotations
 
@@ -94,12 +97,15 @@ def uv_charts(vertices: np.ndarray, uvs: np.ndarray, faces: np.ndarray) -> np.nd
     return label[fv[:, 0]].astype(np.int64)
 
 
-def pick_swatch(rgb: np.ndarray, mask: np.ndarray, side: int | None = None) -> tuple[np.ndarray, tuple[int, int, int]]:
+def pick_swatch(rgb: np.ndarray, mask: np.ndarray, side: int | None = None,
+                shade_rgb: np.ndarray | None = None) -> tuple[np.ndarray, tuple[int, int, int]]:
     """The square of the subject with the most fine detail and the least shadow: (swatch, (x, y, side)).
 
     Score = local spread of the high-passed luma (straw, not shading) times relative brightness (a shadowed corner
     would darken the whole fill), over windows that lie wholly inside the cut-out. The swatch's slow shading is
-    then divided out, so tiling it shows the material and not a repeating light ramp."""
+    then divided out, so tiling it shows the material and not a repeating light ramp. shade_rgb: the photo as it was
+    lit, when rgb is a de-lit copy: shadow is judged on it (a lifted shadow is still sky-lit grey, not straw) while
+    the swatch's pixels come from rgb."""
     ys, xs = np.where(mask)
     if len(xs) == 0:
         raise FillError("the photo has no subject pixels to take a swatch from")
@@ -131,7 +137,12 @@ def pick_swatch(rgb: np.ndarray, mask: np.ndarray, side: int | None = None) -> t
                                 0.0))
     ref = max(float(np.median(luma[mask])), 1.0)
     # Any shade in the window costs steeply: its dark patch would repeat across the whole fill.
-    shade = ndimage.uniform_filter(((luma < 0.5 * ref) & mask).astype(np.float32), side)
+    if shade_rgb is not None:
+        lit = shade_rgb.mean(axis=2)
+        dark = (lit < 0.5 * max(float(np.median(lit[mask])), 1.0)) & mask
+    else:
+        dark = (luma < 0.5 * ref) & mask
+    shade = ndimage.uniform_filter(dark.astype(np.float32), side)
     score = np.where(valid, spread * np.clip(mean / ref, 0.0, 1.5) * (1.0 - shade) ** 8, -1.0)
     cy, cx = np.unravel_index(int(np.argmax(score)), score.shape)
     y0, x0 = cy - h, cx - h
@@ -193,9 +204,11 @@ def _load_cover(path: Path, shape: tuple[int, int]) -> np.ndarray:
         return np.asarray(im, dtype=np.float32) / 255.0
 
 
-def fill_unseen(glb_in, cover_png, photo_rgba, glb_out, keep: float = KEEP, sharp: float = SHARP) -> dict:
+def fill_unseen(glb_in, cover_png, photo_rgba, glb_out, keep: float = KEEP, sharp: float = SHARP,
+                delight: float | None = None) -> dict:
     """Paint the photo's swatch onto every texel of glb_in whose coverage is below keep; write glb_out (and its
-    .albedo.png and .fill.json beside it). Returns the report that .fill.json holds."""
+    .albedo.png and .fill.json beside it). Returns the report that .fill.json holds. delight: the strength the bake
+    de-lit the photo with (retexture --delight); the swatch is taken from the same de-lit pixels."""
     glb_in, glb_out = Path(glb_in), Path(glb_out)
     mesh = trimesh.load(glb_in, force="mesh")
     if not isinstance(mesh, trimesh.Trimesh) or getattr(mesh.visual, "uv", None) is None:
@@ -224,8 +237,10 @@ def fill_unseen(glb_in, cover_png, photo_rgba, glb_out, keep: float = KEEP, shar
     seen = hit[ty, tx]
     before = float(seen.mean()) if len(seen) else 0.0
 
-    rgb, alpha_fit, alpha_bake = retexture.load_photo(photo_rgba)
-    swatch, box = pick_swatch(rgb, ndimage.binary_erosion(alpha_bake, iterations=2) & alpha_bake)
+    rgb, alpha_fit, alpha_bake = retexture.load_photo(photo_rgba, delight)
+    # De-lit, the shadow is judged on the photo as it was lit: lifted, it is still not the material.
+    shade_rgb = retexture.load_photo(photo_rgba)[0] if delight else None
+    swatch, box = pick_swatch(rgb, ndimage.binary_erosion(alpha_bake, iterations=2) & alpha_bake, shade_rgb=shade_rgb)
     tile = tileable(swatch)
     # Photo pixels to metres: the subject's box in the photo against the model's. Rough (the view is oblique), but
     # it keeps the straw at the scale it has on the photographed end rather than a guess.
@@ -318,6 +333,8 @@ def fill_unseen(glb_in, cover_png, photo_rgba, glb_out, keep: float = KEEP, shar
         "period_m": round(period, 4),
         "gain": [round(float(g), 3) for g in gain],
     }
+    if delight:
+        report["delight"] = float(delight)
     glb_out.with_suffix(".fill.json").write_text(json.dumps(report, indent=2) + "\n")
     # The GLB last, under a hidden name and renamed into place, as retexture does: fill may rewrite its own input.
     tmp = glb_out.with_name(f".{glb_out.name}.tmp")
@@ -334,13 +351,15 @@ def main() -> int:
     ap.add_argument("--cover", type=Path, default=None, help="retexture's coverage image (default <glb>.cover.png)")
     ap.add_argument("--keep", type=float, default=KEEP, help="fill texels whose coverage is below this (retexture's)")
     ap.add_argument("--sharp", type=float, default=SHARP, help="triplanar blend exponent on |normal|")
+    ap.add_argument("--delight", type=float, nargs="?", const=1.0, default=None, metavar="STRENGTH",
+                    help="take the swatch from the photo with its lighting taken out, as retexture --delight baked it")
     args = ap.parse_args()
     cover = args.cover or args.glb.with_suffix(".cover.png")
     if not cover.is_file():
         print(f"fill: no coverage image at {cover} (retexture.py writes it)", file=sys.stderr)
         return 1
     try:
-        report = fill_unseen(args.glb, cover, args.photo, args.out, args.keep, args.sharp)
+        report = fill_unseen(args.glb, cover, args.photo, args.out, args.keep, args.sharp, args.delight)
     except FillError as e:
         print(f"fill: {e}", file=sys.stderr)
         return 1
