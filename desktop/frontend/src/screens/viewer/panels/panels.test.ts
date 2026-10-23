@@ -9,13 +9,14 @@ afterEach(() => usePanels.setState({ open: null }));
 
 describe("copy", () => {
   it("cubby titles match the legacy page", () => {
-    expect(PANEL_TITLES).toEqual({ cleanup: "Cleanup", paint: "Paint", lods: "Detail levels", rig: "Rig check" });
+    expect(PANEL_TITLES).toEqual({ cleanup: "Cleanup", paint: "Paint", lods: "Detail levels", rig: "Rig check", weights: "Weights" });
     expect(RIG_CLOSE_TITLE).toBe("Close the rig check");
     expect(RIG_CLOSE_LABEL).toBe("Close");
     expect(closeTitle("rig")).toBe("Close the rig check");
     expect(closeLabel("rig")).toBe("Close");
     expect(closeLabel("cleanup")).toBe("Close Cleanup");
     expect(closeTitle("lods")).toBe("Close Detail levels");
+    expect(closeLabel("weights")).toBe("Close Weights");
   });
 
   it("does not port the CSS-hidden Hide copy", () => {
@@ -31,7 +32,7 @@ describe("panelsFor", () => {
     expect(panelsFor("mesh", "left")).toEqual(["cleanup", "paint", "lods"]);
     expect(panelsFor("rig", "left")).toEqual(["cleanup", "paint", "lods"]);
     expect(panelsFor("mesh", "right")).toEqual([]);
-    expect(panelsFor("rig", "right")).toEqual(["rig"]);
+    expect(panelsFor("rig", "right")).toEqual(["rig", "weights"]);
   });
 });
 

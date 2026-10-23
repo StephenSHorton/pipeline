@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
 import { RigPanel, RigToggle } from "@/screens/asset/rig/RigPanel";
+import { WeightsPanel, WeightsToggle } from "@/screens/asset/rig/WeightsPanel";
 import { PANEL } from "../classes";
 import type { ViewerPanelBase, ViewerPanelProps } from "../types";
 import { CleanupPanel } from "./CleanupPanel";
@@ -15,8 +16,8 @@ import { openOn, panelDomId, panelsFor, type PanelId, type PanelSide } from "./p
 import { PanelToggle, type PanelToggleProps } from "./PanelToggle";
 import { usePanels } from "./store";
 
-const BODY: Record<PanelId, ComponentType<ViewerPanelProps>> = { cleanup: CleanupPanel, paint: PaintPanel, lods: LodsPanel, rig: RigPanel };
-const TOGGLES: Partial<Record<PanelId, ComponentType<Omit<PanelToggleProps, "panel"> & { props: ViewerPanelProps }>>> = { rig: RigToggle };
+const BODY: Record<PanelId, ComponentType<ViewerPanelProps>> = { cleanup: CleanupPanel, paint: PaintPanel, lods: LodsPanel, rig: RigPanel, weights: WeightsPanel };
+const TOGGLES: Partial<Record<PanelId, ComponentType<Omit<PanelToggleProps, "panel"> & { props: ViewerPanelProps }>>> = { rig: RigToggle, weights: WeightsToggle };
 
 
 /** The panels one side shows on this stage and screen width. */

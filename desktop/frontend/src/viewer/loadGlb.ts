@@ -35,6 +35,7 @@ export async function loadFirstGlb(urls: string[], signal?: AbortSignal): Promis
       const magic = new TextDecoder().decode(new Uint8Array(buf, 0, 4));
       if (magic !== "glTF") continue;
       const gltf = await gltfLoader().parseAsync(buf, "");
+      tagPrimitives(gltf);
       return { url, gltf, bytes: buf.byteLength, ms: Math.round(performance.now() - t0) };
     } catch (err) {
       if ((err as { name?: string })?.name === "AbortError") throw err;
@@ -42,4 +43,13 @@ export async function loadFirstGlb(urls: string[], signal?: AbortSignal): Promis
     }
   }
   throw new Error("no glb loaded");
+}
+
+/** Each mesh object's glTF mesh and primitive index in userData.gltfPrimitive (the Weights panel's Save says which
+ * primitive's weights it sends; a multi-primitive mesh loads as one object per primitive). */
+export function tagPrimitives(gltf: GLTF): void {
+  gltf.parser?.associations?.forEach((ref, obj) => {
+    const o = obj as { isObject3D?: boolean; userData?: Record<string, unknown> };
+    if (o.isObject3D && o.userData && ref && ref.meshes !== undefined && ref.primitives !== undefined) o.userData.gltfPrimitive = [ref.meshes, ref.primitives];
+  });
 }
