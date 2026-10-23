@@ -369,7 +369,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
         <Slider label={C.strength.label} title={C.strength.title} min={BRUSH_STRENGTH.min} max={BRUSH_STRENGTH.max} step={BRUSH_STRENGTH.step} value={st.strength} text={`${Math.round(st.strength * 100)}%`} onChange={(v) => useWeights.setState({ strength: v })} />
 
         {/* Pinned to the panel's foot, so Save is in reach without scrolling past the bone list. */}
-        <div className="sticky -bottom-3.5 z-[1] -mx-4 -mb-3.5 flex flex-wrap items-center gap-1 border-t border-hair bg-[rgba(255,255,255,0.97)] px-4 pt-2 pb-3">
+        <div className="sticky -bottom-3.5 z-[1] -mx-4 -mb-3.5 flex flex-wrap items-center gap-1 border-t border-hair bg-white px-4 pt-2 pb-3">
           <Act title={C.undo.title} off={!s.canUndo} onClick={() => s.undo()}>
             {C.undo.label}
           </Act>

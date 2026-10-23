@@ -122,13 +122,13 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
         <ChevronDown aria-hidden="true" size={15} strokeWidth={2.2} className={cn("ml-auto shrink-0 text-ink-3 transition-transform", !open && "-rotate-90")} />
       </button>
       {/* overflow-y-auto: in the viewer's left column the panel may shrink (AssetScreen), and its body scrolls then. */}
-      <div id={bodyId} className={cn("min-h-[4.5rem] flex-col gap-1.5 overflow-y-auto [scrollbar-width:thin]", open ? "flex" : "hidden")}>
+      <div id={bodyId} className={cn("min-h-0 flex-col gap-1.5 overflow-y-auto [scrollbar-width:thin]", open ? "flex" : "hidden")}>
         {g.takes.length ? (
           <div
             ref={grid}
             role="group"
             aria-label="Versions"
-            className="grid max-h-[min(11.5rem,30vh)] shrink-0 grid-cols-4 gap-1 overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
+            className="grid min-h-12 max-h-[min(11.5rem,30vh)] grid-cols-4 gap-1 overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
           >
             {g.takes.map((it) => (
               <Take key={it.id} item={it} stage={stage} disabled={pending} onPick={pick} />
