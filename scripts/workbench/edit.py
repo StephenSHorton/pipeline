@@ -521,7 +521,312 @@ def widen_head(mesh: trimesh.Trimesh, factor: float, start: float | None = None,
     return out, info
 
 
-OPS = {"thicken_legs": thicken_legs, "shorten_legs": shorten_legs, "widen_head": widen_head}
+MAX_LEGS = 8  # trim_belly: more parts than this under a body are not legs (a car's wheels break into crumbs)
+LEG_FOOTPRINT_MAX = 2.2  # trim_belly: a leg's footprint seen from above is at most this much longer than wide
+
+
+def _footprint_aspect(mask: np.ndarray) -> float:
+    """How much longer than wide a footprint (a raster mask) is, from its second moments."""
+    ij = np.argwhere(mask).astype(float)
+    if len(ij) < 3:
+        return 1.0
+    ev = np.linalg.eigvalsh(np.cov(ij.T))
+    return float(np.sqrt(max(ev[-1], 1e-12) / max(ev[0], 1e-12)))
+
+
+class _UpperLegs(_Legs):
+    """_Legs seeded from the upper half of the leg band only, with no waist splitting: where the legs meet the belly
+    they are plain columns, while a hoof (a heel, a toe gap) can pinch and split into parts that each reach the floor,
+    which find_legs then reads as legs pressed together and refuses. trim_belly falls back to this when _Legs refuses
+    that way; it only needs the legs where they meet the belly."""
+
+    def __init__(self, P: np.ndarray, floor: float, top: float, bins: int = 24, slabs: int = 4):
+        self.floor, self.top = floor, top
+        self.raster = r = _Raster(P, GRID)
+        self.groups, self.touching = [], set()
+        edges = np.linspace(floor + 0.4 * (top - floor), floor + 0.85 * (top - floor), slabs + 1)
+        seeds: list[np.ndarray] = []
+        for k in range(slabs):
+            sel = (P[:, 1] >= edges[k]) & (P[:, 1] < edges[k + 1])
+            lab, n = ndimage.label(r.mask(P[sel]))
+            if not n:
+                continue
+            sizes = ndimage.sum(np.ones_like(lab), lab, range(1, n + 1))
+            ms = [lab == i + 1 for i in range(n) if sizes[i] >= 0.15 * sizes.max()]
+            ms = [m for m in ms if _reaches_floor(P, r, m, floor, top)]
+            if len(ms) > len(seeds):
+                seeds = ms
+        if len(seeds) < 2:
+            raise _too_few(len(seeds), "check the shape (it needs at least two legs standing on the floor)")
+        self.seeds = seeds
+        band = P[(P[:, 1] <= floor + 0.85 * (top - floor))]
+        ij = r.ij(band)
+        lab = np.full(len(band), -1)
+        for i, m in enumerate(seeds):
+            lab[m[ij[:, 0], ij[:, 1]]] = i
+        self.edges = np.linspace(floor, top, bins + 1)
+        self.ys = (self.edges[:-1] + self.edges[1:]) / 2
+        self.n = len(seeds)
+        for _ in range(3):
+            self._fit(band, lab)
+            lab = self.nearest(band)[0]
+
+
+def _tighten(legs: "_Legs", P: np.ndarray, seeds: list[np.ndarray], cap: float = 1.5, iters: int = 3) -> "_Legs":
+    """Refit the legs' centre lines and radii from their seed footprints, then from band points within cap radii of
+    their line only. _Legs gives every band point to its nearest leg, so a keel of wool hanging between the front
+    legs drags a leg's line toward it and swells its radius, and the keel then counts as leg; here it stays out."""
+    band = P[P[:, 1] <= legs.floor + 0.85 * (legs.top - legs.floor)]
+    ij = legs.raster.ij(band)
+    lab = np.full(len(band), -1)
+    for i, m in enumerate(seeds):
+        lab[m[ij[:, 0], ij[:, 1]]] = i
+    legs._fit(band, lab)
+    for _ in range(iters):
+        lab, _, d = legs.nearest(band)
+        lab = np.where(d <= cap * legs.R[lab], lab, -1)
+        legs._fit(band, lab)
+    return legs
+
+
+BELLY_PCT = 60  # the belly line: this percentile of the underside heights between the legs
+LEG_KEEP = 1.3  # trim_belly leaves points within this many leg radii of a leg's centre line alone
+LEG_FREE = 1.8  # and lifts fully from this many; smoothstep between
+FOOT_KEEP = (0.2, 0.4)  # trim_belly lifts nothing below the first share of floor-to-line, fully above the second
+BELLY_FADE = 0.05  # share of the length over which the lift fades out toward the head and past the hind legs
+
+
+def _soft_floor(y: np.ndarray, line: float, b: float) -> np.ndarray:
+    """A C1 soft max(y, line): line below line - b, y above line + b, (t + 1)^2 / 4 between (t = (y - line) / b).
+    Never below the line, never below y; slope 0 at the bottom of the knee and 1 at its top, so no crease."""
+    t = (y - line) / b
+    return np.where(t >= 1.0, y, np.where(t <= -1.0, line, line + b * (t + 1.0) ** 2 / 4.0))
+
+
+def _turned(V0: np.ndarray, V1: np.ndarray, F: np.ndarray) -> np.ndarray:
+    """Faces that turned over: their normal now points against the old one (faces squashed to no area aside)."""
+    T0, T1 = V0[F], V1[F]
+    n0 = np.cross(T0[:, 1] - T0[:, 0], T0[:, 2] - T0[:, 0])
+    n1 = np.cross(T1[:, 1] - T1[:, 0], T1[:, 2] - T1[:, 0])
+    return ((n0 * n1).sum(1) < 0) & (np.linalg.norm(n1, axis=1) > 1e-12 * max(float(np.ptp(V0)), 1e-9) ** 2)
+
+
+def _unfold_up(V0: np.ndarray, V1: np.ndarray, F: np.ndarray, cap: np.ndarray,
+               iters: int = 30) -> tuple[np.ndarray, int, int]:
+    """Lay flat every face the lift turned over: its vertices (with their UV-seam duplicates) rise toward its
+    highest, each no higher than its cap (the full lift for a vertex the trim moved, where it is for one it left).
+    Moving heights only keeps a face's footprint, so a face whose corners share one height faces the way it faced
+    before (up or down); raising can turn a neighbour, so repeat. In the lift's fade beside a leg a wall's lower
+    corner is lifted further than its upper one and stands on its head; this is where that happens. Returns the
+    vertices, how many faces had turned and how many still are."""
+    _, inv = np.unique(np.round(V0, 9), axis=0, return_inverse=True)
+    inv = inv.ravel()
+    out = V1.copy()
+    bad = _turned(V0, out, F)
+    first = int(bad.sum())
+    for _ in range(iters):
+        if not bad.any():
+            break
+        top = np.full(inv.max() + 1, -np.inf)
+        fb = F[bad]
+        np.maximum.at(top, inv[fb].ravel(), np.repeat(out[fb, 1].max(1), 3))
+        out[:, 1] = np.maximum(out[:, 1], np.minimum(top[inv], cap))
+        bad = _turned(V0, out, F)
+    return out, first, int(bad.sum())
+
+
+def _smooth_y(V: np.ndarray, F: np.ndarray, moved: np.ndarray, weight: np.ndarray, iters: int = 4,
+              lam: float = 0.5) -> np.ndarray:
+    """Laplacian smoothing of the height only, on the moved vertices, over the welded mesh (UV-seam duplicates share
+    a position, so they are one node and move together: no seam opens). Height only, so the footprint, and with it
+    every face's facing up or down, is unchanged."""
+    _, first, inv = np.unique(np.round(V, 9), axis=0, return_index=True, return_inverse=True)
+    inv = inv.ravel()
+    E = trimesh.geometry.faces_to_edges(inv[F])
+    E = E[E[:, 0] != E[:, 1]]
+    E = np.unique(np.sort(E, axis=1), axis=0)
+    n = len(first)
+    y = V[first, 1].copy()
+    mv = np.zeros(n, bool)
+    np.logical_or.at(mv, inv, moved)
+    wt = np.zeros(n)
+    np.maximum.at(wt, inv, weight)
+    deg = np.bincount(E.ravel(), minlength=n).astype(float)
+    a = lam * wt * mv * (deg > 0)
+    for _ in range(iters):
+        s = np.bincount(E[:, 0], y[E[:, 1]], n) + np.bincount(E[:, 1], y[E[:, 0]], n)
+        y = y + a * (s / np.maximum(deg, 1.0) - y)
+    out = V.copy()
+    out[:, 1] = y[inv]
+    return out
+
+
+def _head_by_overhang(P: np.ndarray, legs: "_Legs", fi: int, li: int, above: float) -> str:
+    """head_end's rule with legs already found (head_end finds its own, and refuses when _Legs does): of the ends
+    that rise like a head, the one that overhangs the outermost legs more."""
+    ends = _end_shape(P, fi, li, above)
+    can = [sg for sg, e in ends.items() if e is not None and e["rise"] >= HEAD_RISE and e["thick"] * e["wide"] >= TAIL_SECTION]
+    ax = "xyz"[fi]
+    if len(can) == 1:
+        return f"+{ax}" if can[0] > 0 else f"-{ax}"
+    if not can:
+        raise EditError("no head end")
+    feet = legs.C[:, 0, 0 if fi == 0 else 1]
+    over_pos, over_neg = P[:, fi].max() - feet.max(), feet.min() - P[:, fi].min()
+    if abs(over_pos - over_neg) <= 0.05 * np.ptp(P[:, fi]):
+        raise EditError("ends look alike")
+    return f"+{ax}" if over_pos > over_neg else f"-{ax}"
+
+
+def _along_window(mesh, P: np.ndarray, legs: "_Legs | None", fi: int, li: int, above: float):
+    """Weight along the length (1 where the belly may be trimmed): from the hind legs (outermost centre less 2R) to
+    where the neck starts, fading over BELLY_FADE of the length; the head and what hangs past the hind legs are left.
+    With no head end found, the front side ends past the front legs the same way as the hind side."""
+    F = P[:, fi]
+    lo, hi = float(F.min()), float(F.max())
+    length = max(hi - lo, 1e-9)
+    fade = BELLY_FADE * length
+    a = 0 if fi == 0 else 1  # the leg centre lines are (x, z)
+    try:
+        try:
+            head, _ = head_end(mesh, P)
+        except EditError:
+            if legs is None:
+                raise
+            head = _head_by_overhang(P, legs, fi, li, above)
+        hfi, sign = AXES[head]
+        if hfi != fi:
+            raise EditError("head across the body")
+        t0 = head_start(P, fi, li, sign, above)
+        front = (lo + t0 * length) if sign > 0 else (hi - t0 * length)
+        why = f"head {head}"
+    except EditError:
+        sign, front, why = 1.0, None, "no head"
+    if legs is None:
+        return (lambda x: np.ones_like(x)), {"along": "whole length (no legs)"}
+    feet = legs.C[:, 0, a]
+    R = float(legs.R.max())
+    s = sign
+    back = (feet.min() - 2 * R) if s > 0 else (feet.max() + 2 * R)  # the hind side, in world units
+    if front is None:
+        front = (feet.max() + 2 * R) if s > 0 else (feet.min() - 2 * R)
+
+    def w(x: np.ndarray) -> np.ndarray:
+        u = s * x
+        f, bk = s * front, s * back
+        return smoothstep((u - (bk - fade)) / fade) * (1.0 - smoothstep((u - f) / fade))
+
+    return w, {"along": why, "front": round(float(front), 4), "back": round(float(back), 4)}
+
+
+def belly_line(P: np.ndarray, legs: "_Legs", fi: int, li: int) -> float:
+    """The belly's underside height between the legs: per xz cell, the lowest surface point clear of the legs (more
+    than LEG_FREE radii from every centre line), over the rectangle the leg centres span; BELLY_PCT of those. Spikes
+    and a keel are a minority of the cells, so the line sits on the belly itself, not on their tips."""
+    a = 0 if fi == 0 else 1
+    feet = legs.C[:, 0, :]
+    lab, _, d = legs.nearest(P)
+    clear = d > LEG_FREE * legs.R[lab]
+    inside = ((P[:, fi] >= feet[:, a].min()) & (P[:, fi] <= feet[:, a].max()) &
+              (P[:, li] >= feet[:, 1 - a].min()) & (P[:, li] <= feet[:, 1 - a].max()))
+    Q = P[clear & inside & (P[:, 1] > legs.floor + 0.05 * (legs.top - legs.floor))]
+    if len(Q) < 20:
+        raise EditError("no belly between the legs to read a line from; give line")
+    r = _Raster(P, GRID)
+    ij = r.ij(Q)
+    key = ij[:, 0] * r.shape[1] + ij[:, 1]
+    order = np.lexsort((Q[:, 1], key))
+    firsts = order[np.r_[True, key[order][1:] != key[order][:-1]]]
+    return float(np.percentile(Q[firsts, 1], BELLY_PCT))
+
+
+def trim_belly(mesh: trimesh.Trimesh, line: float | None = None, blend: float = 0.03, keep_legs: bool = True):
+    """Lift what hangs under the belly (a keel of wool between the front legs, spikes along the underside) up to a
+    line, leaving the legs, head and tail. Every vertex goes through a C1 soft max with the line (_soft_floor, knee
+    +- blend of the height), weighted by its distance from the nearest leg's centre line (0 within LEG_KEEP radii, 1
+    from LEG_FREE) and by its place along the length (_along_window); then a few height-only Laplacian passes on the
+    moved vertices round off the plateaus, and what was fully lifted is held at or above the line. Only heights
+    change, so faces, UVs and texture are kept and no face turns over.
+    The line (a share of the height) defaults to the higher of the leg band's top and belly_line."""
+    V = np.asarray(mesh.vertices, float)
+    F = np.asarray(mesh.faces)
+    P = _surface(mesh)
+    floor, ceil = float(P[:, 1].min()), float(P[:, 1].max())
+    h = max(ceil - floor, 1e-9)
+    fi, li = _length_axes(P)
+    info = {"op": "trim_belly"}
+    try:
+        ytop = leg_top(mesh, P)
+        try:
+            legs, info["legs_from"] = _Legs(P, floor, ytop), "leg band"
+            seeds = find_legs(P, floor, ytop)[0]
+        except EditError as e:
+            if "touch along" not in str(e):
+                raise
+            legs, info["legs_from"] = _UpperLegs(P, floor, ytop), "upper leg band (the feet split oddly)"
+            seeds = legs.seeds
+
+        # Legs stand on round footprints; a wheel seen from above is a long thin slab. Lifting "belly" between
+        # wheels would bite into them, so slab-shaped parts mean this is not a creature.
+        if len(seeds) > MAX_LEGS:
+            raise EditError(f"found {len(seeds)} parts under it, too many for legs; check the shape")
+        big = max(int(m.sum()) for m in seeds)
+        flat = max(_footprint_aspect(m) for m in seeds if m.sum() >= 0.25 * big)
+        if flat > LEG_FOOTPRINT_MAX:
+            raise EditError(f"the parts it stands on are not leg-shaped ({flat:.1f} times longer than wide, like "
+                            "wheels); check the shape")
+        legs = _tighten(legs, P, seeds)
+    except EditError as e:
+        if line is None:
+            raise EditError(f"{e}; give line") from None
+        ytop, legs = None, None
+    if line is None:
+        under = belly_line(P, legs, fi, li)
+        yl = max(ytop, under)
+        info.update(line_from="belly underside" if under >= ytop else "leg band top",
+                    leg_top=round((ytop - floor) / h, 4), underside=round((under - floor) / h, 4))
+    else:
+        yl = floor + float(line) * h
+        info["line_from"] = "given"
+    b = max(float(blend) * h, 1e-9)
+    w_along, along = _along_window(mesh, P, legs, fi, li, ytop if ytop is not None else floor)
+    if along.get("along") == "no head" and line is None:
+        # A creature has a head; with none, the "legs" are likely wheels or a table's, and the "belly" a chassis.
+        raise EditError("found legs but no head, so this may not be a creature; give line")
+    w = w_along(V[:, fi])
+    if legs is not None and keep_legs:
+        lab, _, d = legs.nearest(V)
+        R = legs.R[lab]
+        w = w * smoothstep((d - LEG_KEEP * R) / ((LEG_FREE - LEG_KEEP) * R))
+    # Feet splay past their leg's radius (a toe, a heel) but sit on the floor: what hangs from the belly ends well
+    # above it. A weight rising with height keeps the map monotonic in y (y + w(y) (line - y), w' >= 0).
+    if legs is not None:
+        k0, k1 = (floor + f * (yl - floor) for f in FOOT_KEEP)
+        w = w * smoothstep((V[:, 1] - k0) / max(k1 - k0, 1e-9))
+    out = V.copy()
+    out[:, 1] = V[:, 1] + w * (_soft_floor(V[:, 1], yl, b) - V[:, 1])
+    moved = np.abs(out[:, 1] - V[:, 1]) > 1e-9
+    if moved.any():
+        out = _smooth_y(out, F, moved, w)
+        full = moved & (w >= 1.0 - 1e-9)
+        out[full, 1] = np.maximum(out[full, 1], yl)
+        out[:, 1] = np.maximum(out[:, 1], V[:, 1])  # a trim only lifts
+        out[~moved] = V[~moved]
+    cap = np.where(np.abs(out[:, 1] - V[:, 1]) > 1e-9, np.maximum(_soft_floor(V[:, 1], yl, b), out[:, 1]), out[:, 1])
+    out, turned, left = _unfold_up(V, out, F, cap)
+    info.update(turned_laid_flat=turned, turned_left=left)
+    lift = out[:, 1] - V[:, 1]
+    info.update({"line": round((yl - floor) / h, 4), "line_y": round(yl, 4), "blend": float(blend),
+                 "keep_legs": bool(keep_legs), "legs": legs.info() if legs is not None else [],
+                 "legs_found": legs.n if legs is not None else 0, **along,
+                 "verts_moved": int((np.abs(lift) > 1e-9).sum()), "max_lift": round(float(lift.max(initial=0.0)), 4),
+                 "max_lift_share": round(float(lift.max(initial=0.0)) / h, 4),
+                 "extents_before": _extents(V), "extents_after": _extents(out)})
+    return out, info
+
+
+OPS = {"thicken_legs": thicken_legs, "shorten_legs": shorten_legs, "widen_head": widen_head,
+       "trim_belly": trim_belly}
 
 
 def apply(mesh: trimesh.Trimesh, op: str, **params) -> tuple[trimesh.Trimesh, dict]:

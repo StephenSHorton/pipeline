@@ -262,6 +262,118 @@ class WidenTests(unittest.TestCase):
             edit.widen_head(headless()["box on wheels"], 1.3, head="+x")
 
 
+def cone_down(x: float, z: float, tip: float, top: float = 0.55, r: float = 0.04, sections: int = 12) -> trimesh.Trimesh:
+    """A spike of wool: a cone hanging point down from inside the body to tip."""
+    c = trimesh.creation.cone(radius=r, height=top - tip, sections=sections)  # apex up the +z axis
+    c.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))  # apex down -y
+    c.apply_translation([x, top, z])
+    return c
+
+
+def keel(z0: float, z1: float, bottom: float, top: float = 0.55, half: float = 0.03, n: int = 12) -> trimesh.Trimesh:
+    """A keel of wool: a thin wedge in the y-z plane, half wide at the top tapering to an edge at the bottom, with
+    rows along its height and length so the lift has vertices to move."""
+    zs = np.linspace(z0, z1, n)
+    ys = np.linspace(bottom, top, n)
+    V, idx = [], {}
+    for s in (-1, 1):
+        for i, y in enumerate(ys):
+            for j, z in enumerate(zs):
+                w = half * (y - bottom) / (top - bottom)
+                idx[s, i, j] = len(V)
+                V.append([s * w, y, z])
+    F = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            for s in (-1, 1):
+                a, b, c, d = idx[s, i, j], idx[s, i, j + 1], idx[s, i + 1, j + 1], idx[s, i + 1, j]
+                F += [[a, b, c], [a, c, d]] if s > 0 else [[a, c, b], [a, d, c]]
+    for i in range(n - 1):  # the two sheets meet along the bottom edge; close the ends
+        for j, sgn in ((0, 1), (n - 1, -1)):
+            a, b, c, d = idx[-1, i, j], idx[1, i, j], idx[1, i + 1, j], idx[-1, i + 1, j]
+            F += [[a, b, c], [a, c, d]] if sgn > 0 else [[a, c, b], [a, d, c]]
+    return trimesh.Trimesh(np.array(V, float), np.array(F), process=False)
+
+
+def hairy_quadruped() -> tuple[trimesh.Trimesh, dict]:
+    """The quadruped (body bottom at y 0.45) with a keel hanging to 0.3 between the front legs and spikes hanging to
+    0.35 along the underside between the legs."""
+    mesh, idx = quadruped()
+    extra = [("keel", keel(0.25, 0.6, 0.30))]
+    extra += [(f"spike{i}", cone_down(x, z, 0.35)) for i, (x, z) in enumerate([(0.0, -0.3), (0.12, 0.0), (-0.1, -0.15),
+                                                                                (0.05, 0.15)])]
+    off = len(mesh.vertices)
+    for name, m in extra:
+        idx[name] = np.arange(off, off + len(m.vertices))
+        off += len(m.vertices)
+    return trimesh.util.concatenate([mesh] + [m for _, m in extra]), idx
+
+
+class TrimBellyTests(unittest.TestCase):
+    def test_lifts_keel_and_spikes_keeps_legs(self) -> None:
+        mesh, idx = hairy_quadruped()
+        V = np.asarray(mesh.vertices)
+        out, info = edit.trim_belly(mesh)
+        line = info["line_y"] - 1e-4  # reported to 4 places
+        self.assertEqual(info["legs_found"], 4)
+        self.assertEqual(info["line_from"] in ("belly underside", "leg band top"), True)
+        self.assertGreater(line, 0.42)  # about the body's bottom (0.45), well above the keel and spike tips
+        self.assertLess(line, 0.6)
+        # Nothing of the body lies below the line outside the legs (clear of every leg by LEG_FREE radii).
+        R = max(leg["radius"] for leg in info["legs"])
+        d = np.min([np.hypot(out[:, 0] - x, out[:, 2] - z) for x, z in LEGS], axis=0)
+        legs = np.concatenate([idx[f"leg{i}"] for i in range(4)])
+        rest = np.setdiff1d(np.arange(len(V)), legs)
+        clear = rest[d[rest] > edit.LEG_FREE * R]
+        self.assertGreaterEqual(float(out[clear, 1].min()), line - 1e-9)
+        for part in ["keel"] + [f"spike{i}" for i in range(4)]:
+            self.assertGreater(float(out[idx[part], 1].min()), line - 1e-9, part)
+            self.assertLess(float(V[idx[part], 1].min()), line - 0.05, part)  # they did hang below it
+        self.assertAlmostEqual(info["max_lift"], line - 0.30, delta=0.01)  # the keel's tip came up to the line
+        # Legs, head and everything above the knee are as they were.
+        np.testing.assert_array_equal(out[legs], V[legs])
+        np.testing.assert_array_equal(out[idx["head"]], V[idx["head"]])
+        high = V[:, 1] > line + info["blend"] * np.ptp(V[:, 1]) + 1e-9
+        np.testing.assert_array_equal(out[high], V[high])
+        np.testing.assert_array_equal(out[:, [0, 2]], V[:, [0, 2]])  # only heights move
+        self.assertTrue((out[:, 1] >= V[:, 1] - 1e-12).all())  # a trim only lifts
+        # No face turns over: every face that keeps an area faces the same side as before.
+        T0, T1 = V[mesh.faces], out[mesh.faces]
+        n0 = np.cross(T0[:, 1] - T0[:, 0], T0[:, 2] - T0[:, 0])
+        n1 = np.cross(T1[:, 1] - T1[:, 0], T1[:, 2] - T1[:, 0])
+        keep = np.linalg.norm(n1, axis=1) > 1e-12
+        self.assertTrue(((n0 * n1).sum(1)[keep] > -1e-12).all())
+
+    def test_box_on_wheels_refused_unless_line_given(self) -> None:
+        car = headless()["box on wheels"]
+        with self.assertRaisesRegex(edit.EditError, "give line"):
+            edit.trim_belly(car)
+        edit.trim_belly(car, line=0.4)  # the caller's own line still works
+
+    def test_given_line_and_no_legs(self) -> None:
+        box = trimesh.creation.box([1, 1, 2]).apply_translation([0, 0.5, 0])
+        with self.assertRaisesRegex(edit.EditError, "give line"):
+            edit.trim_belly(box)
+        sub = box.subdivide().subdivide()
+        out, info = edit.trim_belly(sub, line=0.3)  # a given line is the caller's call: lifted everywhere
+        self.assertEqual((info["line_from"], info["legs_found"]), ("given", 0))
+        self.assertGreaterEqual(float(out[:, 1].min()), 0.3 - 1e-9)
+        mesh, idx = hairy_quadruped()
+        out, info = edit.trim_belly(mesh, line=0.45, blend=0.02)
+        self.assertEqual(info["line"], 0.45)
+        self.assertGreater(float(out[idx["keel"], 1].min()), info["line_y"] - 1e-9)
+
+    def test_feet_stay_on_the_floor(self) -> None:
+        """A toe splaying past its leg's radius at the floor is foot, not belly: it stays."""
+        mesh, idx = quadruped()
+        toe = trimesh.creation.box([0.06, 0.04, 0.2]).apply_translation([0.22, 0.02, 0.72])
+        both = trimesh.util.concatenate([mesh, toe])
+        V = np.asarray(both.vertices)
+        out, _ = edit.trim_belly(both)
+        t = np.arange(len(mesh.vertices), len(V))
+        np.testing.assert_array_equal(out[t], V[t])
+
+
 class TextureTests(unittest.TestCase):
     def test_glb_keeps_uvs_and_material(self) -> None:
         mesh, _ = quadruped()
