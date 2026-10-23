@@ -99,6 +99,23 @@ describe("WeightsSession", () => {
     expect(s3.canUndo).toBe(false);
   });
 
+  it("a reload with other weights (a Re-rig, an older version) keeps its own weights", () => {
+    const a = sheepish();
+    const s1 = WeightsSession.bind(a.scene, "sheep", null)!;
+    s1.grabBegin(1);
+    s1.grabTo(1, 50);
+    s1.end();
+    // Same shape and bones, but the new rig gives point 4 to the hips instead of the thigh.
+    const b = sheepish();
+    const ji = b.mesh.geometry.getAttribute("skinIndex");
+    ji.array[16] = 0;
+    const s2 = WeightsSession.bind(b.scene, "sheep", s1)!;
+    expect(ji.array[16]).toBe(0);
+    expect(s2.parts[0].edit.weightOf(4, 0)).toBe(1);
+    expect(s2.canUndo).toBe(false);
+    expect(s2.droppedEdit).toBe(true);
+  });
+
   it("Save posts every point and rechecks; a refusal keeps the edit", async () => {
     const { scene } = sheepish();
     const s = WeightsSession.bind(scene, "sheep", null)!;

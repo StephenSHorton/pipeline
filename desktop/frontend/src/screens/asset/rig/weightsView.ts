@@ -62,6 +62,8 @@ export class WeightsSession {
   private shown: { mode: ShowMode; bone: number } | null = null;
   private wasShown = false;
   private grabStart = 0;
+  /** A reload of this asset with other weights (a Re-rig, an older version) threw away an unsaved edit. */
+  droppedEdit = false;
   /** After every change (the panel re-renders, the colours follow). */
   onChange: () => void = () => {};
 
@@ -70,10 +72,15 @@ export class WeightsSession {
     const bones = meshes[0].skeleton.bones;
     this.names = bones.map((b) => b.name);
     this.parents = bones.map((b) => bones.indexOf(b.parent as never));
-    const carry = prev && prev.stem === stem && prev.sameShape(meshes) ? prev : null;
+    const arrays = meshes.map((mesh) => editableArrays(mesh));
+    // Carry only a reload of the same rig: same shape AND the weights the edit started from. A Re-rig or an older rig
+    // version has the same shape but its own weights; those start a fresh session (an unsaved edit is dropped).
+    const same = prev && prev.stem === stem && prev.sameShape(meshes) && prev.parts.every((p, k) => p.edit.matchesSaved(arrays[k].idx, arrays[k].w));
+    const carry = same ? prev : null;
+    this.droppedEdit = !!prev && !carry && prev.stem === stem && prev.canUndo;
     this.parts = meshes.map((mesh, k) => {
       const geo = mesh.geometry;
-      const { idx, w } = editableArrays(mesh);
+      const { idx, w } = arrays[k];
       let edit: WeightEdit;
       if (carry) {
         edit = carry.parts[k].edit;

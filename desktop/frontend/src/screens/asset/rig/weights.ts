@@ -505,6 +505,20 @@ export class WeightEdit {
     this.savedTotals = this.totals(this.saved.j, this.saved.w);
   }
 
+  /** Whether a loaded mesh's weights are the ones this edit started from (as last saved): only then is a reload the
+   * same rig, and the edit may carry over. A Re-rig or an older rig version picked has the same shape but its own
+   * weights, which an unsaved edit must never overwrite. */
+  matchesSaved(idx: ArrayLike<number>, w: ArrayLike<number>): boolean {
+    const j0 = this.saved.j;
+    const w0 = this.saved.w;
+    if (idx.length !== j0.length || w.length !== w0.length) return false;
+    for (let i = 0; i < w0.length; i++) {
+      if (Math.abs(w[i] - w0[i]) > 1e-3) return false;
+      if (w0[i] > 1e-3 && idx[i] !== j0[i]) return false;
+    }
+    return true;
+  }
+
   /** A reloaded model of the same mesh: carry the edit over into its arrays and edit those from now on. */
   adopt(idx: Uint16Array, w: Float32Array): void {
     idx.set(this.idx);

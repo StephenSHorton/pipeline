@@ -64,6 +64,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
       return;
     }
     const next = WeightsSession.bind(model.root, stem, prev && prev.stem === stem ? prev : null);
+    if (next?.droppedEdit) toast("This rig has other weights, so the unsaved weight edit was dropped.");
     setWeightsSession(next);
     setS(next);
   }, [model, open, stem, rigged, riggedFile, tools]);
