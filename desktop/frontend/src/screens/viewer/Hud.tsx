@@ -62,7 +62,7 @@ export function Hud(p: HudProps) {
       {/* The asset card, the panel rail under it (legacy left cubby rail), then the versions panel: the left side
           is one stack. The column stops above the bottom pickers on phones and scrolls the open panel instead of
           running off the screen; the versions panel shrinks with the rail and scrolls its own body. */}
-      <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:max-h-[calc(100%-200px)]">
+      <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:w-[calc(100%-24px)] max-sm:max-h-[calc(100%-200px)]">
         <AssetCard {...p} info={info} />
         <PanelRail side="left" base={p.panel} />
         {p.versions}
@@ -235,7 +235,7 @@ function ViewCard(p: HudProps) {
 
 function Toggle({ on, onClick, title, disabled, children }: { on: boolean; onClick: () => void; title: string; disabled?: boolean; children: ReactNode }) {
   return (
-    <Button type="button" variant="hud-ghost" aria-pressed={on} disabled={disabled} title={title} onClick={onClick} className={TOGGLE}>
+    <Button type="button" variant="hud-ghost" aria-pressed={on} disabled={disabled} title={title} onClick={onClick} className={cn(TOGGLE, "max-sm:px-2")}>
       {children}
     </Button>
   );
