@@ -61,8 +61,8 @@ LODS = ("psx", "mesh", "hero", "lookdev", "mv", "clay")
 VIEWS = ("side", "xside", "front", "back", "top", "bottom", "q")
 STAGES = list(flow.STAGES)
 RENDER_KEEP_S = 600  # a look's folder outlives its answer (the path is in it) by this long
-NOT_YET = ("not yet: {op} is not built. Use remove_floaters, delete_sphere, stretch, thicken_legs, shorten_legs or "
-           "widen_head, or rebuild the shape as clay.")
+NOT_YET = ("not yet: {op} is not built. Use remove_floaters, delete_sphere, stretch, thicken_legs, shorten_legs, "
+           "widen_head or trim_belly, or rebuild the shape as clay.")
 
 
 class ToolError(ValueError):
@@ -554,7 +554,9 @@ class Workbench:
                                      ("factor",)),
                     "widen_head": ({"factor": {"type": "number", "minimum": 1, "maximum": 2}, "start": frac,
                                     "ramp": {"type": "number", "minimum": 0.01, "maximum": 0.5},
-                                    "head": {"type": "string", "enum": sorted(edit.AXES)}}, ("factor",))}[op]
+                                    "head": {"type": "string", "enum": sorted(edit.AXES)}}, ("factor",)),
+                    "trim_belly": ({"line": frac, "blend": {"type": "number", "minimum": 0.005, "maximum": 0.2},
+                                    "keep_legs": {"type": "boolean"}}, ())}[op]
             errs = check(_obj(*spec), params, "params")
             if errs:
                 raise ArgError("; ".join(errs))
@@ -770,7 +772,11 @@ class Workbench:
                  "leg band toward the floor and lowers the body by the height removed, smoothly at the join; "
                  "widen_head (factor 1..2, start?, ramp? default 0.1, head? +x|-x|+z|-z) scales the head's lateral "
                  "axis about its centre line, ramping in from start to start + ramp along the length (0 rump, 1 "
-                 "nose). top (share of height where legs meet belly), start and head are read from the shape when "
+                 "nose); trim_belly (line?, blend? default 0.03, keep_legs? default true) lifts what hangs under the "
+                 "belly (a keel of wool, spikes) up to line (share of height; default the belly's underside between "
+                 "the legs, or the leg band's top if higher) with a smooth knee of +-blend, leaving legs (and feet), "
+                 "head and tail, then smooths the lifted underside; it refuses on a shape without legs unless line is "
+                 "given. top (share of height where legs meet belly), start and head are read from the shape when "
                  "omitted; the answer says what was found (top, legs and their centres, start, head end). When the "
                  "shape doesn't show them (fewer than two legs, legs it can't tell apart, no head end that rises "
                  "above the body or ends that look alike, no neck) the op refuses and says why: give top, head or "
@@ -779,6 +785,7 @@ class Workbench:
                  _obj({"stem": STEM, "src": GLB, "op": {"type": "string", "enum": ["remove_floaters", "delete_sphere",
                                                                                    "stretch", "thicken_legs",
                                                                                    "shorten_legs", "widen_head",
+                                                                                   "trim_belly",
                                                                                    "straighten_head", "symmetrize",
                                                                                    "nudge"]},
                        "params": {"type": "object"}}, ("stem", "src", "op")), self.mesh_edit),

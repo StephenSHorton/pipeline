@@ -262,6 +262,26 @@ class ToolTests(Base):
         self.assertTrue(res["isError"])
         self.assertIn("thicken_legs", res["content"][0]["text"])
 
+    def test_mesh_edit_trim_belly(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_workbench_edit import hairy_quadruped  # a keel and spikes under the body
+        mesh, idx = hairy_quadruped()
+        src = self.asset("woolly", mesh, "mesh.glb")
+        out, _ = self.ok("mesh_edit", {"stem": "woolly", "src": src, "op": "trim_belly", "params": {}})
+        self.assertEqual(out["glb"], "out/woolly/workbench/edit_1.glb")
+        self.assertEqual((out["legs_found"], out["line_from"]), (4, "belly underside"))
+        self.assertGreater(out["max_lift"], 0.1)
+        trimmed = trimesh.load(self.root / out["glb"], force="mesh", process=False)
+        self.assertGreater(float(np.asarray(trimmed.vertices)[idx["keel"], 1].min()), out["line_y"] - 1e-3)
+        box = self.asset("crate", trimesh.creation.box([1, 1, 1]), "mesh.glb")
+        res = self.call("mesh_edit", {"stem": "crate", "src": box, "op": "trim_belly", "params": {}})
+        self.assertTrue(res["isError"])
+        self.assertIn("give line", res["content"][0]["text"])
+        out, _ = self.ok("mesh_edit", {"stem": "crate", "src": box, "op": "trim_belly", "params": {"line": 0.3}})
+        self.assertEqual(out["line_from"], "given")
+        res = self.call("mesh_edit", {"stem": "crate", "src": box, "op": "trim_belly", "params": {"blend": 0.9}})
+        self.assertTrue(res["isError"])
+
     def fake_psx(self, faces: int = 1200, fail: bool = False):
         """Stand in for psx_lowpoly (bake.psx): write what it writes, record where, and answer its report."""
         seen = []
