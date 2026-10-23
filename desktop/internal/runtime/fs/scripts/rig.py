@@ -737,7 +737,8 @@ def skin_reusable(raw: Path, mesh: Path, skeleton: Path, tol: float = 1e-5, move
     """None when raw (an earlier skin-tokens output) was skinned on this mesh and this skeleton: the same vertex
     positions, the same joint names (in order, with the same parents) and world positions (rest rotations
     included). Else why not. moved_ok: the joints may have moved (weights are per joint name, so a re-rig that only
-    moved joints, e.g. a pivot fix, keeps them; rejoint_skin puts raw's joints where the skeleton's are)."""
+    moved joints, e.g. a pivot fix, keeps them; rejoint_skin puts raw's joints where the skeleton's are), as long as
+    no body joint (_trunk) moved and no joint moved over MOVED_MAX x height: a turned skeleton keeps its names too."""
     if not raw.is_file():
         return "no rig/skinned_raw.glb"
     try:
@@ -754,15 +755,43 @@ def skin_reusable(raw: Path, mesh: Path, skeleton: Path, tol: float = 1e-5, move
         a, b = _joint_rest(rd), _joint_rest(sd)
         if [(n, p) for n, (_, p) in a.items()] != [(n, p) for n, (_, p) in b.items()]:
             return "the skeleton's joints changed"
-        if moved_ok:
-            return None
         H = max(float(np.ptp(Pm[:, 1])), 1e-9)
+        if moved_ok:
+            # the weights only fit while the body stays put: a turned skeleton keeps every name, but its
+            # _l bones sit on the right and its front bones at the rump (a mirror about the midline is not caught)
+            trunk = _trunk(a)
+            for n, (p, _) in a.items():
+                d = float(np.linalg.norm(p - b[n][0]))
+                if n in trunk and d > MOVED_TRUNK * H:
+                    return f"joint {n} moved {d / H:.2f}× height, and it is on the body"
+                if d > MOVED_MAX * H:
+                    return f"joint {n} moved {d / H:.2f}× height (over {MOVED_MAX}×)"
+            return None
         for n, (p, _) in a.items():
             if float(np.abs(p - b[n][0]).max()) > 1e-4 * H:
                 return f"joint {n} moved"
     except Exception as e:  # noqa: BLE001 - unreadable: skin again
         return f"unreadable ({str(e)[:80]})"
     return None
+
+
+MOVED_TRUNK = 0.01  # x height a body joint may move and the weights still be reused (a pivot fix moves none)
+MOVED_MAX = 0.6  # x height any joint may move (the sheep's hip pivot fix moved 0.42; a turn about Y moves 1.45)
+
+
+def _trunk(rest: dict[str, tuple[np.ndarray, str | None]]) -> set[str]:
+    """The body joints: the root and every joint on the way to a branch (2+ children). A leg's pivot, a leg, a tail
+    or an ear hangs off them in a single chain."""
+    kids: dict[str | None, list[str]] = {}
+    for n, (_, p) in rest.items():
+        kids.setdefault(p, []).append(n)
+    out: set[str] = set()
+    for n in rest:
+        if len(kids.get(n, [])) >= 2 or rest[n][1] is None:
+            while n is not None and n not in out:
+                out.add(n)
+                n = rest[n][1]
+    return out
 
 
 def _joint_rest(doc: dict) -> dict[str, tuple[np.ndarray, str | None]]:
@@ -1777,10 +1806,14 @@ def main(argv: list[str] | None = None) -> int:
             binder = "skin"
             skin_mesh = work / "welded.glb" if inv is not None else source
             why = skin_reusable(raw, skin_mesh, posed) if args.reuse_skin else "not asked"
+            moved_only = False
+            if why is not None and why.startswith("joint "):  # only moved: reusable unless the body moved too
+                loose = skin_reusable(raw, skin_mesh, posed, moved_ok=True)
+                moved_only, why = loose is None, loose or why
             if why is None:
                 secs, reused_skin = 0.0, True
                 note("Reused the skin weights learned before (rig/skinned_raw.glb: same mesh, same skeleton)")
-            elif args.reuse_skin and skin_reusable(raw, skin_mesh, posed, moved_ok=True) is None:
+            elif moved_only:
                 # only the joints moved (a pivot fix): the weights are per joint name, so they carry over
                 moved = rejoint_skin(raw, posed)
                 secs, reused_skin = 0.0, True

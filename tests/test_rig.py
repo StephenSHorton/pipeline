@@ -727,12 +727,14 @@ class BuiltPathTests(unittest.TestCase):
         self.assertIn("Reused the skin weights", buf.getvalue())
 
     def moved_copy(self, tmp: Path, name: str = "", shift=(0.0, 0.05, 0.02)) -> tuple[Path, Path, str]:
-        """A copy of rig/skinned_raw.glb and a skeleton like it with its second joint moved (or renamed to `name`)."""
+        """A copy of rig/skinned_raw.glb and a skeleton like it with its first joint off the body (a leg, as a pivot
+        fix moves) moved (or renamed to `name`)."""
         import shutil
         raw = Path(tmp) / "raw.glb"
         shutil.copy2(self.asset / "rig" / "skinned_raw.glb", raw)
         doc, b = rig.read_glb(raw)
-        j = doc["skins"][0]["joints"][1]
+        trunk = rig._trunk(rig._joint_rest(doc))
+        j = next(i for i in doc["skins"][0]["joints"] if doc["nodes"][i].get("name") not in trunk)
         doc["nodes"][j]["translation"] = (np.array(doc["nodes"][j].get("translation", [0, 0, 0])) + shift).tolist()
         if name:
             doc["nodes"][j]["name"] = name
@@ -762,6 +764,33 @@ class BuiltPathTests(unittest.TestCase):
                 np.testing.assert_allclose(IBM[k] @ M, np.eye(4), atol=1e-5)
             raw2, renamed, _ = self.moved_copy(Path(tmp), name="not_a_joint")
             self.assertEqual(rig.skin_reusable(raw2, mesh, renamed, moved_ok=True), "the skeleton's joints changed")
+
+    def turned_copy(self, tmp: Path) -> Path:
+        """rig/skinned_raw.glb turned 180 degrees about up: the same joint names, order and parents."""
+        from scipy.spatial.transform import Rotation as R
+        doc, b = rig.read_glb(self.asset / "rig" / "skinned_raw.glb")
+        n = doc["nodes"][doc["skins"][0]["joints"][0]]
+        q = R.from_euler("y", 180, degrees=True)
+        n["rotation"] = (q * R.from_quat(n.get("rotation", [0, 0, 0, 1]))).as_quat().tolist()
+        n["translation"] = q.apply(n.get("translation", [0, 0, 0])).tolist()
+        turned = Path(tmp) / "turned.glb"
+        turned.write_bytes(_glb(doc, b))
+        return turned
+
+    def test_a_turned_or_far_moved_skeleton_does_not_reuse_the_weights(self) -> None:
+        mesh = self.asset / self.info["source"]
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = self.asset / "rig" / "skinned_raw.glb"
+            turned = self.turned_copy(Path(tmp))
+            self.assertIsNotNone(rig.skin_reusable(raw, mesh, turned))
+            why = rig.skin_reusable(raw, mesh, turned, moved_ok=True)
+            self.assertIsNotNone(why)
+            self.assertIn("on the body", why)
+            md, mb = rig.read_glb(mesh)
+            H = float(np.ptp(rig.accessor(md, mb, md["meshes"][0]["primitives"][0]["attributes"]["POSITION"])[:, 1]))
+            _, far, jn = self.moved_copy(Path(tmp), shift=(0.0, (rig.MOVED_MAX + 0.1) * H, 0.0))
+            why = rig.skin_reusable(raw, mesh, far, moved_ok=True)  # off the body, but too far to be a pivot fix
+            self.assertTrue(why and why.startswith(f"joint {jn} moved") and "over" in why, why)
 
     def test_reuse_skin_with_moved_joints_skips_skin_tokens_and_says_so(self) -> None:
         import contextlib
@@ -796,6 +825,36 @@ class BuiltPathTests(unittest.TestCase):
         self.assertEqual(info["skin_reuse"]["note"], "Reused the skin weights learned before; joints moved")
         for n, (p, _) in posed.items():  # the clips were baked on the moved joints, not the old ones
             np.testing.assert_allclose(now[n][0], p, atol=1e-5)
+
+    def test_reuse_skin_on_a_turned_skeleton_learns_the_weights_again(self) -> None:
+        import contextlib
+        import io
+        rawp = self.asset / "rig" / "skinned_raw.glb"
+        saved = (rig.OUT, rig.run_skin, rig_pred.predict)
+        calls: list[int] = []
+        rig.OUT = self.root / "out"
+        rig.run_skin = _stub_skin(calls)
+        rig_pred.predict = lambda source, work, **kw: (Path(self.d["pred"]), 0.0, True)
+        rj = self.asset / "rig" / "rig.json"
+        before, raw_before = rj.read_bytes(), rawp.read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            rawp.write_bytes(self.turned_copy(Path(tmp)).read_bytes())  # learned on a skeleton facing the other way
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                code = rig.main(["--stem", self.STEM, "--class", "avian", "--no-fbx", "--render", "0", "--reframe", "1",
+                                 "--reuse-skin"])
+            info = json.loads(rj.read_text())
+        finally:
+            rig.OUT, rig.run_skin, rig_pred.predict = saved
+            rj.write_bytes(before)
+            rawp.write_bytes(raw_before)
+        self.assertEqual(code, 0, buf.getvalue()[-2000:])
+        self.assertEqual(len(calls), 1, buf.getvalue()[-2000:])
+        self.assertRegex(buf.getvalue(), r"Couldn't reuse rig/skinned_raw\.glb \(joint \S+ moved [\d.]+× height, "
+                                         r"and it is on the body\); learning the weights again")
+        self.assertNotIn("joints moved", buf.getvalue())
+        self.assertFalse(info["reused_skin"])
 
     def test_reframe_stays_last(self) -> None:
         # the designed frames go on after the floor pass and the far-bone check (FK / _skin assume identity rests)
