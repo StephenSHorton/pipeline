@@ -6,7 +6,7 @@
 // rest of the session once a job started (index.html 3748, 6891). No React here.
 import type { Stage } from "@/lib/flow";
 
-export type PanelId = "cleanup" | "paint" | "lods" | "rig";
+export type PanelId = "cleanup" | "paint" | "lods" | "rig" | "weights";
 export type PanelSide = "left" | "right";
 /** The stages the viewer draws. */
 export type ViewerStage = Extract<Stage, "mesh" | "rig">;
@@ -17,6 +17,7 @@ export const PANEL_TITLES: Record<PanelId, string> = {
   paint: "Paint",
   lods: "Detail levels",
   rig: "Rig check",
+  weights: "Weights",
 };
 
 /** The Rig check's ×: title "Close the rig check", aria-label "Close" (rig-inspect.js 896). */
@@ -35,6 +36,8 @@ export const PANELS: PanelDef[] = [
   { id: "paint", side: "left", stages: ["mesh", "rig"] },
   { id: "lods", side: "left", stages: ["mesh", "rig"] },
   { id: "rig", side: "right", stages: ["rig"] },
+  // How much of the mesh each bone moves, painted by hand (screens/asset/rig/WeightsPanel.tsx). New, not legacy.
+  { id: "weights", side: "right", stages: ["rig"] },
 ];
 
 /** The panels on one side for a stage, in rail order. */
