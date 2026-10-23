@@ -62,7 +62,7 @@ VIEWS = ("side", "xside", "front", "back", "top", "bottom", "q")
 STAGES = list(flow.STAGES)
 RENDER_KEEP_S = 600  # a look's folder outlives its answer (the path is in it) by this long
 NOT_YET = ("not yet: {op} is not built. Use remove_floaters, delete_sphere, stretch, thicken_legs, shorten_legs, "
-           "widen_head or trim_belly, or rebuild the shape as clay.")
+           "widen_head, trim_belly or tidy_legs, or rebuild the shape as clay.")
 
 
 class ToolError(ValueError):
@@ -556,7 +556,10 @@ class Workbench:
                                     "ramp": {"type": "number", "minimum": 0.01, "maximum": 0.5},
                                     "head": {"type": "string", "enum": sorted(edit.AXES)}}, ("factor",)),
                     "trim_belly": ({"line": frac, "blend": {"type": "number", "minimum": 0.005, "maximum": 0.2},
-                                    "keep_legs": {"type": "boolean"}}, ())}[op]
+                                    "keep_legs": {"type": "boolean"}}, ()),
+                    "tidy_legs": ({"thickness": {"type": "number", "minimum": 0.5, "maximum": 3},
+                                   "straighten": {"type": "number", "minimum": 0, "maximum": 1},
+                                   "smooth": {"type": "number", "minimum": 0, "maximum": 1}, "top": frac}, ())}[op]
             errs = check(_obj(*spec), params, "params")
             if errs:
                 raise ArgError("; ".join(errs))
@@ -620,6 +623,8 @@ class Workbench:
         stem = check_stem(a["stem"])
         glb = self.path(a["glb"], (".glb",))
         name = a.get("name") or re.sub(r"[^A-Za-z0-9_-]+", "_", stem)[:64]
+        if a.get("legs") == "clean" and (a.get("leg_weight") or 1) != 1:
+            raise ArgError("leg_weight weights the legs the cut keeps and legs clean replaces them: give one")
         clean_psx({"name": name})
         folder = self.folder(stem, must_exist=False)
 
@@ -634,6 +639,7 @@ class Workbench:
                 report = bake.psx(self.root, glb, tmp / "psx", tmp / "psx.glb", name, float(a["height"]),
                                   a["facing"], a.get("faces"), a.get("atlas"),
                                   **({"head_weight": a["head_weight"]} if a.get("head_weight") else {}),
+                                  **({"leg_weight": a["leg_weight"]} if a.get("leg_weight") else {}),
                                   **{k: a[k] for k in ("legs", "leg_sides", "leg_scale", "leg_taper") if k in a})
                 # The cut takes tens of seconds and write() checked the stem only before it. A generate started
                 # meanwhile writes these same files (psx.glb, psx/, lods.json); moving ours in would mix the two.
@@ -777,7 +783,14 @@ class Workbench:
                  "belly (a keel of wool, spikes) up to line (share of height; default the belly's underside between "
                  "the legs, or the leg band's top if higher) with a smooth knee of +-blend, leaving legs (and feet), "
                  "head and tail, then smooths the lifted underside; it refuses on a shape without legs unless line is "
-                 "given. top (share of height where legs meet belly), start and head are read from the shape when "
+                 "given; tidy_legs (thickness? 0.5..3 default 1, straighten? 0..1 default 1, smooth? 0..1 default 1, "
+                 "top?) keeps the legs part of the mesh and tidies them: each leg's centre line becomes a straight "
+                 "line through its centres (its slant kept, the zig-zag gone), its radius a smooth taper (fuller at "
+                 "the top, a slight hoof flare) times thickness, fading out over the top 15% of the band so it joins "
+                 "the belly, then Taubin smoothing of the leg takes the lumps off; feet stay on the floor; the answer "
+                 "reports per leg slant, zig-zag and lumps before and after, the radius profile and turned faces "
+                 "(use it before psx with leg_weight instead of legs clean; the sheep: thickness 1.5). "
+                 "top (share of height where legs meet belly), start and head are read from the shape when "
                  "omitted; the answer says what was found (top, legs and their centres, start, head end). When the "
                  "shape doesn't show them (fewer than two legs, legs it can't tell apart, no head end that rises "
                  "above the body or ends that look alike, no neck) the op refuses and says why: give top, head or "
@@ -786,7 +799,7 @@ class Workbench:
                  _obj({"stem": STEM, "src": GLB, "op": {"type": "string", "enum": ["remove_floaters", "delete_sphere",
                                                                                    "stretch", "thicken_legs",
                                                                                    "shorten_legs", "widen_head",
-                                                                                   "trim_belly",
+                                                                                   "trim_belly", "tidy_legs",
                                                                                    "straighten_head", "symmetrize",
                                                                                    "nudge"]},
                        "params": {"type": "object"}}, ("stem", "src", "op")), self.mesh_edit),
@@ -815,11 +828,15 @@ class Workbench:
                  "legs clean (creatures) swaps each decimated leg, lumpy and splayed at the hoof, for a straight "
                  "tapered prism of leg_sides sides (default 6), leg_scale times the measured leg radius (default 1; "
                  "above 1 for thicker legs, instead of thicken_legs) and leg_taper bottom over top (default 0.8); a "
-                 "shape with no legs keeps its own and psx.json's legs says why.",
+                 "shape with no legs keeps its own and psx.json's legs says why. leg_weight (creatures; default 1 = "
+                 "off; the sheep: 2.5) keeps the legs part of the mesh and gives them that many times their share of "
+                 "the triangles so the cut does not pinch them (tidy them first with mesh_edit tidy_legs); it "
+                 "composes with head_weight, not with legs clean.",
                  _obj({"stem": STEM, "glb": GLB, "height": {"type": "number", "minimum": 0.001, "maximum": 100000},
                        "facing": FACING, "faces": {"type": "integer", "minimum": 1, "maximum": 65536},
                        "atlas": {"type": "integer", "minimum": 1, "maximum": 65536},
                        "head_weight": {"type": "number", "minimum": 1, "maximum": 4},
+                       "leg_weight": {"type": "number", "minimum": 1, "maximum": 4},
                        "legs": {"type": "string", "enum": ["keep", "clean"]},
                        "leg_sides": {"type": "integer", "minimum": 3, "maximum": 16},
                        "leg_scale": {"type": "number", "minimum": 0.25, "maximum": 4},

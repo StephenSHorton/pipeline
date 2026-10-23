@@ -589,6 +589,31 @@ def _tighten(legs: "_Legs", P: np.ndarray, seeds: list[np.ndarray], cap: float =
     return legs
 
 
+def _sturdy_legs(P: np.ndarray, floor: float, ytop: float) -> tuple["_Legs", str]:
+    """The legs as trim_belly and tidy_legs need them: _Legs, or _UpperLegs when a hoof splits oddly (find_legs's
+    waist test reads a split hoof on a shortened leg as legs pressed together), refusing parts that are too many or
+    slab-shaped (wheels), then _tighten'ed so wool hanging among the legs stays out. Returns the legs and where
+    they were read from."""
+    try:
+        legs, how = _Legs(P, floor, ytop), "leg band"
+        seeds = find_legs(P, floor, ytop)[0]
+    except EditError as e:
+        if "touch along" not in str(e):
+            raise
+        legs, how = _UpperLegs(P, floor, ytop), "upper leg band (the feet split oddly)"
+        seeds = legs.seeds
+    # Legs stand on round footprints; a wheel seen from above is a long thin slab. Lifting "belly" between
+    # wheels would bite into them, so slab-shaped parts mean this is not a creature.
+    if len(seeds) > MAX_LEGS:
+        raise EditError(f"found {len(seeds)} parts under it, too many for legs; check the shape")
+    big = max(int(m.sum()) for m in seeds)
+    flat = max(_footprint_aspect(m) for m in seeds if m.sum() >= 0.25 * big)
+    if flat > LEG_FOOTPRINT_MAX:
+        raise EditError(f"the parts it stands on are not leg-shaped ({flat:.1f} times longer than wide, like "
+                        "wheels); check the shape")
+    return _tighten(legs, P, seeds), how
+
+
 BELLY_PCT = 60  # the belly line: this percentile of the underside heights between the legs
 LEG_KEEP = 1.3  # trim_belly leaves points within this many leg radii of a leg's centre line alone
 LEG_FREE = 1.8  # and lifts fully from this many; smoothstep between
@@ -757,25 +782,7 @@ def trim_belly(mesh: trimesh.Trimesh, line: float | None = None, blend: float = 
     info = {"op": "trim_belly"}
     try:
         ytop = leg_top(mesh, P)
-        try:
-            legs, info["legs_from"] = _Legs(P, floor, ytop), "leg band"
-            seeds = find_legs(P, floor, ytop)[0]
-        except EditError as e:
-            if "touch along" not in str(e):
-                raise
-            legs, info["legs_from"] = _UpperLegs(P, floor, ytop), "upper leg band (the feet split oddly)"
-            seeds = legs.seeds
-
-        # Legs stand on round footprints; a wheel seen from above is a long thin slab. Lifting "belly" between
-        # wheels would bite into them, so slab-shaped parts mean this is not a creature.
-        if len(seeds) > MAX_LEGS:
-            raise EditError(f"found {len(seeds)} parts under it, too many for legs; check the shape")
-        big = max(int(m.sum()) for m in seeds)
-        flat = max(_footprint_aspect(m) for m in seeds if m.sum() >= 0.25 * big)
-        if flat > LEG_FOOTPRINT_MAX:
-            raise EditError(f"the parts it stands on are not leg-shaped ({flat:.1f} times longer than wide, like "
-                            "wheels); check the shape")
-        legs = _tighten(legs, P, seeds)
+        legs, info["legs_from"] = _sturdy_legs(P, floor, ytop)
     except EditError as e:
         if line is None:
             raise EditError(f"{e}; give line") from None
@@ -825,8 +832,193 @@ def trim_belly(mesh: trimesh.Trimesh, line: float | None = None, blend: float = 
     return out, info
 
 
+TIDY_BINS = 20  # tidy_legs: height bins over the leg band for each leg's centre and radius
+TIDY_FIT = 0.85  # the centre line and radius are fitted below this share of the band (above, the belly crowds in)
+TIDY_BLEND = 0.15  # the move fades out over this top share of the band, so the leg joins the belly with no crease
+TIDY_CAP = 1.5  # surface points within this many leg radii of a leg's centre line are measured as that leg
+HOOF = 0.15  # the hoof: the bottom share of the band, where the radius may flare
+HOOF_FLARE = 0.2  # by at most this share over the shank's taper
+TIDY_REACH = (1.3, 1.9)  # a vertex moves fully within the first many leg radii of its centre line, not past the second
+TAUBIN = (0.5, -0.53)  # lambda, mu: smoothing that does not shrink
+FLAT_NY = (0.5, 0.85)  # Taubin fades out from walls (|normal y| below the first) to flat faces (above the second)
+TIDY_ITERS = 10  # Taubin passes at smooth 1
+
+
+def _welded(V: np.ndarray, F: np.ndarray):
+    """UV-seam duplicates welded by position: (a representative per node, node per vertex, unique node edges)."""
+    _, first, inv = np.unique(np.round(V, 9), axis=0, return_index=True, return_inverse=True)
+    inv = inv.ravel()
+    E = trimesh.geometry.faces_to_edges(inv[F])
+    E = E[E[:, 0] != E[:, 1]]
+    return first, inv, np.unique(np.sort(E, axis=1), axis=0)
+
+
+def _taubin_xz(V: np.ndarray, F: np.ndarray, weight: np.ndarray, iters: int) -> np.ndarray:
+    """Taubin (lambda/mu) smoothing of x and z only, each vertex's step scaled by its weight, over the welded mesh
+    (UV-seam duplicates are one node and move together, so no seam opens). Heights stay, so feet stay on the floor;
+    vertices of weight 0 are a fixed boundary and are returned exactly as they were."""
+    if iters <= 0 or not (weight > 0).any():
+        return V.copy()
+    first, inv, E = _welded(V, F)
+    n = len(first)
+    X = V[first][:, [0, 2]].copy()
+    wt = np.zeros(n)
+    np.maximum.at(wt, inv, weight)
+    deg = np.bincount(E.ravel(), minlength=n).astype(float)
+    wt *= deg > 0
+    for _ in range(iters):
+        for f in TAUBIN:
+            s = np.stack([np.bincount(E[:, 0], X[E[:, 1], a], n) + np.bincount(E[:, 1], X[E[:, 0], a], n)
+                          for a in range(2)], axis=1)
+            X = X + (f * wt)[:, None] * (s / np.maximum(deg, 1.0)[:, None] - X)
+    out = V.copy()
+    moved = wt[inv] > 0
+    out[np.ix_(moved, [0, 2])] = X[inv[moved]]
+    return out
+
+
+def _leg_profile(pts: np.ndarray, floor: float, top: float, bins: int = TIDY_BINS):
+    """One leg's surface points binned by height: bin heights, the centroid (xz) and mean radius per bin, filled
+    across empty bins, and the point count per bin (the fits' weights)."""
+    edges = np.linspace(floor, top, bins + 1)
+    ys = (edges[:-1] + edges[1:]) / 2
+    k = np.clip(np.digitize(pts[:, 1], edges) - 1, 0, bins - 1)
+    n = np.bincount(k, minlength=bins).astype(float)
+    got = np.nonzero(n >= 3)[0]
+    if len(got) < 4:
+        raise EditError("a leg has too few points to measure; check the shape")
+    C = np.array([pts[k == b][:, [0, 2]].mean(0) for b in got])
+    r = np.array([np.linalg.norm(pts[k == b][:, [0, 2]] - C[j], axis=1).mean() for j, b in enumerate(got)])
+    Cf = np.stack([np.interp(ys, ys[got], C[:, a]) for a in range(2)], axis=1)
+    return ys, Cf, np.interp(ys, ys[got], r), np.where(n >= 3, n, 0.0)
+
+
+def _fit(t: np.ndarray, y: np.ndarray, w: np.ndarray, deg: int) -> np.ndarray:
+    """Weighted least-squares polynomial coefficients of y (one or more columns) in t."""
+    A = np.vander(t, deg + 1)
+    sw = np.sqrt(w)[:, None]
+    return np.linalg.lstsq(A * sw, (y.reshape(len(t), -1)) * sw, rcond=None)[0]
+
+
+def _radius_at(taper: np.ndarray, flare: float, t: np.ndarray) -> np.ndarray:
+    """The target radius at band share t: the straight taper, flared by up to `flare` toward the floor below HOOF."""
+    return np.polyval(taper, t) * (1.0 + flare * (1.0 - smoothstep(t / HOOF)))
+
+
+def _leg_shape(ys: np.ndarray, C: np.ndarray, r: np.ndarray, n: np.ndarray, floor: float, band: float) -> dict:
+    """A leg's straight centre line (a line through its centroids: the slant stays, the zig-zag goes) and smooth
+    radius profile (a quadratic through its radii: fuller at the top, the slim cannon, the hoof's flare), each
+    fitted below TIDY_FIT of the band; and how far the leg strays from them (zig-zag, lumps), as shares of its
+    radius, and its slant from vertical in degrees."""
+    t = (ys - floor) / band
+    w = n * (t <= TIDY_FIT)
+    cl = _fit(t, C, w, 1)
+    sel = w > 0
+    # Radius: a straight taper over the shank (above the hoof), never fuller at the bottom than the top, and a
+    # flare at the hoof of at most HOOF_FLARE, read from the hoof's own radius.
+    shank = w * (t >= HOOF)
+    rl = _fit(t, r, shank if (shank > 0).sum() >= 2 else w, 1)[:, 0]
+    rl[0] = max(rl[0], 0.0)
+    base = np.polyval(rl, t)
+    hoof = sel & (t < HOOF)
+    flare = float(np.clip(np.average(r[hoof] / np.maximum(base[hoof], 1e-9), weights=w[hoof]) - 1.0, 0.0,
+                          HOOF_FLARE)) if hoof.any() else 0.0
+    rfit = _radius_at(rl, flare, t)
+    Cfit = np.vander(t, 2) @ cl
+    rm = float(np.average(r[sel], weights=w[sel]))
+    return {"line": cl, "taper": rl, "flare": flare, "rmin": float(r[sel].min()), "rmax": float(r[sel].max()),
+            "zigzag": float(np.sqrt(np.average(np.sum((C - Cfit) ** 2, 1)[sel], weights=w[sel]))) / rm,
+            "lumps": float(np.sqrt(np.average(((r - rfit) ** 2)[sel], weights=w[sel]))) / rm,
+            "slant": float(np.degrees(np.arctan2(np.linalg.norm(cl[0]), band))), "mean_radius": rm}
+
+
+def _legs_measured(P: np.ndarray, legs: "_Legs", floor: float, top: float, cap: float = TIDY_CAP):
+    """Each leg's profile and fitted shape from surface points within cap leg radii of its centre line."""
+    band = top - floor
+    Q = P[P[:, 1] < top]
+    lab, _, d = legs.nearest(Q)
+    out = []
+    for i in range(legs.n):
+        prof = _leg_profile(Q[(lab == i) & (d <= cap * legs.R[i])], floor, top)
+        out.append((prof, _leg_shape(*prof, floor, band)))
+    return out
+
+
+def tidy_legs(mesh: trimesh.Trimesh, thickness: float = 1.0, straighten: float = 1.0, smooth: float = 1.0,
+              top: float | None = None):
+    """Give each leg a straight centre line and a smooth radius profile, keeping it part of the mesh. Per leg, its
+    surface's centroid c(y) and mean radius r(y) per height; the target centre line is a straight line fitted
+    through c(y) (the leg's slant stays, the zig-zag goes), the target radius a quadratic fitted to r(y) (fuller at
+    the top, slimmer at the cannon, the hoof's flare) times thickness. Each leg vertex moves in x,z only:
+    xz' = c'(y) + (xz - c(y)) r'(y) / r(y), with c' = c + straighten (line - c) and r' = thickness (smooth fit +
+    (1 - smooth) r). The move fades out over the top TIDY_BLEND of the band (so the leg joins the belly without a
+    crease) and with distance from the leg's centre line (TIDY_REACH radii: the belly and a neighbouring part stay).
+    Then Taubin smoothing of x,z on the leg vertices (UV-seam duplicates welded) takes off the lumps left. Heights
+    never change, so the feet stay on the floor; faces, UVs and texture are kept."""
+    V = np.asarray(mesh.vertices, float)
+    F = np.asarray(mesh.faces)
+    P = _surface(mesh)
+    floor, ytop, how = _top_abs(mesh, P, top)
+    band = max(ytop - floor, 1e-9)
+    legs, legs_from = _sturdy_legs(P, floor, ytop)
+    shapes = _legs_measured(P, legs, floor, ytop)
+    out = V.copy()
+    inband = np.nonzero(V[:, 1] < ytop)[0]
+    W = V[inband]
+    lab, _, d = legs.nearest(W)
+    R = legs.R[lab]
+    wy = 1.0 - smoothstep((W[:, 1] - (ytop - TIDY_BLEND * band)) / (TIDY_BLEND * band))
+    wr = 1.0 - smoothstep((d - TIDY_REACH[0] * R) / ((TIDY_REACH[1] - TIDY_REACH[0]) * R))
+    w = wy * wr
+    t = (W[:, 1] - floor) / band
+    weight = np.zeros(len(V))
+    for i, ((ys, C, r, _), shape) in enumerate(shapes):
+        m = lab == i
+        if not m.any():
+            continue
+        y = W[m, 1]
+        c = np.stack([np.interp(y, ys, C[:, a]) for a in range(2)], axis=1)
+        rr = np.maximum(np.interp(y, ys, r), 1e-9)
+        line = np.vander(t[m], 2) @ shape["line"]
+        rfit = np.clip(_radius_at(shape["taper"], shape["flare"], t[m]), 0.6 * shape["rmin"], 1.2 * shape["rmax"])
+        c2 = c + float(straighten) * (line - c)
+        r2 = float(thickness) * (float(smooth) * rfit + (1.0 - float(smooth)) * rr)
+        target = c2 + (W[m][:, [0, 2]] - c) * (r2 / rr)[:, None]
+        xz = W[m][:, [0, 2]]
+        out[inband[m][:, None], [0, 2]] = xz + w[m][:, None] * (target - xz)
+    weight[inband] = w
+    # Smoothing in x,z moves a face lying flat (the hoof's sole, the belly over the leg's top) within its own plane,
+    # where it turns over easily; it is meant for the leg's walls, so it fades on faces that lie flat.
+    ny = np.abs(np.asarray(trimesh.Trimesh(V, F, process=False).vertex_normals)[:, 1])
+    flat = 1.0 - smoothstep((ny - FLAT_NY[0]) / (FLAT_NY[1] - FLAT_NY[0]))
+    out = _taubin_xz(out, F, weight * flat * float(smooth), int(round(TIDY_ITERS * float(smooth))))
+    turned = int(_turned(V, out, F).sum())
+    after = _legs_measured(_surface(trimesh.Trimesh(out, F, process=False)), legs, floor, ytop,
+                           cap=TIDY_CAP * max(float(thickness), 1.0))
+
+    def rprof(shape, scale=1.0):
+        u = np.array([0.0, 0.25, 0.5, 0.75])
+        return [round(float(x) * scale, 4) for x in _radius_at(shape["taper"], shape["flare"], u)]
+
+    per = []
+    for i, ((_, b), (_, a)) in enumerate(zip(shapes, after)):
+        per.append({"centre_xz": legs.info()[i]["centre_xz"],
+                    "slant_before": round(b["slant"], 2), "slant_after": round(a["slant"], 2),
+                    "zigzag_before": round(b["zigzag"], 4), "zigzag_after": round(a["zigzag"], 4),
+                    "lumps_before": round(b["lumps"], 4), "lumps_after": round(a["lumps"], 4),
+                    "radius_before": round(b["mean_radius"], 4), "radius_after": round(a["mean_radius"], 4),
+                    "radius_profile": rprof(b, float(thickness)), "hoof_flare": round(b["flare"], 3)})
+    info = {"op": "tidy_legs", "thickness": float(thickness), "straighten": float(straighten),
+            "smooth": float(smooth), "top": round(float(band / np.ptp(P[:, 1])), 4), "top_y": round(float(ytop), 4),
+            "top_from": how, "legs_from": legs_from, "legs_found": legs.n, "legs": per,
+            "radius_profile_at": [0.0, 0.25, 0.5, 0.75],
+            "verts_moved": int((np.linalg.norm(out - V, axis=1) > 1e-9).sum()), "turned_faces": turned,
+            "extents_before": _extents(V), "extents_after": _extents(out)}
+    return out, info
+
+
 OPS = {"thicken_legs": thicken_legs, "shorten_legs": shorten_legs, "widen_head": widen_head,
-       "trim_belly": trim_belly}
+       "trim_belly": trim_belly, "tidy_legs": tidy_legs}
 
 
 def apply(mesh: trimesh.Trimesh, op: str, **params) -> tuple[trimesh.Trimesh, dict]:

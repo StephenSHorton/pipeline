@@ -153,6 +153,86 @@ class CleanLegsTests(unittest.TestCase):
             P.clean_legs(P.place(bale(), 30.0, 0.0), 600, 1.0)
 
 
+class LegWeightTests(unittest.TestCase):
+    """--leg-weight keeps the decimated legs and spends more of the budget on them."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.high = P.place(quadruped(), 30.0, 0.0)
+        cls.warp = P.leg_warp(cls.high)
+
+    def leg_faces(self, low: trimesh.Trimesh) -> int:
+        c = np.asarray(low.triangles_center)
+        return int((c[:, 1] < 0.85 * self.warp["top"]).sum())
+
+    def test_warp_inverts_exactly_even_where_scaled_legs_overlap(self) -> None:
+        V = np.asarray(self.high.vertices, float)
+        rng = np.random.default_rng(1)
+        pts = np.vstack([V, rng.uniform(V.min(0), V.max(0), (20000, 3))])
+        for w in (1.5, 2.5, 4.0):
+            fwd = P._warp_legs(pts, self.warp, w)
+            np.testing.assert_array_equal(fwd[:, 1], pts[:, 1])  # heights never move
+            self.assertGreater(float(np.abs(fwd - pts).max()), 0.0)
+            back = P._warp_legs(fwd, self.warp, w, inverse=True)
+            self.assertLess(float(np.abs(back - pts).max()), 1e-9 * float(np.ptp(V)))
+        # At 4 the scaled cores of neighbouring legs overlap; it still came back.
+        gap = min(float(np.linalg.norm(self.warp["C"][i][0] - self.warp["C"][j][0]))
+                  for i in range(4) for j in range(i + 1, 4))
+        self.assertGreater(4.0 * float(self.warp["R"].max()), gap / 2)
+
+    def test_more_faces_on_the_legs_in_place_and_on_the_floor(self) -> None:
+        plain = P.decimate_weighted(self.high, 600, 1.0, 1.0)
+        heavy = P.decimate_weighted(self.high, 600, 1.0, 2.5, self.warp)
+        self.assertGreater(self.leg_faces(heavy), self.leg_faces(plain))
+        self.assertLessEqual(len(heavy.faces), 630)
+        np.testing.assert_allclose(heavy.bounds, self.high.bounds, atol=0.03 * float(np.ptp(self.high.vertices)))
+        self.assertLess(abs(float(heavy.vertices[:, 1].min())), 0.01 * float(np.ptp(self.high.vertices[:, 1])))
+        # The cut pinches nothing off that the plain cut kept joined.
+        self.assertLessEqual(len(heavy.split(only_watertight=False)), len(plain.split(only_watertight=False)))
+        # It composes with --head-weight: the head still gets its share.
+        both = P.decimate_weighted(self.high, 600, 2.0, 2.5, self.warp)
+        front = self.high.bounds[0][2] + 0.8 * np.ptp(self.high.vertices[:, 2])
+        self.assertGreater(int((both.triangles_center[:, 2] > front).sum()),
+                           int((heavy.triangles_center[:, 2] > front).sum()))
+        self.assertGreater(self.leg_faces(both), self.leg_faces(plain))
+
+    def test_one_piece_mesh_stays_one_piece(self) -> None:
+        body = trimesh.creation.icosphere(subdivisions=4)
+        body.apply_scale([0.4, 0.35, 1.0])
+        body.apply_translation([0, 0.8, 0])
+        V = np.asarray(body.vertices).copy()
+        # Pull four legs down out of the body's own surface, so the shape is one piece with them.
+        for x, z in FEET:
+            near = np.hypot(V[:, 0] - x, V[:, 2] - z) < LEG_R
+            V[near & (V[:, 1] < 0.8), 1] = 0.0
+        one = P.place(trimesh.Trimesh(V, body.faces), 30.0, 0.0)
+        self.assertEqual(len(one.split(only_watertight=False)), 1)
+        low = P.decimate_weighted(one, 400, 1.0, 2.0)
+        self.assertEqual(len(low.split(only_watertight=False)), 1)
+        self.assertLess(abs(float(low.vertices[:, 1].min())), 0.01 * 30.0)
+
+    def test_main_reports_and_default_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            src = textured(quadruped(), d / "q.glb")
+            run(src, d / "default")
+            run(src, d / "one", "--leg-weight", "1")
+            heavy = run(src, d / "heavy", "--leg-weight", "2", "--head-weight", "2")
+            for f in ("m.glb", "m.obj", "m.png", "psx.json"):
+                self.assertEqual((d / "default" / f).read_bytes(), (d / "one" / f).read_bytes(), f)
+            legs = heavy["report"]["legs"]
+            self.assertEqual((legs["mode"], legs["leg_weight"], legs["legs_found"]), ("weighted", 2.0, 4))
+            self.assertLessEqual(heavy["report"]["triangles"], 630)
+            bale_src = textured(bale(), d / "bale.glb")
+            got = run(bale_src, d / "bale", "--leg-weight", "2")
+            self.assertEqual(got["report"]["legs"]["mode"], "keep")
+            self.assertEqual(got["report"]["degraded"][0]["code"], "leg_weight")
+            proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "psx_lowpoly.py"), str(src), "--out",
+                                   str(d / "x"), "--name", "m", "--height", "30", "--legs", "clean",
+                                   "--leg-weight", "2"], capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(proc.returncode, 0)
+
+
 class MainTests(unittest.TestCase):
     def test_bale_falls_back_to_keep_with_a_note(self) -> None:
         with tempfile.TemporaryDirectory() as d:
