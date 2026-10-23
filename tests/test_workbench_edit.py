@@ -431,6 +431,29 @@ def slant(y: np.ndarray, c: np.ndarray) -> float:
 
 
 class TidyLegsTests(unittest.TestCase):
+    def test_headless_shape_refused(self) -> None:
+        with self.assertRaises(edit.EditError):  # too many parts, or legs with no head: either way not a creature
+            edit.tidy_legs(headless()["box on wheels"])
+
+    def test_leg_wider_at_the_hoof_keeps_its_mean_radius(self) -> None:
+        # Legs that widen toward the floor (a cow's): at thickness 1 the level radius is the leg's mean, not its
+        # widest, so the leg does not swell into a tube.
+        body = trimesh.creation.icosphere(subdivisions=4)
+        body.apply_scale([0.4, 0.35, 1.0])
+        body.apply_translation([0, 0.8, 0])
+        head = trimesh.creation.icosphere(subdivisions=3, radius=0.25).apply_translation([0, 1.0, 1.15])
+        legs = []
+        for x, z in LEGS:
+            leg = tube(x, z, r=0.06, h=0.6)
+            v = np.asarray(leg.vertices).copy()
+            k = 1.5 - (v[:, 1] / 0.6)  # 1.5 at the floor, 0.5 at the top
+            v[:, [0, 2]] = np.array([x, z]) + (v[:, [0, 2]] - np.array([x, z])) * k[:, None]
+            leg.vertices = v
+            legs.append(leg)
+        _, info = edit.tidy_legs(trimesh.util.concatenate([body, head, *legs]), thickness=1.0)
+        for leg in info["legs"]:
+            self.assertLess(abs(leg["radius_after"] / leg["radius_before"] - 1), 0.12, leg)
+
     def test_straightens_and_smooths_crooked_legs(self) -> None:
         mesh, idx = crooked_quadruped()
         V = np.asarray(mesh.vertices)

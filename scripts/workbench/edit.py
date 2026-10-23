@@ -917,8 +917,12 @@ def _leg_shape(ys: np.ndarray, C: np.ndarray, r: np.ndarray, n: np.ndarray, floo
     # Radius: a straight taper over the shank (above the hoof), never fuller at the bottom than the top, and a
     # flare at the hoof of at most HOOF_FLARE, read from the hoof's own radius.
     shank = w * (t >= HOOF)
-    rl = _fit(t, r, shank if (shank > 0).sum() >= 2 else w, 1)[:, 0]
-    rl[0] = max(rl[0], 0.0)
+    fw = shank if (shank > 0).sum() >= 2 else w
+    rl = _fit(t, r, fw, 1)[:, 0]
+    if rl[0] < 0.0:
+        # Wider toward the hoof: a level radius, at the leg's mean (the fit's floor value is its widest, which would
+        # make the whole leg a tube that fat).
+        rl[0], rl[1] = 0.0, float(np.average(r[fw > 0], weights=fw[fw > 0]))
     base = np.polyval(rl, t)
     hoof = sel & (t < HOOF)
     flare = float(np.clip(np.average(r[hoof] / np.maximum(base[hoof], 1e-9), weights=w[hoof]) - 1.0, 0.0,
@@ -961,6 +965,11 @@ def tidy_legs(mesh: trimesh.Trimesh, thickness: float = 1.0, straighten: float =
     floor, ytop, how = _top_abs(mesh, P, top)
     band = max(ytop - floor, 1e-9)
     legs, legs_from = _sturdy_legs(P, floor, ytop)
+    fi, li = _length_axes(P)
+    _, along = _along_window(mesh, P, legs, fi, li, ytop)
+    if along.get("along") == "no head":
+        # As trim_belly: legs with no head are likely wheels (a tractor) or a machine's, not a creature's.
+        raise EditError("found legs but no head, so this may not be a creature; check the shape")
     shapes = _legs_measured(P, legs, floor, ytop)
     out = V.copy()
     inband = np.nonzero(V[:, 1] < ytop)[0]
