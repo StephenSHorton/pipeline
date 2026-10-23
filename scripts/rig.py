@@ -37,7 +37,9 @@
    its root and near its bones; then the weights are smoothed over the welded mesh (6 Laplacian steps) and limited
    again (the sheep's hind pelvis/thigh bones had owned 22% of the mesh: Walk lifted the rump by half its height).
    Corners at the same point then get the same weights, so no seam can open. --reuse-skin keeps rig/skinned_raw.glb
-   when it was skinned on the same mesh and skeleton (re-cleaning and re-baking a rig without skin-tokens).
+   when it was skinned on the same mesh and skeleton (re-cleaning and re-baking a rig without skin-tokens), or on the
+   same joints (names, order, parents) since moved: the weights are per joint, so they ride on the moved joints
+   (rejoint_skin; "Reused the skin weights learned before; joints moved", rig.json skin_reuse).
 5. Clips (a ground bird gets Idle and Walk; flight clips only if they keep the body together): each template clip is played on the template, and every bone of ours takes the same world-space rotation
    change from the reference pose (skin-tokens' bones have identity rest rotations, so the clip's local rotations
    can't be used as they are). The root also moves by the template root's offset, scaled to our size.
@@ -641,6 +643,9 @@ def posed_template(template: dict, out: Path, mesh_points: np.ndarray, surface: 
                     notes.append("Laid the template's " + c["kind"] + (" " + c["chain"] if "chain" in c else "") + " on the predicted "
                                  + ", ".join(c.get("pred", [])[:1] + c.get("pred", [])[-1:]) + ": " + ", ".join(
                                      f"{k} {v}" for k, v in c.items() if k not in ("chain", "kind", "pred")))
+                for c in reg_p.get("pivots") or []:
+                    notes.append(f"Put the {c['joint']} pivot back over {c['over']} ({c['to_leg_H']:.2f}× height from it, moved {c['moved_H']:.2f}×"
+                                 + (f", pulled {c['pulled_in']:.0%} toward the leg to stay inside the model" if c["pulled_in"] else "") + ")")
                 if reg_p["unsupported"]:
                     notes.append("No predicted chain for the template's " + ", ".join(reg_p["unsupported"]) + ": folded onto the body, unsupported")
             else:
@@ -728,9 +733,12 @@ def run_skin(mesh: Path, skeleton: Path, out: Path, fit: str = "none") -> float:
     return time.time() - t
 
 
-def skin_reusable(raw: Path, mesh: Path, skeleton: Path, tol: float = 1e-5) -> str | None:
+def skin_reusable(raw: Path, mesh: Path, skeleton: Path, tol: float = 1e-5, moved_ok: bool = False) -> str | None:
     """None when raw (an earlier skin-tokens output) was skinned on this mesh and this skeleton: the same vertex
-    positions, the same joint names and world positions (rest rotations included). Else why not."""
+    positions, the same joint names (in order, with the same parents) and world positions (rest rotations
+    included). Else why not. moved_ok: the joints may have moved (weights are per joint name, so a re-rig that only
+    moved joints, e.g. a pivot fix, keeps them; rejoint_skin puts raw's joints where the skeleton's are), as long as
+    no body joint (_trunk) moved and no joint moved over MOVED_MAX x height: a turned skeleton keeps its names too."""
     if not raw.is_file():
         return "no rig/skinned_raw.glb"
     try:
@@ -744,20 +752,90 @@ def skin_reusable(raw: Path, mesh: Path, skeleton: Path, tol: float = 1e-5) -> s
         if "JOINTS_0" not in rd["meshes"][0]["primitives"][0]["attributes"]:
             return "it has no weights"
 
-        def joints(doc: dict) -> dict:  # positions only: skin-tokens writes the joints with identity rotations
-            sk = Skeleton(doc)
-            w = sk.world({})
-            return {doc["nodes"][i].get("name"): w[i][0] for i in doc["skins"][0]["joints"]}
-        a, b = joints(rd), joints(sd)
-        if list(a) != list(b):
+        a, b = _joint_rest(rd), _joint_rest(sd)
+        if [(n, p) for n, (_, p) in a.items()] != [(n, p) for n, (_, p) in b.items()]:
             return "the skeleton's joints changed"
         H = max(float(np.ptp(Pm[:, 1])), 1e-9)
-        for n, p in a.items():
-            if float(np.abs(p - b[n]).max()) > 1e-4 * H:
+        if moved_ok:
+            # the weights only fit while the body stays put: a turned skeleton keeps every name, but its
+            # _l bones sit on the right and its front bones at the rump (a mirror about the midline is not caught)
+            trunk = _trunk(a)
+            for n, (p, _) in a.items():
+                d = float(np.linalg.norm(p - b[n][0]))
+                if n in trunk and d > MOVED_TRUNK * H:
+                    return f"joint {n} moved {d / H:.2f}× height, and it is on the body"
+                if d > MOVED_MAX * H:
+                    return f"joint {n} moved {d / H:.2f}× height (over {MOVED_MAX}×)"
+            return None
+        for n, (p, _) in a.items():
+            if float(np.abs(p - b[n][0]).max()) > 1e-4 * H:
                 return f"joint {n} moved"
     except Exception as e:  # noqa: BLE001 - unreadable: skin again
         return f"unreadable ({str(e)[:80]})"
     return None
+
+
+MOVED_TRUNK = 0.01  # x height a body joint may move and the weights still be reused (a pivot fix moves none)
+MOVED_MAX = 0.6  # x height any joint may move (the sheep's hip pivot fix moved 0.42; a turn about Y moves 1.45)
+
+
+def _trunk(rest: dict[str, tuple[np.ndarray, str | None]]) -> set[str]:
+    """The body joints: the root and every joint on the way to a branch (2+ children). A leg's pivot, a leg, a tail
+    or an ear hangs off them in a single chain."""
+    kids: dict[str | None, list[str]] = {}
+    for n, (_, p) in rest.items():
+        kids.setdefault(p, []).append(n)
+    out: set[str] = set()
+    for n in rest:
+        if len(kids.get(n, [])) >= 2 or rest[n][1] is None:
+            while n is not None and n not in out:
+                out.add(n)
+                n = rest[n][1]
+    return out
+
+
+def _joint_rest(doc: dict) -> dict[str, tuple[np.ndarray, str | None]]:
+    """Skin joint name -> (world rest position, parent joint's name), in skin order. Positions only: skin-tokens
+    writes the joints with identity rotations."""
+    sk = Skeleton(doc)
+    w = sk.world({})
+    joints = doc["skins"][0]["joints"]
+    return {doc["nodes"][i].get("name"): (w[i][0], doc["nodes"][sk.parent[i]].get("name") if sk.parent.get(i) in joints else None)
+            for i in joints}
+
+
+def rejoint_skin(raw: Path, skeleton: Path) -> float:
+    """Move raw's joints (and inverse binds) to the skeleton's world positions, same names and order, so the weights
+    learned before ride on the moved joints (rest rotations kept). Rewrites raw; returns the largest move / height."""
+    rd, rb = read_glb(raw)
+    new = {n: p for n, (p, _) in _joint_rest(read_glb(skeleton)[0]).items()}
+    sk = Skeleton(rd)
+    w = sk.world({})
+    joints = rd["skins"][0]["joints"]
+    name = {i: rd["nodes"][i].get("name") for i in joints}
+    pos = {i: (new[name[i]] if i in joints else w[i][0]) for i in w}
+    moved = max(float(np.linalg.norm(new[name[i]] - w[i][0])) for i in joints)
+    for i in joints:
+        p = sk.parent.get(i)
+        t = new[name[i]] - (pos[p] if p is not None else 0)
+        rd["nodes"][i]["translation"] = np.asarray(w[p][1].inv().apply(t) if p is not None else t, float).tolist()
+    ibm = []
+    for i in joints:
+        M = np.eye(4)
+        M[:3, :3] = w[i][1].as_matrix()
+        M[:3, 3] = new[name[i]]
+        ibm.append(np.linalg.inv(M).T.reshape(-1))
+    ibm = np.array(ibm, "<f4")
+    acc = rd["accessors"][rd["skins"][0]["inverseBindMatrices"]]
+    o = rd["bufferViews"][acc["bufferView"]].get("byteOffset", 0) + acc.get("byteOffset", 0)
+    rb = rb[:o] + ibm.tobytes() + rb[o + ibm.nbytes:]
+    js = json.dumps(rd, separators=(",", ":")).encode()
+    js += b" " * ((4 - len(js) % 4) % 4)
+    body = rb + b"\0" * ((4 - len(rb) % 4) % 4)
+    out = struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(body))
+    raw.write_bytes(out + struct.pack("<II", len(js), 0x4E4F534A) + js + struct.pack("<II", len(body), 0x004E4942) + body)
+    P = accessor(rd, rb, rd["meshes"][0]["primitives"][0]["attributes"]["POSITION"])
+    return moved / max(float(np.ptp(P[:, 1])), 1e-9)
 
 
 def local_weights(P: np.ndarray, J: np.ndarray, W: np.ndarray, joint_pos: np.ndarray, child: dict[int, int],
@@ -1384,7 +1462,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--head-reach", choices=("on", "off"), default=env("RIG_HEAD_REACH") or "on",
                     help="bend the neck so the head gets as near the floor as the template's does (Eating; default on)")
     ap.add_argument("--reuse-skin", action="store_true", default=env("RIG_REUSE_SKIN") == "1",
-                    help="reuse rig/skinned_raw.glb when it was skinned on this mesh and this skeleton (no skin-tokens)")
+                    help="reuse rig/skinned_raw.glb when it was skinned on this mesh and this skeleton, or on the same "
+                         "joints since moved (no skin-tokens)")
     ap.add_argument("--render", choices=("0", "1"), default=env("RIG_RENDER") or "1",
                     help="render the contact sheet (rig/preview/) after the rig (default 1)")
     ap.add_argument("--reframe", choices=("0", "1", "auto"), default=env("RIG_REFRAME") or "auto",
@@ -1698,7 +1777,7 @@ def main(argv: list[str] | None = None) -> int:
         note(f"Joined {len(inv)} corners into {int(inv.max()) + 1} points before skinning")
     binder = args.binder
     binder_report = None
-    reused_skin = False
+    reused_skin, skin_reuse = False, None
     if binder == "pred" and pred is not None and pred_ctx.get("same_vertices") and pred_ctx.get("labels"):
         t0 = time.time()
         bdoc, bbin = rig_pred.ours_from_posed(posed)
@@ -1727,9 +1806,20 @@ def main(argv: list[str] | None = None) -> int:
             binder = "skin"
             skin_mesh = work / "welded.glb" if inv is not None else source
             why = skin_reusable(raw, skin_mesh, posed) if args.reuse_skin else "not asked"
+            moved_only = False
+            if why is not None and why.startswith("joint "):  # only moved: reusable unless the body moved too
+                loose = skin_reusable(raw, skin_mesh, posed, moved_ok=True)
+                moved_only, why = loose is None, loose or why
             if why is None:
                 secs, reused_skin = 0.0, True
                 note("Reused the skin weights learned before (rig/skinned_raw.glb: same mesh, same skeleton)")
+            elif moved_only:
+                # only the joints moved (a pivot fix): the weights are per joint name, so they carry over
+                moved = rejoint_skin(raw, posed)
+                secs, reused_skin = 0.0, True
+                skin_reuse = {"joints_moved": True, "max_move_H": round(moved, 3),
+                              "note": "Reused the skin weights learned before; joints moved"}
+                note(f"{skin_reuse['note']} (rig/skinned_raw.glb: same mesh, same joints, moved up to {moved:.2f}× height)")
             else:
                 if args.reuse_skin:
                     note(f"Couldn't reuse rig/skinned_raw.glb ({why}); learning the weights again")
@@ -1847,7 +1937,7 @@ def main(argv: list[str] | None = None) -> int:
         "binder": binder, "pred": {k: v for k, v in pred_ctx.items() if k not in ("independent",)} | (
             {"independent": {k: v for k, v in pred_ctx["independent"].items() if k != "chains"}} if pred_ctx.get("independent") else {}),
         "unsupported_clips": unsupported_clips, "floor": floor, "territory": cinfo.get("territory"),
-        "head_reach": args.head_reach, "reused_skin": reused_skin,
+        "head_reach": args.head_reach, "reused_skin": reused_skin, "skin_reuse": skin_reuse,
         "clips_report": clips_report, "clips_failed": clips_failed, "facing_prior": facing_prior,
         "build_error": build_error, "binder_report": binder_report, "reframe": reframed, "fbx_check": None,
         "degraded": degraded,

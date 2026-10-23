@@ -35,6 +35,8 @@ class RigArgvTests(unittest.TestCase):
                                "--pred", "never", "--floor", "0", "--render", "1", "--reframe", "1",
                                "--clips", "Idle,Peck", "--straighten", "off"])
         self.assertEqual(self.argv({}), [])
+        self.assertEqual(self.argv({"class": "quadruped", "reuse_skin": True}), ["--class", "quadruped", "--reuse-skin"])
+        self.assertEqual(self.argv({"reuse_skin": "0"}), [])
 
     def test_plan_sets_the_class(self) -> None:
         self.assertEqual(self.argv({"plan": "ground_bird"}), ["--class", "avian", "--plan", "ground_bird"])
@@ -44,7 +46,7 @@ class RigArgvTests(unittest.TestCase):
         for body in ({"template": "vendor"}, {"binder": "bone"}, {"pred": "sometimes"}, {"plan": "dragon"},
                      {"class": "fish"}, {"class": "humanoid", "plan": "ground_bird"}, {"floor": "2"},
                      {"render": "maybe"}, {"reframe": 3}, {"clips": ["Walk;rm -rf"]}, {"clips": 5},
-                     {"straighten": "yes"}):
+                     {"straighten": "yes"}, {"reuse_skin": "maybe"}):
             with self.subTest(body=body), self.assertRaises(ValueError):
                 factory_http.rig_argv("py", Path("/r"), "hen", body)
 

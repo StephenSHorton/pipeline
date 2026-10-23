@@ -291,7 +291,7 @@ def _switch(key: str, value: Any) -> str:
 
 def rig_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]) -> list[str]:
     """rig.py's argv for a POST /rig/<stem> body, every value checked (ValueError on a bad one):
-    {class, plan, template, binder, pred, floor, render, reframe, clips, straighten}."""
+    {class, plan, template, binder, pred, floor, render, reframe, clips, straighten, reuse_skin}."""
     if not isinstance(body, dict):
         raise ValueError("body must be a JSON object")
     argv = [str(python), str(Path(root) / "scripts" / "rig.py"), "--stem", stem]
@@ -336,6 +336,9 @@ def rig_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]) ->
         raise ValueError("straighten must be auto or off")
     if straighten:
         argv += ["--straighten", straighten]
+    # keep the skin weights learned before (same mesh; same joints, even moved): a re-rig without skin-tokens
+    if body.get("reuse_skin") not in (None, "") and _switch("reuse_skin", body["reuse_skin"]) == "1":
+        argv += ["--reuse-skin"]
     return argv
 
 
