@@ -344,6 +344,12 @@ class TrimBellyTests(unittest.TestCase):
         keep = np.linalg.norm(n1, axis=1) > 1e-12
         self.assertTrue(((n0 * n1).sum(1)[keep] > -1e-12).all())
 
+    def test_box_on_wheels_refused_unless_line_given(self) -> None:
+        car = headless()["box on wheels"]
+        with self.assertRaisesRegex(edit.EditError, "give line"):
+            edit.trim_belly(car)
+        edit.trim_belly(car, line=0.4)  # the caller's own line still works
+
     def test_given_line_and_no_legs(self) -> None:
         box = trimesh.creation.box([1, 1, 2]).apply_translation([0, 0.5, 0])
         with self.assertRaisesRegex(edit.EditError, "give line"):

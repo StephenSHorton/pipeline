@@ -510,6 +510,19 @@ def widen_head(mesh: trimesh.Trimesh, factor: float, start: float | None = None,
     return out, info
 
 
+MAX_LEGS = 8  # trim_belly: more parts than this under a body are not legs (a car's wheels break into crumbs)
+LEG_FOOTPRINT_MAX = 2.2  # trim_belly: a leg's footprint seen from above is at most this much longer than wide
+
+
+def _footprint_aspect(mask: np.ndarray) -> float:
+    """How much longer than wide a footprint (a raster mask) is, from its second moments."""
+    ij = np.argwhere(mask).astype(float)
+    if len(ij) < 3:
+        return 1.0
+    ev = np.linalg.eigvalsh(np.cov(ij.T))
+    return float(np.sqrt(max(ev[-1], 1e-12) / max(ev[0], 1e-12)))
+
+
 class _UpperLegs(_Legs):
     """_Legs seeded from the upper half of the leg band only, with no waist splitting: where the legs meet the belly
     they are plain columns, while a hoof (a heel, a toe gap) can pinch and split into parts that each reach the floor,
@@ -741,6 +754,16 @@ def trim_belly(mesh: trimesh.Trimesh, line: float | None = None, blend: float = 
                 raise
             legs, info["legs_from"] = _UpperLegs(P, floor, ytop), "upper leg band (the feet split oddly)"
             seeds = legs.seeds
+
+        # Legs stand on round footprints; a wheel seen from above is a long thin slab. Lifting "belly" between
+        # wheels would bite into them, so slab-shaped parts mean this is not a creature.
+        if len(seeds) > MAX_LEGS:
+            raise EditError(f"found {len(seeds)} parts under it, too many for legs; check the shape")
+        big = max(int(m.sum()) for m in seeds)
+        flat = max(_footprint_aspect(m) for m in seeds if m.sum() >= 0.25 * big)
+        if flat > LEG_FOOTPRINT_MAX:
+            raise EditError(f"the parts it stands on are not leg-shaped ({flat:.1f} times longer than wide, like "
+                            "wheels); check the shape")
         legs = _tighten(legs, P, seeds)
     except EditError as e:
         if line is None:
@@ -756,6 +779,9 @@ def trim_belly(mesh: trimesh.Trimesh, line: float | None = None, blend: float = 
         info["line_from"] = "given"
     b = max(float(blend) * h, 1e-9)
     w_along, along = _along_window(mesh, P, legs, fi, li, ytop if ytop is not None else floor)
+    if along.get("along") == "no head" and line is None:
+        # A creature has a head; with none, the "legs" are likely wheels or a table's, and the "belly" a chassis.
+        raise EditError("found legs but no head, so this may not be a creature; give line")
     w = w_along(V[:, fi])
     if legs is not None and keep_legs:
         lab, _, d = legs.nearest(V)
