@@ -844,13 +844,22 @@ def trunk_pitch(fk: "FK", quats: dict, trans: dict, spec: dict, lateral: np.ndar
         return float(_skin(Ph, Jh, Wh, fk, pos, rot)[:, 1].min())
     l0 = low(0.0)
     sgn = 1.0 if low(np.radians(2)) < low(np.radians(-2)) else -1.0
-    best = (l0, 0.0)
+    best, prev = (l0, 0.0), 0.0
     for a in np.radians(np.arange(1.0, max_deg + 1e-6, 1.0)):
         lv = low(sgn * a)
         if lv < best[0]:
             best = (lv, sgn * a)
-        if lv <= want:
+        if lv <= want:  # refine between the last miss and this hit, so the tip follows the target smoothly
+            lo_a, hi_a = prev, a
+            for _ in range(10):
+                mid = 0.5 * (lo_a + hi_a)
+                if low(sgn * mid) > want:
+                    lo_a = mid
+                else:
+                    hi_a = mid
+            best = (want, sgn * hi_a)
             break
+        prev = a
     if best[1] == 0.0:
         return quats, trans, 0.0
     q, t = tipped(best[1])
