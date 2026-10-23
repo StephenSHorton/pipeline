@@ -27,19 +27,22 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from factory_env import repo_root  # noqa: E402
 from workbench.factory_client import FactoryClient  # noqa: E402
-from workbench.tools import ArgError, Workbench, error_text  # noqa: E402
+from workbench.tools import ArgError, Workbench, error_text, playbook_digest  # noqa: E402
 
 DEFAULT_PORT = 8768
 PATH = "/mcp"
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_INFO = {"name": "workbench", "title": "Asset pipeline workbench", "version": "0.1.0"}
-INSTRUCTIONS = (
+# Claude Code shows a server's instructions to the model when it connects, cut at 4,096 characters. They are the
+# playbook's digest (workbench/playbook.md, read at startup); the playbook tool returns the whole file.
+INSTRUCTIONS_MAX = 4096
+FALLBACK = (
     "Make, measure and fix 3D assets in the pipeline (out/<stem>/). measure and look before and after every change. "
-    "Clay (clay_set, clay_mesh) blocks out shapes a photo can't give depth to; generate with mesh + paint false "
-    "turns a clay mesh into an asset without loading a model. draw_views and generate are factory jobs: poll "
-    "job_status. Each write is kept as a mesh take; pick_take goes back."
+    "draw_views, generate and rig are factory jobs: poll job_status. Each write is kept as a take; pick_take goes "
+    "back. Call the playbook tool before driving the pipeline."
 )
+INSTRUCTIONS = (playbook_digest() or FALLBACK)[:INSTRUCTIONS_MAX]
 
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
 

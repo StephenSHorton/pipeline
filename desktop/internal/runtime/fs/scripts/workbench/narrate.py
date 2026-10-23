@@ -26,6 +26,9 @@ TITLES: dict[str, tuple[str, str]] = {
     "bake_photo": ("Baking the photo onto", "Baked the photo onto"),
     "psx": ("Making the PS1 model of", "Made the PS1 model of"),
     "draw_views": ("Starting the four-view drawing of", "Started the four-view drawing of"),
+    "rig": ("Starting the rig of", "Started the rig of"),
+    "rig_review": ("Reviewing the rig of", "Reviewed the rig of"),
+    "playbook": ("Reading the playbook", "Read the playbook"),
     "generate": ("Starting the 3D build of", "Started the 3D build of"),
     "cancel": ("Stopping the job", "Stopped the job"),
     "pick_take": ("Going back to a version of", "Went back to a version of"),
@@ -65,7 +68,20 @@ def detail_of(tool: str, out: dict[str, Any]) -> str:
         blobs = out.get("blobs")
         if isinstance(blobs, list):
             bits.append(f"{len(blobs)} blob{'s' if len(blobs) != 1 else ''}")
-    elif tool in ("draw_views", "generate") and out.get("job_id"):
+    elif tool == "rig_review":
+        clips = out.get("clips") if isinstance(out.get("clips"), dict) else {}
+        worst = max(clips, key=lambda c: clips[c].get("over", 0), default=None)
+        if worst and clips[worst].get("over"):
+            bits.append(f"{worst}: {clips[worst]['over']} edges past {out.get('threshold', 2):g}x")
+        elif clips:
+            bits.append("no edge past the threshold")
+        bad = [lg["root"] for lg in (out.get("pivots") or {}).get("legs") or [] if not lg.get("ok", True)]
+        if bad:
+            bits.append(f"pivot off its leg: {', '.join(bad)}")
+        flagged = out.get("flagged")
+        if isinstance(flagged, list) and flagged:
+            bits.append(f"look at {', '.join(flagged[:3])}")
+    elif tool in ("draw_views", "generate", "rig") and out.get("job_id"):
         bits.append(f"job {out['job_id']}")
     elif tool == "pick_take" and isinstance(out.get("take"), str):
         bits.append(f"version {out['take']}")

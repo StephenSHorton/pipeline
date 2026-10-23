@@ -65,6 +65,31 @@ NOT_YET = ("not yet: {op} is not built. Use remove_floaters, delete_sphere, stre
            "widen_head, trim_belly or tidy_legs, or rebuild the shape as clay.")
 
 
+PLAYBOOK = Path(__file__).resolve().with_name("playbook.md")
+# The playbook's rules digest sits between these markers; the MCP server sends it as its instructions (Claude Code
+# cuts server instructions at 4,096 characters, so the whole playbook goes through the playbook tool).
+DIGEST = ("<!-- digest -->", "<!-- /digest -->")
+
+
+def playbook_text() -> str:
+    try:
+        return PLAYBOOK.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileNotFoundError(f"no playbook at {PLAYBOOK} ({e.strerror})") from None
+
+
+def playbook_digest(text: str | None = None) -> str:
+    """The playbook's digest section, markers dropped; "" when the file or its markers are missing."""
+    try:
+        text = playbook_text() if text is None else text
+    except FileNotFoundError:
+        return ""
+    start, end = text.find(DIGEST[0]), text.find(DIGEST[1])
+    if start < 0 or end < start:
+        return ""
+    return text[start + len(DIGEST[0]):end].strip()
+
+
 class ToolError(ValueError):
     """A request the tool refuses (bad path, busy asset, nothing to work on): reported as isError."""
 
@@ -421,6 +446,29 @@ class Workbench:
         res = eyes.compare_reference(glb, image, a.get("facing"), out)
         return {"glb": self.rel(glb), "image": self.rel(image), **res, "_image": res["png"]}
 
+    def rig_review(self, a: dict) -> dict:
+        from workbench import rigeyes
+
+        stem = check_stem(a["stem"])
+        folder = self.folder(stem)
+        heat = a.get("heat")
+        if isinstance(heat, str) and heat != "flagged":
+            raise ArgError('heat must be a list of bone names or "flagged"')
+        # The heat sheet goes where look's do (a temp folder swept later): the MCP answer attaches it after this
+        # returns. The frames it is tiled from are removed before (unless keep_images).
+        try:
+            res = rigeyes.review(folder, float(a.get("threshold") or rigeyes.THRESHOLD), a.get("clips"), heat or None,
+                                 bool(a.get("keep_images")), self.render_dir() if heat else None)
+        except rigeyes.RigError as e:
+            raise ToolError(str(e)) from None
+        res["glb"] = self.rel(res["glb"])
+        if res.get("sheet"):
+            res["_image"] = str(res["sheet"])
+        return {"stem": stem, **res}
+
+    def playbook(self, a: dict) -> dict:
+        return {"playbook": playbook_text()}
+
     # ------------------------------------------------------------ clay
 
     def _clay(self, stem: str) -> list:
@@ -711,6 +759,15 @@ class Workbench:
         out = self.job(lambda: self.factory.generate(body))
         return {**out, "next": "poll job_status with this job_id"}
 
+    def rig(self, a: dict) -> dict:
+        stem = check_stem(a["stem"])
+        self.folder(stem)
+        body: dict[str, Any] = {k: a[k] for k in ("class", "plan") if a.get(k)}
+        if "reuse_skin" in a:
+            body["reuse_skin"] = bool(a["reuse_skin"])
+        out = self.job(lambda: self.factory.rig(stem, body))
+        return {**out, "next": "poll job_status with this job_id; when it is done, rig_review the stem"}
+
     def job_status(self, a: dict) -> dict:
         try:
             out = self.factory.status(a.get("job_id"))
@@ -753,6 +810,24 @@ class Workbench:
                  "regions missing or extra, and a reference/model/overlap PNG.",
                  _obj({**target, "image": {"type": "string", "description": "picture path relative to the repo"},
                        "facing": FACING}, ("image",)), self.compare_reference),
+            Tool("rig_review", "Where a rig stretches, bone by bone, and why (workbench/rigeyes.py; reads the rig the "
+                 "viewer shows, writes nothing into out/). Gives the rig check's summary (rig/inspect.json: line, "
+                 "per-clip stretch p99/max, tears, foot slide, problems); per clip each edge's worst stretch (p99, "
+                 "max) and how many edges pass threshold (default 2x), with the bones owning them (top bone of both "
+                 "ends, UV-seam copies welded); each bone's weight share; a pivot check per leg (its root joint's xz "
+                 "distance from the leg at the leg line, over the body length; over 0.25 is flagged: the sheep's "
+                 "mid-body hind pivot read 0.39, fixed 0.13); and a diagnosis in plain words. heat (bone names, or "
+                 "\"flagged\") adds heat maps of those bones from side, front, q and back at rest and at each bone's "
+                 "worst frame, as one image; its frames are deleted unless keep_images. Run it after every rig and "
+                 "every weights or joint change; ask for heat only for the bones the numbers flag.",
+                 _obj({"stem": STEM, "clips": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                       "threshold": {"type": "number", "minimum": 1.1, "maximum": 10},
+                       "heat": {"type": ["array", "string"], "items": {"type": "string"}, "minItems": 1, "maxItems": 6,
+                                "description": "bone names, or \"flagged\" (the bones the diagnosis names, at most 4)"},
+                       "keep_images": {"type": "boolean"}}, ("stem",)), self.rig_review),
+            Tool("playbook", "The pipeline's playbook in full (workbench/playbook.md): the working rules, the mesh "
+                 "steps and the rig review that have worked, each with why. Read it before driving the pipeline.",
+                 _obj({}), self.playbook),
             Tool("clay_get", "The asset's clay blobs (out/<stem>/workbench/clay.json) and the forms with their dims.",
                  _obj({"stem": STEM}, ("stem",)), self.clay_get),
             Tool("clay_set", "Write clay blobs. Blobs replace the ones with the same name and the rest are added; "
@@ -861,6 +936,14 @@ class Workbench:
                        "images": {"type": "array", "items": {"type": "string"}},
                        "prompt": {"type": "string"}, "poly": {"type": "string"}, "seed": {"type": ["string", "integer"]},
                        "intent": {"type": "object"}}, ("image",)), self.generate, "job"),
+            Tool("rig", "Factory job: rig the asset (POST /rig/<stem>, scripts/rig.py). Give class (humanoid, "
+                 "quadruped, multileg, avian) or plan when known: without either, rig.py asks the planner model what "
+                 "the subject is. reuse_skin true keeps the skin weights learned before when the mesh and joint names "
+                 "match (joints may have moved: a pivot fix), so no skin model loads and the job is CPU only. "
+                 "Returns a job_id; when it is done, rig_review the stem.",
+                 _obj({"stem": STEM, "class": {"type": "string", "enum": ["humanoid", "quadruped", "multileg", "avian"]},
+                       "plan": {"type": "string", "description": "a body plan id (GET /rig/plans), e.g. horse"},
+                       "reuse_skin": {"type": "boolean"}}, ("stem",)), self.rig, "job"),
             Tool("job_status", "The factory's job: state, stage progress, log tail, result. No job_id: the current "
                  "job.", _obj({"job_id": {"type": "string"}}), self.job_status, "job"),
             Tool("cancel", "Cancel the factory's running job.", _obj({"job_id": {"type": "string"}}, ("job_id",)),
