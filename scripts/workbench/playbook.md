@@ -13,7 +13,7 @@ Workbench rules (the playbook tool has the full playbook, with the why for each)
 4. The photo is a reference, never a view: draw_views first, then generate with image out/<stem>/flat/source.png. Any other picture builds from one picture.
 5. Numbers before pictures: measure / rig_review before and after every change. look or heat only where the numbers point.
 6. Report honestly. Give the numbers before and after. Say when a change barely helped, and separate what a tool can fix from what needs another stage.
-Mesh: a long animal drawn tall gets its length back from proportion_check. If shape.json's proportion skipped, use mesh_edit stretch on z. For legs or head, use the proportion ops (thicken_legs, shorten_legs, widen_head, trim_belly, tidy_legs). When one refuses, give it top, head or start. For the PS1 cut, use psx with head_weight 2; for legs, tidy_legs then leg_weight. A leg left as its own piece after the cut is pinched, not a crumb: weight it, don't delete it.
+Mesh: a long animal drawn tall gets its length back from proportion_check. If shape.json's proportion skipped, use mesh_edit stretch on z. For legs or head, use the proportion ops (thicken_legs, shorten_legs, widen_head, trim_belly, tidy_legs). When one refuses, give it the parameter the refusal names (top, head, start, line). For the PS1 cut, use psx with head_weight 2; for legs, tidy_legs then leg_weight. A leg left as its own piece after the cut is pinched, not a crumb: weight it, don't delete it.
 Rig, after every rig or weights/joint change:
 a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears, foot slide and problems.
 b. Read the per-bone numbers (no pictures): edges past 2x per clip and the bones that own them, weight shares, and the pivot check (a leg's root joint over its own leg; over 0.25 of a body length is wrong).
@@ -58,8 +58,8 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
 - **Proportion ops from a critique** (mesh_edit, only vertices move, so the UVs and texture stay): `thicken_legs`
   (factor 1..3), `shorten_legs` (0.4..1), `widen_head` (1..2), `trim_belly` (a keel of wool or spikes under the
   belly) and `tidy_legs` (straight, tapered, smooth legs; the sheep used thickness 1.5). Each op reads top, start and
-  head from the shape. When it can't, it refuses and says why: give `top`, `head` or `start` rather than forcing
-  another op.
+  head from the shape. When it can't, it refuses and says why: give the parameter the refusal names (`top`, `head`,
+  `start`, or `line` for trim_belly) rather than forcing another op.
 - **The PS1 cut.** `psx` with `head_weight` 2 for creatures, so the ears and face survive. For legs, choose one way:
   `tidy_legs` and then `leg_weight` (the sheep: 2.5), or `legs: "clean"` with `leg_scale` (the sheep: 1.6). The two
   don't combine. Use `quality: "textured"` and then the psx tool, not `quality: "psx"`, whose facing check asks Ollama.
@@ -77,7 +77,8 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
 
 1. **Rig through the factory:** the `rig` tool (POST /rig/<stem>). Give `class` (or `plan`) when you know it;
    without one, rig.py asks the planner model what the subject is. `reuse_skin: true` keeps the learned skin
-   weights when the mesh and joint names match, even if joints moved, so the job runs on CPU with no skin model.
+   weights when the mesh and joints match; limb joints may have moved (a pivot fix), but if a body joint moved or a
+   joint moved over 0.6x height it learns them again. Either way the log and rig.json say which happened.
 2. **Read the rig check:** `rig_review {stem}` → `check`: the summary line, per-clip stretch p99/max and tears,
    foot slide and problems. The check's p99 is over every edge at every frame. `check.stale` means the rig changed
    after the check was made.

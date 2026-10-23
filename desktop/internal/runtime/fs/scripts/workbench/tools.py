@@ -868,8 +868,8 @@ class Workbench:
                  "top (share of height where legs meet belly), start and head are read from the shape when "
                  "omitted; the answer says what was found (top, legs and their centres, start, head end). When the "
                  "shape doesn't show them (fewer than two legs, legs it can't tell apart, no head end that rises "
-                 "above the body or ends that look alike, no neck) the op refuses and says why: give top, head or "
-                 "start. "
+                 "above the body or ends that look alike, no neck) the op refuses and says why: give the "
+                 "parameter it names (top, head, start, or line for trim_belly). "
                  "straighten_head, symmetrize and nudge are not built yet.",
                  _obj({"stem": STEM, "src": GLB, "op": {"type": "string", "enum": ["remove_floaters", "delete_sphere",
                                                                                    "stretch", "thicken_legs",
@@ -939,7 +939,8 @@ class Workbench:
             Tool("rig", "Factory job: rig the asset (POST /rig/<stem>, scripts/rig.py). Give class (humanoid, "
                  "quadruped, multileg, avian) or plan when known: without either, rig.py asks the planner model what "
                  "the subject is. reuse_skin true keeps the skin weights learned before when the mesh and joint names "
-                 "match (joints may have moved: a pivot fix), so no skin model loads and the job is CPU only. "
+                 "match (limb joints may have moved: a pivot fix; a moved body joint or one moved over 0.6x height "
+                 "learns them again), so no skin model loads and the job is CPU only. "
                  "Returns a job_id; when it is done, rig_review the stem.",
                  _obj({"stem": STEM, "class": {"type": "string", "enum": ["humanoid", "quadruped", "multileg", "avian"]},
                        "plan": {"type": "string", "description": "a body plan id (GET /rig/plans), e.g. horse"},
