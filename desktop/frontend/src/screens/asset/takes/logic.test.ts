@@ -63,7 +63,7 @@ describe("versions", () => {
 describe("concept: what to make from the picture", () => {
   it("no intent: Make from this picture: and every output in order, none primary", () => {
     const items = stripItems({ stem: "s", stage: "concept", flow: flowOf(concept) });
-    expect(texts(items)).toEqual(["Make from this picture:", "Build PS1 model", "Build 3D model", "Build sprite stack", "2D sprite"]);
+    expect(texts(items)).toEqual(["Make from this picture:", "Build PS1 model", "Build 3D model", "Build sprite stack", "Build 2D sprite"]);
     expect(items.some((it) => it.type === "act" && it.primary)).toBe(false);
     expect(items[1]).toMatchObject({ title: "Make the PS1 model from this picture." });
     expect(items[4]).toMatchObject({ title: "Cut this picture into pieces, add motion and sound.", action: { do: "build", output: "sprite" } });
@@ -72,13 +72,13 @@ describe("concept: what to make from the picture", () => {
   it("intent first and primary; Rebuild once its mesh is live", () => {
     const f = flowOf(concept, entry("mesh", { live: true }));
     const items = stripItems({ stem: "s", stage: "concept", flow: f, output: "stack" });
-    expect(texts(items)).toEqual(["Next:", "Rebuild sprite stack", "Build PS1 model", "Build 3D model", "2D sprite"]);
+    expect(texts(items)).toEqual(["Next:", "Rebuild sprite stack", "Build PS1 model", "Build 3D model", "Build 2D sprite"]);
     expect(items[1]).toMatchObject({ primary: true, action: { do: "build", output: "stack" } });
   });
 
   it("empty stages", () => {
     expect(texts(stripItems({ stem: "s", stage: "concept", flow: flowOf(entry("concept")) }))).toEqual(["No picture yet."]);
-    expect(texts(stripItems({ stem: "s", stage: "flat", flow: flowOf(entry("flat")) }))).toEqual(["Use a step below to start the 2D sheet."]);
+    expect(texts(stripItems({ stem: "s", stage: "flat", flow: flowOf(entry("flat")) }))).toEqual(["Pick a mode in the bar at the bottom to start the 2D sheet."]);
   });
 });
 

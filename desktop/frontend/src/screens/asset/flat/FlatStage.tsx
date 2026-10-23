@@ -227,6 +227,8 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
   const pic = stagePicture(stage === "concept" ? "concept" : "flat", sheet.center, still);
   const t = `${flowVersion}-${nonce}`;
   const showParts = flatMode === "pieces" && sheet.parts.length > 0;
+  // Pieces with none cut yet showed the same picture and nothing else: say what to do.
+  const line = status || (flatMode === "pieces" && !sheet.parts.length ? "No pieces yet. Type what the pieces are and press Generate." : "");
   const panelId = `flat-audio-${stem}`;
 
   return (
@@ -242,14 +244,15 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
               key={pic.kind}
               alt={stage === "concept" ? "The concept picture" : "The 2D sheet"}
               src={pic.kind === "strip" ? flatUrl(stem, pic.rel, t) : pic.kind === "source" ? flatUrl(stem, "source", t) : `${rootUrl(pic.rel)}?t=${flowVersion}`}
-              className="max-h-full max-w-full rounded-[14px] bg-white object-contain shadow-[var(--glass-shadow)]"
+              // On the background itself, no white box and shadow around it (it read as boxed).
+              className="max-h-full max-w-full rounded-[10px] object-contain"
             />
           )}
         </div>
         <div className="pointer-events-none absolute inset-x-3 top-3 flex items-start justify-between gap-2">
           {/* #flat-status: every flatSay line, not clickable. */}
-          <p role="status" aria-live="polite" className={cn("m-0 min-w-0 text-[0.85rem] leading-snug text-ink-3", status && "glass-panel rounded-[12px] px-3 py-2")}>
-            {status}
+          <p role="status" aria-live="polite" className={cn("m-0 min-w-0 text-[0.85rem] leading-snug text-ink-3", line && "glass-panel rounded-[12px] px-3 py-2")}>
+            {line}
           </p>
           <FlatHear stem={stem} bound={hear} />
         </div>
