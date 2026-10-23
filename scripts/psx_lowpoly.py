@@ -211,7 +211,37 @@ def decimate_weighted(mesh: trimesh.Trimesh, faces: int, head_weight: float, leg
     warped.vertices = _warp_legs(np.asarray(mesh.vertices, float), warp, leg_weight)
     low = decimate_head(warped, faces, head_weight)
     back = _warp_legs(np.asarray(low.vertices, float), warp, leg_weight, inverse=True)
-    return trimesh.Trimesh(vertices=back, faces=low.faces, process=False)
+    return trimesh.Trimesh(vertices=_feet_down(back, warp), faces=low.faces, process=False)
+
+
+FOOT_SNAP = 0.05  # a decimated hoof left this share of the leg band (or less) above the floor is set back down on it
+
+
+def _feet_down(v: np.ndarray, warp: dict) -> np.ndarray:
+    """Put every leg back on the floor: the decimator can leave a hoof's lowest corner a little up (a third of an inch
+    on the sheep). Per leg (vertices nearest its centre line, in the bottom of the band) whose lowest point m sits up to
+    FOOT_SNAP of the band above the floor, heights below m + FOOT_SNAP band drop by m, tapering to nothing at the top
+    of that span: order by height is kept, so nothing turns over, and the rest of the leg is as cut."""
+    out = v.copy()
+    floor, top = warp["floor"], warp["top"]
+    span = FOOT_SNAP * (top - floor)
+    low = np.nonzero(out[:, 1] < floor + 0.25 * (top - floor))[0]
+    if not len(low):
+        return out
+    y = out[low, 1]
+    d = np.stack([np.linalg.norm(out[low][:, [0, 2]] - np.stack([np.interp(y, warp["ys"], C[:, a]) for a in range(2)], 1),
+                                 axis=1) for C in warp["C"]])
+    lab = d.argmin(0)
+    for i in range(len(warp["C"])):
+        mine = low[lab == i]
+        if not len(mine):
+            continue
+        m = float(out[mine, 1].min()) - floor
+        if 0.0 < m <= span:
+            u = out[mine, 1] - floor - m
+            drop = m * np.clip(1.0 - u / span, 0.0, 1.0)
+            out[mine, 1] -= drop
+    return out
 
 
 # --legs clean: the decimated legs (Hunyuan's lumpy, slanted legs cut to a few dozen facets, flat triangles splayed
@@ -719,8 +749,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.leg_sides < 3 or args.leg_scale <= 0 or args.leg_taper <= 0:
         ap.error("--leg-sides is at least 3; --leg-scale and --leg-taper are positive")
-    if args.leg_weight < 1.0 or args.head_weight < 1.0:
-        ap.error("--leg-weight and --head-weight are at least 1")
+    if args.leg_weight < 1.0:
+        ap.error("--leg-weight is at least 1")
     if args.leg_weight != 1.0 and args.legs == "clean":
         ap.error("--leg-weight weights the legs the cut keeps; --legs clean replaces them: give one")
 

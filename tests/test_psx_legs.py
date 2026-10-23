@@ -196,6 +196,20 @@ class LegWeightTests(unittest.TestCase):
                            int((heavy.triangles_center[:, 2] > front).sum()))
         self.assertGreater(self.leg_faces(both), self.leg_faces(plain))
 
+    def test_a_hoof_left_up_is_set_back_on_the_floor(self) -> None:
+        V = np.asarray(self.high.vertices, float).copy()
+        band = self.warp["top"] - self.warp["floor"]
+        c0 = self.warp["C"][0][0]
+        leg0 = (np.linalg.norm(V[:, [0, 2]] - c0, axis=1) < 2 * self.warp["R"][0]) & (V[:, 1] < 0.5 * band)
+        V[leg0, 1] += 0.03 * band  # as if the cut had lifted that hoof
+        out = P._feet_down(V, self.warp)
+        self.assertAlmostEqual(float(out[leg0, 1].min()), self.warp["floor"], places=9)
+        order = np.argsort(V[leg0, 1], kind="stable")
+        self.assertTrue((np.diff(out[leg0, 1][order]) >= -1e-12).all())  # heights keep their order
+        np.testing.assert_array_equal(out[~leg0], V[~leg0])  # the legs already down are left alone
+        high = V[leg0, 1] > self.warp["floor"] + 0.03 * band + P.FOOT_SNAP * band + 1e-9
+        np.testing.assert_array_equal(out[leg0][high], V[leg0][high])
+
     def test_one_piece_mesh_stays_one_piece(self) -> None:
         body = trimesh.creation.icosphere(subdivisions=4)
         body.apply_scale([0.4, 0.35, 1.0])
