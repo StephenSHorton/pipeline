@@ -12,6 +12,7 @@ POST /intent/<stem>
 POST /rig/<stem>
 POST /rig/<stem>/inspect
 POST /rig/<stem>/render  the rig's contact sheet (rig/preview/) as a job
+POST /rig/<stem>/weights hand-edited skin weights into rigged.glb (scripts/rig_weights.py), FBX again, a rig version
 GET  /rig/plans          the body plans (scripts/rig_plans/)
 POST /facing/detect      which way the head points in a picture {image|stem}
 GET  /glb/<stem>
@@ -1240,6 +1241,35 @@ class Factory:
         return {"ok": True, "stem": stem, "take": take["id"] if take else None, "checks": bundle["checks"],
                 "summary": bundle["summary"]}
 
+    def save_rig_weights(self, stem: str, raw: Any, exporter: Any = "default") -> dict[str, Any]:
+        """The Weights panel's Save (scripts/rig_weights.py): the rig on disk is kept as a version first, the edited
+        JOINTS_0/WEIGHTS_0 go into rigged.glb (and its same-mesh siblings), the FBX is exported again, and the result
+        is saved as a new rig version. Holds the stem like a recheck, so no job or other write starts meanwhile."""
+        import rig_weights
+
+        stem = check_stem(stem)
+        folder = stem_dir(self.root, stem)
+        if not folder.is_dir():
+            raise FileNotFoundError(f"no asset {stem!r}")
+        if not (folder / "rig" / "rig.json").is_file():
+            raise ValueError("this asset has no rig yet")
+        with self._lock:
+            if (self._job and self._job.get("state") == "running" and self._job.get("stem") == stem) or stem in self._checking:
+                raise RuntimeError("a job is writing this asset")
+            self._checking.add(stem)
+        try:
+            autosave(self.root, stem, ("rig",))
+            result = rig_weights.save_weights(folder, raw, rig_weights.default_exporter if exporter == "default" else exporter)
+            take = None
+            try:
+                take = flow.snapshot(self.root, stem, "rig", note="Edited weights")["take"]
+            except (flow.FlowError, OSError, ValueError) as e:
+                print(f"flow: could not save the edited weights as a rig version for {stem}: {e}", file=sys.stderr)
+        finally:
+            with self._lock:
+                self._checking.discard(stem)
+        return {"ok": True, "stem": stem, "take": take["id"] if take else None, **result}
+
     def _run_rig_job(self, spec: dict[str, Any]) -> None:
         """A rig (kind rig: saves a rig version before and after) or its contact sheet (kind render: refreshes the
         picked version in place, since a render is about the rig, not part of it)."""
@@ -1564,6 +1594,7 @@ def _dispatch(
                     "POST /rig/<stem>",
                     "POST /rig/<stem>/inspect",
                     "POST /rig/<stem>/render",
+                    "POST /rig/<stem>/weights",
                     "GET /rig/plans",
                     "POST /facing/detect",
                     "GET /glb/<stem>",
@@ -1834,6 +1865,22 @@ def _dispatch(
             return _json_bytes({"ok": False, "error": str(e)}, 400)
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+
+    if method == "POST" and len(parts) == 3 and parts[0] == "rig" and parts[2] == "weights":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.save_rig_weights(parts[1], raw))
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+        except Exception as e:
+            traceback.print_exc()
+            return _json_bytes({"ok": False, "error": f"couldn't save the weights: {e}"}, 500)
 
     if method == "POST" and len(parts) == 3 and parts[0] == "rig" and parts[2] == "inspect":
         try:
