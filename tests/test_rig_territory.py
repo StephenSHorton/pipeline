@@ -147,6 +147,15 @@ class TerritoryTests(unittest.TestCase):
             rows = M[inv == g]
             self.assertLess(float(np.abs(rows - rows[0]).max()), 1e-5)
 
+    def test_not_four_legs_left_alone(self) -> None:
+        # A spider's legs group into two "legs", a person has two: territory is for four-legged rigs only.
+        chains = rt.classify(NAMES, PARENTS, JPOS)
+        two = {**chains, "legs": chains["legs"][:2]}
+        J, W, info = rt.territory(self.P, self.F, self.J0, self.W0, NAMES, PARENTS, JPOS, chains=two)
+        self.assertFalse(info["applied"])
+        self.assertIn("four-legged", info["why"])
+        np.testing.assert_array_equal(J, self.J0)
+
     def test_smoothing_softens_a_sharp_edge_and_stays_in_bounds(self) -> None:
         J, W, _ = rt.territory(self.P, self.F, self.J0, self.W0, NAMES, PARENTS, JPOS, smooth=0)
         J6, W6, info = rt.territory(self.P, self.F, self.J0, self.W0, NAMES, PARENTS, JPOS, smooth=6)
@@ -161,7 +170,7 @@ class TerritoryTests(unittest.TestCase):
         # smoothing never brings a leg's weight back above the line, nor one leg's weight onto another
         M = dense(J6, W6)
         legs = [k for k, n in enumerate(NAMES) if "leg" in n or "scapula" in n]
-        self.assertLess(M[self.P[:, 1] > 0.5 + 0.06 * 1.0 + 0.01][:, legs].max(), 1e-6)
+        self.assertLess(M[self.P[:, 1] > 0.5 + rt.LEG_BAND * 1.0 + 0.01][:, legs].max(), 1e-6)
         right = (self.P[:, 1] < 0.4) & (self.P[:, 0] < -0.15)
         left_bones = [k for k, n in enumerate(NAMES) if n.endswith("_l")]
         self.assertLess(M[right][:, left_bones].max(), 1e-6)

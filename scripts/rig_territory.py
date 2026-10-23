@@ -35,7 +35,7 @@ import re
 
 import numpy as np
 
-LEG_BAND = 0.06  # x height: leg weight fades out over this band above the leg line
+LEG_BAND = 0.12  # x height: leg weight fades out over this band above the leg line (0.06 creased the rump in Walk)
 LEG_REACH = (0.08, 0.16)  # x height, xz from the leg's column at the line: kept nearer, stripped farther (near the line)
 NECK_BAND = 0.06  # x height behind the neck root joint
 TAIL_BAND = 0.05
@@ -341,6 +341,11 @@ def territory(P: np.ndarray, F: np.ndarray | None, J: np.ndarray, W: np.ndarray,
     info: dict = {"applied": False, "legs": len(chains["legs"]), "neck": bool(chains["neck"]), "tail": bool(chains["tail"])}
     if not chains["legs"] and not chains["neck"] and not chains["tail"]:
         info["why"] = "no limb chains"
+        return np.asarray(J), np.asarray(W, np.float32), info
+    if len(chains["legs"]) != 4:
+        # Built and measured on four-legged rigs; a spider's eight legs group into two "legs" and would barely move,
+        # a person's thighs would hand the hips their weight. Callers other than rig.py (the weight editor) get this.
+        info["why"] = f"{len(chains['legs'])} leg chains; territory is for four-legged rigs"
         return np.asarray(J), np.asarray(W, np.float32), info
     how = "given"
     if leg_top is None:
