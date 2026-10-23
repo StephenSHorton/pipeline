@@ -90,7 +90,14 @@ export function WeightsPanel(p: ViewerPanelProps) {
   }, [s, open, st.show, st.bone]);
   useEffect(() => {
     if (!s || !open) return;
-    return () => s.release();
+    let raf = requestAnimationFrame(function tick() {
+      s.keep();
+      raf = requestAnimationFrame(tick);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      s.release();
+    };
   }, [s, open]);
 
   // Opening stops Spin (painting a turning model is no fun); closing gives it back.
@@ -293,7 +300,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
         </div>
 
         <div className={LABEL}>{C.bones}</div>
-        <div className="-mx-1 max-h-[min(34vh,260px)] overflow-y-auto px-1" role="listbox" aria-label="Bones">
+        <div className="-mx-1 max-h-[min(34vh,260px)] shrink-0 overflow-y-auto border-y border-hair px-1 py-1" role="listbox" aria-label="Bones">
           {chains.map((c) => (
             <div key={c.key} className="mb-1">
               <div className="pt-0.5 text-[length:calc(11.5px*var(--fs))] font-semibold text-ink-2">{c.label}</div>
@@ -308,7 +315,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
                       aria-selected={st.bone === b.i}
                       title={`${b.name}: ${s.names[b.i]}${g !== 100 ? `, grab ${g}%` : ""}`}
                       onClick={() => useWeights.setState({ bone: st.bone === b.i ? -1 : b.i })}
-                      className="hit-44 inline-flex h-[24px] items-center gap-1 rounded-[7px] border border-hair bg-white/70 px-1.5 text-[length:calc(12px*var(--fs))] text-ink hover:bg-muted aria-selected:border-accent aria-selected:bg-accent aria-selected:text-accent-foreground"
+                      className="hit-44 inline-flex h-[22px] items-center gap-1 rounded-[6px] border border-hair bg-white/70 px-1.5 text-[length:calc(11.5px*var(--fs))] text-ink hover:bg-muted aria-selected:border-accent aria-selected:bg-accent aria-selected:text-accent-foreground"
                     >
                       <span aria-hidden className="size-2 shrink-0 rounded-[2px]" style={{ background: hex(boneRgb(b.i)) }} />
                       {b.name}

@@ -156,6 +156,16 @@ export class WeightsSession {
     }
   }
 
+  /** Once a frame while shown: the viewer gives the model its own material back on a load (setClay(false)); the
+   * colours go back on. Clay or Wire (another material) is left alone: the panel closes on those. */
+  keep(): void {
+    if (!this.shown) return;
+    for (const p of this.parts) {
+      if (p.mesh.material === p.saved.material) p.mesh.material = this.colMat;
+      if (p.mesh.geometry.getAttribute("color") !== p.colors) p.mesh.geometry.setAttribute("color", p.colors);
+    }
+  }
+
   private paintPart(p: WeightPartView): void {
     if (!this.shown) return;
     paintColours(p.edit, this.shown.mode, this.shown.bone, p.colors.array as Float32Array);

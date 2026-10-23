@@ -539,7 +539,7 @@ const LEGISH = new Set(["leg", "foot", "toe", "thigh", "shin", "calf", "knee", "
 const FRONT = new Set(["front", "fore", "forelimb", "foreleg"]);
 const BACK = new Set(["back", "hind", "rear", "hindlimb", "hindleg"]);
 const LEAF = /leaf|tip|_end$|end$/i;
-const ADJ = new Set(["upper", "lower", "mid", "middle", "inner", "outer", "top", "bottom"]);
+const ADJ = new Set(["upper", "lower", "mid", "middle", "inner", "outer", "top", "bottom", "front", "fore", "hind", "rear"]);
 
 /** A bone name in lower-case words: "back_leg_upper_l" -> back leg upper l; "UpperLeg_L" -> upper leg l. */
 export function boneWords(name: string): string[] {
