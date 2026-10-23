@@ -25,7 +25,7 @@ import factory_http  # noqa: E402
 import flow  # noqa: E402
 import rig_weights as rw  # noqa: E402
 
-SHEEP = Path.home() / "projects" / "ai-asset-pipeline" / "out" / "mlg-sheep"
+SHEEP = next((p for p in (ROOT / "out" / "mlg-sheep", Path.home() / "projects" / "ai-asset-pipeline" / "out" / "mlg-sheep") if (p / "rigged.glb").is_file()), ROOT / "out" / "mlg-sheep")
 STEM = "mlg-sheep"
 
 
