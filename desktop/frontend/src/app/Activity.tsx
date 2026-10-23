@@ -3,6 +3,7 @@
 // drawer lists every step newest first, with the numbers it found, the picture it made (a look sheet, the drawing
 // as it forms) and a link to the asset, plus the Follow switch (app/follow.ts).
 import { X } from "lucide-react";
+import { useLayoutEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { collapseRuns, currentEntry, detailText, entryTime, imageUrl, useActivity, type ActivityEntry } from "@/lib/activity";
@@ -68,11 +69,26 @@ export function ActivityDrawer() {
   const follow = useActivity((s) => s.follow);
   const setFollow = useActivity((s) => s.setFollow);
   const setOpen = useActivity((s) => s.setOpen);
+  // Just under the top bar, which is one row or two (the stage rail wraps below 960 px).
+  const [top, setTop] = useState(80);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const bar = document.querySelector<HTMLElement>("[data-slot=topbar]");
+    if (!bar) return;
+    const place = () => setTop(Math.round(bar.getBoundingClientRect().bottom) + 8);
+    place();
+    const ro = new ResizeObserver(place);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, [open]);
   if (!open) return null;
   const cur = currentEntry(entries);
   const curImage = cur ? imageUrl(cur) : null;
   return (
-    <div className="pointer-events-none fixed top-[5rem] right-[clamp(12px,2vw,20px)] z-30 flex max-h-[calc(100vh-6rem)] w-[min(24rem,calc(100vw-32px))] flex-col">
+    <div
+      style={{ top, maxHeight: `calc(100vh - ${top + 16}px)` }}
+      className="pointer-events-none fixed right-[clamp(12px,2vw,20px)] z-30 flex w-[min(24rem,calc(100vw-32px))] flex-col"
+    >
       <Card
         id="activity-drawer"
         size="hud"

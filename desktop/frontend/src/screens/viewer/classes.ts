@@ -20,8 +20,6 @@ export const COMMIT = `${CHIP} border-transparent bg-primary text-primary-foregr
 export const TRAY = "inline-flex max-w-full flex-wrap items-center gap-0.5 rounded-[10px] bg-[rgba(226,232,242,0.85)] p-[3px]";
 export const TRAY_ITEM =
   "hit-44 h-[27px] cursor-pointer rounded-[8px] border-0 px-[10px] text-[length:calc(13.5px*var(--fs))] font-semibold text-ink-3 hover:bg-white/60 hover:text-ink aria-pressed:bg-white aria-pressed:text-ink aria-pressed:shadow-[0_1px_3px_rgba(30,41,90,0.12)]";
-// An image tile that is the current pick (a version, a part, a swatch): a ring, nothing else.
-export const PICKED = "ring-2 ring-primary";
 // Panel text: the small uppercase section label, muted body copy and a bold group title, shared by every panel.
 export const LABEL = "mt-1.5 text-[length:calc(11.5px*var(--fs))] font-semibold tracking-[0.08em] text-ink-3 uppercase";
 export const MUTE = "m-0 text-[length:calc(12.5px*var(--fs))] leading-snug text-ink-3";

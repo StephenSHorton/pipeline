@@ -288,19 +288,22 @@ function StackBody({ stem, flowVersion }: StageProps) {
               </Cubby>
 
               <Cubby id={cubbyId(stem, "stack-sliders")} cubby="stack-sliders" open={open === "stack-sliders"} onClose={() => closeCubby("stack-sliders")}>
-                {SLIDERS.map((s) => (
-                  <Slider
-                    key={s.key}
-                    label={s.label}
-                    title={s.title}
-                    min={s.min}
-                    max={sliderMax(s, meta)}
-                    step={s.step}
-                    value={state[s.key]}
-                    text={readout(s, state[s.key])}
-                    onChange={(v) => update({ [s.key]: sliderValue(s.key as SliderKey, v) })}
-                  />
-                ))}
+                {/* One column of 32 px rows: the panel's own gap between nine sliders made it ~450 px tall. */}
+                <div className="flex flex-col">
+                  {SLIDERS.map((s) => (
+                    <Slider
+                      key={s.key}
+                      label={s.label}
+                      title={s.title}
+                      min={s.min}
+                      max={sliderMax(s, meta)}
+                      step={s.step}
+                      value={state[s.key]}
+                      text={readout(s, state[s.key])}
+                      onChange={(v) => update({ [s.key]: sliderValue(s.key as SliderKey, v) })}
+                    />
+                  ))}
+                </div>
               </Cubby>
 
               <Cubby id={cubbyId(stem, "stack-palette")} cubby="stack-palette" open={open === "stack-palette"} onClose={() => closeCubby("stack-palette")}>
