@@ -631,7 +631,8 @@ class Workbench:
             try:
                 report = bake.psx(self.root, glb, tmp / "psx", tmp / "psx.glb", name, float(a["height"]),
                                   a["facing"], a.get("faces"), a.get("atlas"),
-                                  **({"head_weight": a["head_weight"]} if a.get("head_weight") else {}))
+                                  **({"head_weight": a["head_weight"]} if a.get("head_weight") else {}),
+                                  **{k: a[k] for k in ("legs", "leg_sides", "leg_scale", "leg_taper") if k in a})
                 # The cut takes tens of seconds and write() checked the stem only before it. A generate started
                 # meanwhile writes these same files (psx.glb, psx/, lods.json); moving ours in would mix the two.
                 # Asked again here the window shrinks to a few renames; the finally drops the cut, the PSX stays.
@@ -803,11 +804,19 @@ class Workbench:
                  "psx.json, and the PSX entry in lods.json (after Photo bake), so the app's Model tabs show it. It "
                  "replaces the asset's PSX (pick_take brings back an earlier mesh take's). height is in .obj units "
                  "(s&box inches); facing is where the subject looked in the photo. head_weight (creatures; 2 is a good start) "
-                 "gives the head that many times its share of the triangles, so ears and face survive the cut.",
+                 "gives the head that many times its share of the triangles, so ears and face survive the cut. "
+                 "legs clean (creatures) swaps each decimated leg, lumpy and splayed at the hoof, for a straight "
+                 "tapered prism of leg_sides sides (default 6), leg_scale times the measured leg radius (default 1; "
+                 "above 1 for thicker legs, instead of thicken_legs) and leg_taper bottom over top (default 0.8); a "
+                 "shape with no legs keeps its own and psx.json's legs says why.",
                  _obj({"stem": STEM, "glb": GLB, "height": {"type": "number", "minimum": 0.001, "maximum": 100000},
                        "facing": FACING, "faces": {"type": "integer", "minimum": 1, "maximum": 65536},
                        "atlas": {"type": "integer", "minimum": 1, "maximum": 65536},
                        "head_weight": {"type": "number", "minimum": 1, "maximum": 4},
+                       "legs": {"type": "string", "enum": ["keep", "clean"]},
+                       "leg_sides": {"type": "integer", "minimum": 3, "maximum": 16},
+                       "leg_scale": {"type": "number", "minimum": 0.25, "maximum": 4},
+                       "leg_taper": {"type": "number", "minimum": 0.2, "maximum": 2},
                        "name": {"type": "string"}}, ("stem", "glb", "height", "facing")), self.psx),
             Tool("draw_views", "Factory job (loads the draw model): draw the four turnaround views from a photo as "
                  "a reference (POST /2d/draw). Returns a job_id for job_status.",
