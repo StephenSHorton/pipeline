@@ -154,7 +154,7 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn("ApplicationStarted", MAIN)
         self.assertIn("go upd.AutoUpdate()", MAIN)
         update = src("screens/settings/update.ts")
-        self.assertIn('CHECK_LABEL = "Check for Updates"', update)
+        self.assertIn('CHECK_LABEL = "Check for updates"', update)
         self.assertIn("update:installing", update)
         self.assertIn("OpenDataDir", (ROOT / "desktop" / "internal" / "factory" / "factory.go").read_text(encoding="utf-8"))
 
