@@ -9,6 +9,8 @@
 3. Register (template frame): hips onto the predicted root; the template's trunk+neck+head, tail and each leg are
    laid along the matching predicted chain by arc length (length clamped 0.7-1.6x). Head and tail lines run on to
    the mesh surface; a leg line runs on down to the floor (onto the floor cluster) when its tip stops > 0.03H up.
+   Each leg's pivot joint (the horse's pelvis, scapula) then goes back over its leg, as far from it as the
+   template's, scaled like the leg (place_pivots): left with the hips it sat mid-body.
    Template chains with no predicted counterpart (a chicken's wings) are folded onto the body sides and flagged
    unsupported; their clips are not shipped.
 4. Binder "pred": the predicted weights moved onto the template bones (each influence goes to the template bone
@@ -381,12 +383,48 @@ def lay(P: dict, children: dict, chain: list[str], line: np.ndarray, keep_tail_r
             "tip_residual": round(float(np.linalg.norm(P[chain[-1]] - line[-1])), 4)}
 
 
+def place_pivots(P: dict, P0: dict, children: dict, spec: dict, laid: dict[str, float], tV: np.ndarray | None = None,
+                 tF: np.ndarray | None = None, H: float = 1.0) -> list[dict]:
+    """Put each laid leg's pivot joint (the parent of its chain root that is on no body / tail path: the horse's
+    back_leg_pelvis, front_scapula) back where the template has it over that leg: chain root + the template's own
+    pivot offset (P0, before the hips moved onto the predicted root), scaled like the leg. register moves the hips
+    onto the predicted root (mid-body) and each leg onto its predicted leg, but the pivot in between stayed with the
+    hips: the sheep's hind pivot sat half a body length ahead of the thigh, so Walk swung the thigh a third of the
+    height and tore the rump from the leg. A pivot that lands outside the mesh is pulled back toward the leg until
+    it is inside. Its other children (none on the horse) move with it. Distances in the report are / H."""
+    parent = {k: p for p, ks in children.items() for k in ks}
+    trunk = set(spec.get("body") or []) | set(spec.get("tail") or [])
+    out = []
+    for root, s in laid.items():
+        pv = parent.get(root)
+        if pv is None or pv in trunk or pv not in P0:
+            continue
+        off = s * (P0[pv] - P0[root])
+        new, t = P[root] + off, 1.0
+        if tV is not None and tF is not None:
+            ts = np.linspace(1.0, 0.0, 11)
+            wn = rig_fit.winding_number(tV, tF, P[root][None] + ts[:, None] * off[None], chunk=4000)
+            inside = np.where(np.abs(wn) > 0.5)[0]
+            t = float(ts[inside[0]]) if len(inside) else 1.0
+            new = P[root] + t * off
+        delta = new - P[pv]
+        P[pv] = new
+        leg = {root} | set(rig_fit._descendants(children, root))
+        for d in rig_fit._descendants(children, pv):
+            if d not in leg:
+                P[d] = P[d] + delta
+        out.append({"joint": pv, "over": root, "moved_H": round(float(np.linalg.norm(delta)) / H, 3),
+                    "to_leg_H": round(float(np.linalg.norm(new - P[root])) / H, 3), "pulled_in": round(1.0 - t, 2)})
+    return out
+
+
 def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarray, tV: np.ndarray, tF: np.ndarray,
              H_t: float, plan: dict | None = None) -> dict:
     """Template joints (name -> template-frame position, changed in place) onto the predicted lines (template frame).
     plan: the body plan whose paths to use (rig_plan.spec); PATHS[cls] without one."""
     spec = paths_for(cls, plan)
     rep = {"paths": [], "unsupported": []}
+    P0 = {n: p.copy() for n, p in P.items()}  # the template's own proportions, for place_pivots
     root_t = (lines_t.get("body") or lines_t.get("tail") or {}).get("line")
     if root_t is not None and "hips" in P:
         delta = root_t[0] - P["hips"]
@@ -418,6 +456,7 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
     plegs = lines_t.get("legs", [])
     cx = float(np.median(mesh_t[:, 0]))
     used = set()
+    laid: dict[str, float] = {}  # leg chain root -> the length scale it was laid at
     for c in tlegs:
         side = np.sign(P[c[0]][0] - cx)
         cand = [i for i, q in enumerate(plegs) if i not in used and np.sign(q["line"][0][0] - cx) == side]
@@ -437,6 +476,8 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
         r = lay(P, children, c, line, keep_tail_rigid=True, clamp=LEG_CLAMP)
         rep["paths"].append({"kind": "leg", "chain": c[0], "pred": q["pred"], **r, "pred_tip_gap_H": q["tip_gap_H"],
                              "floor_ext": q["floor_ext"]})
+        laid[c[0]] = float(np.clip(r["length_ratio"], *LEG_CLAMP))
+    rep["pivots"] = place_pivots(P, P0, children, spec, laid, tV, tF, H_t)
     # chains with no predicted counterpart: folded onto the body sides (rig_fit's wings), unsupported
     for g in spec["groups"]:
         rep["unsupported"].append(g)

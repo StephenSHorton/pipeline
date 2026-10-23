@@ -20,6 +20,7 @@ import rig  # noqa: E402
 import rest_check  # noqa: E402
 import rig_inspect  # noqa: E402
 import rig_motion  # noqa: E402
+import rig_fit  # noqa: E402
 import rig_pred  # noqa: E402
 import flow  # noqa: E402
 
@@ -431,6 +432,64 @@ class PredTests(unittest.TestCase):
         k = pos[0] + qA.apply(k - pos[0])
         np.testing.assert_allclose(k, target, atol=1e-6)
 
+    @staticmethod
+    def quadruped() -> tuple[dict, dict, dict, np.ndarray, np.ndarray]:
+        """A small horse-shaped skeleton (template frame, +Z forward) in a 1.4-long, 1-tall box body on legs: the
+        template (P0) has its hips and hind pivot in the rump over the thigh; P is after register moved the hips onto
+        a mid-body predicted root (the whole skeleton shifted forward) and laid the hind leg back on its predicted leg."""
+        import trimesh
+        P0 = {"hips": np.array([0, 0.8, -0.5]), "spine_1": np.array([0, 0.8, 0.0]), "spine_2": np.array([0, 0.8, 0.5]),
+              "tail_1": np.array([0, 0.85, -0.65]),
+              "pelvis_r": np.array([-0.1, 0.8, -0.4]), "thigh_r": np.array([-0.2, 0.6, -0.5]), "shin_r": np.array([-0.2, 0.05, -0.5]),
+              "scapula_r": np.array([-0.1, 0.85, 0.45]), "humerus_r": np.array([-0.2, 0.6, 0.55]), "fore_r": np.array([-0.2, 0.05, 0.55])}
+        children = {"hips": ["spine_1", "tail_1", "pelvis_r"], "spine_1": ["spine_2"], "spine_2": ["scapula_r"],
+                    "pelvis_r": ["thigh_r"], "thigh_r": ["shin_r"], "scapula_r": ["humerus_r"], "humerus_r": ["fore_r"]}
+        P = {n: p + np.array([0, 0, 0.45]) for n, p in P0.items()}  # the hips went mid-body
+        for n in ("thigh_r", "shin_r", "humerus_r", "fore_r"):  # the legs laid back on the predicted legs
+            P[n] = P0[n].copy()
+        box = trimesh.creation.box(extents=(0.6, 0.7, 1.4))
+        box.apply_translation((0, 0.65, 0))
+        return P0, P, children, np.asarray(box.vertices, float), np.asarray(box.faces)
+
+    def test_a_hind_pivot_goes_back_over_its_leg(self) -> None:
+        P0, P, children, V, F = self.quadruped()
+        spec = {"body": ["hips", "spine_1", "spine_2"], "tail": ["hips", "tail_1"]}
+        self.assertGreater(np.linalg.norm(P["pelvis_r"] - P["thigh_r"]), 0.4)  # mid-body: the bug
+        rep = rig_pred.place_pivots(P, P0, children, spec, {"thigh_r": 1.0, "humerus_r": 1.0}, V, F, H=1.0)
+        self.assertEqual([r["joint"] for r in rep], ["pelvis_r", "scapula_r"])
+        np.testing.assert_allclose(P["pelvis_r"], P0["pelvis_r"], atol=1e-9)  # the template's pivot over the thigh
+        np.testing.assert_allclose(P["pelvis_r"] - P["thigh_r"], P0["pelvis_r"] - P0["thigh_r"], atol=1e-9)
+        self.assertGreater(P["pelvis_r"][1], P["thigh_r"][1])  # above the leg, in the rump
+        np.testing.assert_allclose(P["scapula_r"] - P["humerus_r"], P0["scapula_r"] - P0["humerus_r"], atol=1e-9)
+        np.testing.assert_allclose(P["thigh_r"], P0["thigh_r"], atol=1e-9)  # the legs and trunk are not touched
+        np.testing.assert_allclose(P["hips"], P0["hips"] + [0, 0, 0.45], atol=1e-9)
+        self.assertTrue(np.all(np.abs(rig_fit.winding_number(V, F, np.array([P["pelvis_r"], P["scapula_r"]]))) > 0.5))
+        self.assertEqual(rep[0]["pulled_in"], 0.0)
+
+    def test_a_pivot_scales_with_its_leg_and_stays_inside(self) -> None:
+        P0, P, children, V, F = self.quadruped()
+        spec = {"body": ["hips", "spine_1", "spine_2"], "tail": ["hips", "tail_1"]}
+        rig_pred.place_pivots(P, P0, children, spec, {"thigh_r": 0.5}, V, F)
+        np.testing.assert_allclose(P["pelvis_r"] - P["thigh_r"], 0.5 * (P0["pelvis_r"] - P0["thigh_r"]), atol=1e-9)
+        P0, P, children, V, F = self.quadruped()
+        P0["pelvis_r"] = P0["thigh_r"] + np.array([0, 0.55, 0])  # a template pivot that would poke out of the back
+        rep = rig_pred.place_pivots(P, P0, children, spec, {"thigh_r": 1.0}, V, F)
+        self.assertGreater(rep[0]["pulled_in"], 0)
+        self.assertLess(P["pelvis_r"][1], float(V[:, 1].max()))
+
+    def test_a_leg_hung_straight_off_the_trunk_has_no_pivot(self) -> None:
+        P0, P, children, V, F = self.quadruped()
+        spec = {"body": ["hips", "spine_1", "spine_2", "pelvis_r"], "tail": ["hips", "tail_1"]}  # a bird's leg off the hips
+        before = {n: p.copy() for n, p in P.items()}
+        self.assertEqual(rig_pred.place_pivots(P, P0, children, spec, {"thigh_r": 1.0}, V, F), [])
+        for n in P:
+            np.testing.assert_allclose(P[n], before[n])
+
+
+def _glb(doc: dict, binary: bytes) -> bytes:
+    import rig_template
+    return rig_template._glb_bytes(doc, binary)
+
 
 def _stub_skin(P_fn):
     """A run_skin stand-in: skin-tokens' skeleton shape (rig_pred.ours_from_posed) with nearest-bone distance weights."""
@@ -666,6 +725,77 @@ class BuiltPathTests(unittest.TestCase):
         self.assertEqual(calls, [], buf.getvalue()[-2000:])
         self.assertTrue(info["reused_skin"])
         self.assertIn("Reused the skin weights", buf.getvalue())
+
+    def moved_copy(self, tmp: Path, name: str = "", shift=(0.0, 0.05, 0.02)) -> tuple[Path, Path, str]:
+        """A copy of rig/skinned_raw.glb and a skeleton like it with its second joint moved (or renamed to `name`)."""
+        import shutil
+        raw = Path(tmp) / "raw.glb"
+        shutil.copy2(self.asset / "rig" / "skinned_raw.glb", raw)
+        doc, b = rig.read_glb(raw)
+        j = doc["skins"][0]["joints"][1]
+        doc["nodes"][j]["translation"] = (np.array(doc["nodes"][j].get("translation", [0, 0, 0])) + shift).tolist()
+        if name:
+            doc["nodes"][j]["name"] = name
+        moved = Path(tmp) / "moved.glb"
+        moved.write_bytes(_glb(doc, b))
+        return raw, moved, doc["nodes"][j]["name"]
+
+    def test_moved_joints_reuse_the_weights_on_the_moved_skeleton(self) -> None:
+        mesh = self.asset / self.info["source"]
+        with tempfile.TemporaryDirectory() as tmp:
+            raw, moved, jn = self.moved_copy(Path(tmp))
+            self.assertEqual(rig.skin_reusable(raw, mesh, moved), f"joint {jn} moved")  # the strict rule as before
+            self.assertIsNone(rig.skin_reusable(raw, mesh, moved, moved_ok=True))
+            d0, b0 = rig.read_glb(raw)
+            a0 = d0["meshes"][0]["primitives"][0]["attributes"]
+            W0 = rig.accessor(d0, b0, a0["WEIGHTS_0"])
+            self.assertGreater(rig.rejoint_skin(raw, moved), 0)
+            self.assertIsNone(rig.skin_reusable(raw, mesh, moved))  # raw's joints are now the skeleton's
+            d1, b1 = rig.read_glb(raw)
+            np.testing.assert_array_equal(rig.accessor(d1, b1, a0["WEIGHTS_0"]), W0)  # the weights are untouched
+            sk = rig.Skeleton(d1)
+            w = sk.world({})
+            IBM = rig.accessor(d1, b1, d1["skins"][0]["inverseBindMatrices"]).reshape(-1, 4, 4).transpose(0, 2, 1)
+            for k, i in enumerate(d1["skins"][0]["joints"]):  # the inverse binds follow the joints (rest = identity)
+                M = np.eye(4)
+                M[:3, :3], M[:3, 3] = w[i][1].as_matrix(), w[i][0]
+                np.testing.assert_allclose(IBM[k] @ M, np.eye(4), atol=1e-5)
+            raw2, renamed, _ = self.moved_copy(Path(tmp), name="not_a_joint")
+            self.assertEqual(rig.skin_reusable(raw2, mesh, renamed, moved_ok=True), "the skeleton's joints changed")
+
+    def test_reuse_skin_with_moved_joints_skips_skin_tokens_and_says_so(self) -> None:
+        import contextlib
+        import io
+        rawp = self.asset / "rig" / "skinned_raw.glb"
+        saved = (rig.OUT, rig.run_skin, rig_pred.predict)
+        calls: list[int] = []
+        rig.OUT = self.root / "out"
+        rig.run_skin = _stub_skin(calls)
+        rig_pred.predict = lambda source, work, **kw: (Path(self.d["pred"]), 0.0, True)
+        rj = self.asset / "rig" / "rig.json"
+        before, raw_before = rj.read_bytes(), rawp.read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            _, moved, _ = self.moved_copy(Path(tmp))
+            rawp.write_bytes(moved.read_bytes())  # learned on joints that have since moved
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                code = rig.main(["--stem", self.STEM, "--class", "avian", "--no-fbx", "--render", "0", "--reframe", "1",
+                                 "--reuse-skin"])
+            info = json.loads(rj.read_text())
+            now = rig._joint_rest(rig.read_glb(rawp)[0])
+            posed = rig._joint_rest(rig.read_glb(self.asset / "rig" / "template_posed.glb")[0])
+        finally:
+            rig.OUT, rig.run_skin, rig_pred.predict = saved
+            rj.write_bytes(before)
+            rawp.write_bytes(raw_before)
+        self.assertEqual(code, 0, buf.getvalue()[-2000:])
+        self.assertEqual(calls, [], buf.getvalue()[-2000:])
+        self.assertIn("Reused the skin weights learned before; joints moved", buf.getvalue())
+        self.assertTrue(info["reused_skin"])
+        self.assertEqual(info["skin_reuse"]["note"], "Reused the skin weights learned before; joints moved")
+        for n, (p, _) in posed.items():  # the clips were baked on the moved joints, not the old ones
+            np.testing.assert_allclose(now[n][0], p, atol=1e-5)
 
     def test_reframe_stays_last(self) -> None:
         # the designed frames go on after the floor pass and the far-bone check (FK / _skin assume identity rests)
