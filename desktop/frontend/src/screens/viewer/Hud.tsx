@@ -17,7 +17,9 @@ import { cn } from "@/lib/utils";
 import { KIND_NAMES, RIGGED, slugStem } from "@/viewer/candidates";
 import type { PixelLook } from "@/viewer/pixelLook";
 import type { AssetDocs } from "@/viewer/useAssetDocs";
+import { openOn } from "./panels/panels";
 import { PanelRail } from "./panels/PanelRails";
+import { usePanels } from "./panels/store";
 import { PANEL, TOGGLE } from "./classes";
 import type { LoadState, ModelInfo, ViewerPanelBase } from "./types";
 
@@ -60,8 +62,10 @@ export interface HudProps {
 export function Hud(p: HudProps) {
   const info = p.load.state === "ready" ? p.load.info : null;
   // Comparing on a phone, the HUD yields room for two panes: no asset card or model picker, and a shorter left
-  // column (an open panel scrolls). The panes keep clear of what is left (data-hud-col, ViewerScreen measures it).
+  // column (an open panel scrolls), which an open panel has to itself. The panes keep clear of what is left
+  // (data-hud-col, ViewerScreen measures it).
   const yields = !!p.compare?.on;
+  const panelOpen = !!openOn(usePanels((s) => s.open), p.panel.stage);
   return (
     <div data-hud className="pointer-events-none absolute inset-0 z-[5] text-ink tracking-[var(--track)]">
       {/* The asset card, the panel rail under it (legacy left cubby rail), then the versions panel: the left side
@@ -76,7 +80,7 @@ export function Hud(p: HudProps) {
       >
         <AssetCard {...p} info={info} className={yields ? "max-sm:hidden" : undefined} />
         <PanelRail side="left" base={p.panel} />
-        {p.versions}
+        <div className={cn("contents", yields && panelOpen && "max-sm:hidden")}>{p.versions}</div>
       </div>
       {/* Wide: view toggles and the camera stack top right, the Rig check dock under them. Phones: one column at
           the bottom, in normal flow, so nothing overlaps: the toggles with Reset view, then the model and clip
