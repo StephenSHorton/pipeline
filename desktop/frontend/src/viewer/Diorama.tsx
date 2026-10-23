@@ -103,6 +103,13 @@ function Framer({ model }: { model: PreparedModel }) {
   return null;
 }
 
+/** Fade out every clip but `keep` that still shows. Not only the running ones: a play-once clip (Death) that finished
+ * holds its last pose with full weight but reports not running, and left in, it kept the model tipped over under the
+ * next clip. */
+export function fadeOthers(all: Record<string, AnimationAction>, keep: string): void {
+  for (const [name, a] of Object.entries(all)) if (name !== keep && a.getEffectiveWeight() > 0) a.fadeOut(0.2);
+}
+
 function Animator({ model, clips, clip, playing }: { model: PreparedModel; clips: AnimationClip[]; clip: string | null; playing: boolean }) {
   const mixer = useRef<AnimationMixer | null>(null);
   const actions = useRef<Record<string, AnimationAction>>({});
@@ -134,9 +141,10 @@ function Animator({ model, clips, clip, playing }: { model: PreparedModel; clips
 
   useEffect(() => {
     const all = actions.current;
-    const next = clip ? all[clip] : undefined;
+    if (!clip) return;
+    const next = all[clip];
     if (!next || current.current === clip) return;
-    for (const [name, a] of Object.entries(all)) if (name !== clip && a.isRunning()) a.fadeOut(0.2);
+    fadeOthers(all, clip);
     next.reset().fadeIn(current.current ? 0.2 : 0).play();
     current.current = clip;
   }, [clip, clips, model]);
