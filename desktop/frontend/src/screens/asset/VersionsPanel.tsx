@@ -6,7 +6,7 @@
 // through ViewerScreen), and at the left edge on the other stages (AssetScreen places it). The heading folds it;
 // it starts folded on phones, where the screen has no room to spare. It is gone when it has nothing to say.
 import { ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { navigate } from "@/app/router";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -49,6 +49,17 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
     output: intent?.output,
     stacking,
   });
+  // The current version may sit below the grid's fold (16 versions, 12 shown): scroll the grid, only the grid, to it.
+  const grid = useRef<HTMLDivElement>(null);
+  const current = items.find((it) => it.type === "take" && it.pressed);
+  const currentId = current && current.type === "take" ? current.id : "";
+  useEffect(() => {
+    const g = grid.current;
+    const tile = g?.querySelector<HTMLElement>("[aria-pressed=true]");
+    if (!g || !tile) return;
+    const top = tile.offsetTop - g.offsetTop;
+    if (top < g.scrollTop || top + tile.offsetHeight > g.scrollTop + g.clientHeight) g.scrollTop = top + tile.offsetHeight - g.clientHeight;
+  }, [currentId, open, stem]);
 
   if (!items.length) return null;
 
@@ -111,12 +122,13 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
         <ChevronDown aria-hidden="true" size={15} strokeWidth={2.2} className={cn("ml-auto shrink-0 text-ink-3 transition-transform", !open && "-rotate-90")} />
       </button>
       {/* overflow-y-auto: in the viewer's left column the panel may shrink (AssetScreen), and its body scrolls then. */}
-      <div id={bodyId} className={cn("min-h-0 flex-col gap-1.5 overflow-y-auto [scrollbar-width:thin]", open ? "flex" : "hidden")}>
+      <div id={bodyId} className={cn("min-h-[4.5rem] flex-col gap-1.5 overflow-y-auto [scrollbar-width:thin]", open ? "flex" : "hidden")}>
         {g.takes.length ? (
           <div
+            ref={grid}
             role="group"
             aria-label="Versions"
-            className="grid max-h-[min(11.5rem,30vh)] grid-cols-4 gap-1 overflow-y-auto [scrollbar-width:thin]"
+            className="grid max-h-[min(11.5rem,30vh)] shrink-0 grid-cols-4 gap-1 overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
           >
             {g.takes.map((it) => (
               <Take key={it.id} item={it} stage={stage} disabled={pending} onPick={pick} />
@@ -130,11 +142,11 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
                 <Button
                   key={i}
                   type="button"
-                  variant={it.primary ? "default" : "outline"}
+                  variant="outline"
                   title={it.title}
                   disabled={it.action.do === "keep" && pending}
                   onClick={() => void run(it.action)}
-                  className={ACT}
+                  className={cn(ACT, it.primary && "border-primary text-primary hover:text-primary")}
                 >
                   {it.text}
                 </Button>

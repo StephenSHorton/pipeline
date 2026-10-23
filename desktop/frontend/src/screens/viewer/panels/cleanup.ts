@@ -5,7 +5,7 @@
 import type { Lod } from "@/lib/api";
 
 /** The hint line under the title (index.html 2096). */
-export const CLEANUP_HINT = "Knock off generator scraps. Carve is a sphere delete in 3D.";
+export const CLEANUP_HINT = "Remove stray bits, or turn on Carve and click to cut away part of the mesh.";
 
 /** The Floaters button (index.html 2098). */
 export const FLOATERS_LABEL = "Floaters";

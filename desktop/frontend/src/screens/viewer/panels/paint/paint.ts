@@ -3,17 +3,17 @@
 // No React, no fetch, no DOM here.
 
 /** The cubby's hint line. */
-export const PAINT_HINT = "Color the mesh and the stack with the same 3D brush. Save writes files under out/.";
+export const PAINT_HINT = "Paint on the model with a 3D brush. Save keeps it.";
 
 /** Every control's label and tooltip (index.html 2113-2124). */
 export const PAINT_COPY = {
-  paint: { label: "Paint", title: "Click-drag to paint. Right-drag still orbits." },
+  paint: { label: "Brush", title: "Click-drag to paint. Right-drag still orbits." },
   drop: { label: "Drop", title: "Next click samples color from the surface." },
   erase: { label: "Erase", title: "Brush restores the original colors." },
   undo: { label: "Undo", title: "Undo the last stroke." },
   save: { label: "Save", title: "Write painted stack sheet and textured_paint.glb." },
   color: { label: "Color", title: "Brush color" },
-  brush: { label: "Brush", title: "Paint sphere size, as a fraction of the mesh." },
+  brush: { label: "Size", title: "Paint sphere size, as a fraction of the mesh." },
 } as const;
 
 /** #paint-color's default. */

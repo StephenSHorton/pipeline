@@ -33,7 +33,9 @@ export function ViewerPanel({
       hidden={!open}
       // data-[size=hud]: the hud Card sets overflow-visible through its data-size selector, which beats a plain
       // overflow-y-auto, so a long panel (Detail levels with its turnaround) ran under the versions panel unscrolled.
-      className={cn(PANEL, "min-h-0 w-full gap-2.5 px-4 pt-3 pb-3.5 [scrollbar-width:thin] data-[size=hud]:overflow-y-auto [&[hidden]]:hidden", className)}
+      // *:shrink-0: in a capped flex column the children would squeeze (a 17 px search box, a vanished caption)
+      // instead of the panel scrolling.
+      className={cn(PANEL, "min-h-0 w-full gap-2.5 px-4 pt-3 pb-3.5 [scrollbar-width:thin] *:shrink-0 data-[size=hud]:overflow-y-auto [&[hidden]]:hidden", className)}
     >
       <div className="flex items-center justify-between gap-2">
         <h2 className="m-0 text-[0.95rem] font-semibold text-ink">{title}</h2>

@@ -21,16 +21,16 @@ import {
 } from "./paint";
 
 describe("copy", () => {
-  it("the hint, labels and tooltips match the legacy cubby", () => {
-    expect(PAINT_HINT).toBe("Color the mesh and the stack with the same 3D brush. Save writes files under out/.");
+  it("the hint, labels and tooltips (plain English; the mode is Brush, not the panel's name)", () => {
+    expect(PAINT_HINT).toBe("Paint on the model with a 3D brush. Save keeps it.");
     expect(PAINT_COPY).toEqual({
-      paint: { label: "Paint", title: "Click-drag to paint. Right-drag still orbits." },
+      paint: { label: "Brush", title: "Click-drag to paint. Right-drag still orbits." },
       drop: { label: "Drop", title: "Next click samples color from the surface." },
       erase: { label: "Erase", title: "Brush restores the original colors." },
       undo: { label: "Undo", title: "Undo the last stroke." },
       save: { label: "Save", title: "Write painted stack sheet and textured_paint.glb." },
       color: { label: "Color", title: "Brush color" },
-      brush: { label: "Brush", title: "Paint sphere size, as a fraction of the mesh." },
+      brush: { label: "Size", title: "Paint sphere size, as a fraction of the mesh." },
     });
   });
 

@@ -12,7 +12,7 @@ import { headOut, outUrl } from "@/lib/api";
 import { flowEntry, pickTake, useFlow } from "@/lib/flow";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
-import { TOGGLE } from "@/screens/viewer/classes";
+import { ACTION, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import type { PanelToggleProps } from "@/screens/viewer/panels/PanelToggle";
 import { openViewerPanel } from "@/screens/viewer/panels/store";
 import { ViewerPanel } from "@/screens/viewer/panels/ViewerPanel";
@@ -93,8 +93,9 @@ const CHIP: Record<string, string> = {
 const TONE: Record<string, string> = { "": "", warn: "rounded-[4px] bg-signal px-1 text-signal-foreground", fail: "font-medium text-danger-text" };
 const LABEL = "mt-1.5 text-[length:calc(12px*var(--fs))] font-semibold tracking-[0.08em] text-ink-3 uppercase";
 const MUTE = "m-0 text-[length:calc(13px*var(--fs))] text-ink-3";
-const SMALL = "hit-44 h-[27px] rounded-[8px] px-2.5 text-[length:calc(13px*var(--fs))] font-semibold";
-const SELECT = "hit-44 h-[29px] max-w-full rounded-[8px] border border-input bg-white px-2 text-[length:calc(13px*var(--fs))] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring";
+// One-shot buttons (Re-rig, Check this version, Show me): the shared ACTION chip, the same size as the toggles.
+const SMALL = ACTION;
+const SELECT = "hit-44 h-[29px] max-w-full cursor-pointer rounded-[8px] border border-input bg-white px-2 text-[length:calc(13px*var(--fs))] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Whether the rigged model and the mesh exist for this asset (legacy entry.live / flowEntry("mesh").live). */
 function useRigFlow(p: ViewerPanelProps) {
@@ -123,8 +124,9 @@ export function RigToggle(p: Omit<PanelToggleProps, "panel"> & { props: ViewerPa
   const options = planOptions(st.plans);
   const shown = shownChoice(choices.choice, made, options);
   const btn = rigButton(rigged, hasTears(doc), rigged && rigKeptHead(doc?.rig?.rest));
+  // display:contents: the dock card lays these out with the Weights toggle, so Weights shares Re-rig's row.
   return (
-    <div className="flex max-w-full flex-wrap items-center gap-1">
+    <div className="contents">
       {status ? (
         <Button
           ref={p.ref}
@@ -134,7 +136,7 @@ export function RigToggle(p: Omit<PanelToggleProps, "panel"> & { props: ViewerPa
           aria-controls={p.controls}
           title={status.title}
           onClick={p.onToggle}
-          className={cn(TOGGLE, "h-auto min-h-[29px] max-w-full gap-1.5 text-left whitespace-normal aria-expanded:bg-accent aria-expanded:text-accent-foreground")}
+          className={cn(TOGGLE, "h-auto min-h-[29px] max-w-full gap-1.5 text-left whitespace-normal")}
         >
           <span aria-hidden className={cn("size-2 shrink-0 rounded-full", LEVEL_DOT[status.level] ?? "bg-signal")} />
           {status.label}
@@ -151,7 +153,7 @@ export function RigToggle(p: Omit<PanelToggleProps, "panel"> & { props: ViewerPa
           {RIG_COPY.madeBadge}
         </Badge>
       ) : null}
-      <select aria-label="Body plan" title={RIG_COPY.planTitle} value={shown} onChange={(e) => setChoices(stem, { choice: e.target.value })} className={SELECT}>
+      <select aria-label="Body plan" title={RIG_COPY.planTitle} value={shown} onChange={(e) => setChoices(stem, { choice: e.target.value })} className={cn(SELECT, "max-w-[11.5rem]")}>
         {options.map(([v, l]) => (
           <option key={v} value={v}>
             {l}
@@ -640,7 +642,7 @@ function PanelBody(b: BodyProps) {
           {badge.text}
         </Badge>
       ) : null}
-      <div role="group" aria-label={INSPECT_COPY.label} className="flex gap-0.5">
+      <div role="group" aria-label={INSPECT_COPY.label} className={cn(TRAY, "w-fit")}>
         <Seg on={S.tab !== "sheet"} title={INSPECT_COPY.checksTitle} onClick={() => patch({ tab: "checks" })}>
           {INSPECT_COPY.checks}
         </Seg>
@@ -655,7 +657,16 @@ function PanelBody(b: BodyProps) {
 
 function Seg({ on, title, onClick, children, disabled }: { on: boolean; title: string; onClick: () => void; children: ReactNode; disabled?: boolean }) {
   return (
-    <Button type="button" variant="hud-ghost" aria-pressed={on} title={title} onClick={onClick} disabled={disabled} className={cn(TOGGLE, "h-[27px] px-2.5 text-[length:calc(13px*var(--fs))]")}>
+    <Button type="button" variant="hud-ghost" aria-pressed={on} title={title} onClick={onClick} disabled={disabled} className={TRAY_ITEM}>
+      {children}
+    </Button>
+  );
+}
+
+/** An on/off switch (Skeleton, Original): a toggle chip, not a tray segment. */
+function Switch({ on, title, onClick, children, disabled }: { on: boolean; title: string; onClick: () => void; children: ReactNode; disabled?: boolean }) {
+  return (
+    <Button type="button" variant="hud-ghost" aria-pressed={on} title={title} onClick={onClick} disabled={disabled} className={TOGGLE}>
       {children}
     </Button>
   );
@@ -791,7 +802,7 @@ function ChecksTab(b: BodyProps) {
       ) : null}
 
       <h3 className={LABEL}>{INSPECT_COPY.colour}</h3>
-      <div className="flex flex-wrap gap-0.5">
+      <div role="group" aria-label={INSPECT_COPY.colour} className={cn(TRAY, "w-fit")}>
         {MODES.map(([id, label, title]) => (
           <Seg key={id} on={S.mode === id} title={title} onClick={() => patch({ mode: id })} disabled={!overlay}>
             {label}
@@ -805,19 +816,19 @@ function ChecksTab(b: BodyProps) {
       {legend.ramp ? <div aria-hidden className="h-2 rounded-sm bg-[linear-gradient(90deg,hsl(240,100%,50%),hsl(180,100%,50%),hsl(120,100%,50%),hsl(60,100%,50%),hsl(0,100%,50%))]" /> : null}
 
       <h3 className={LABEL}>{INSPECT_COPY.show}</h3>
-      <div className="flex flex-wrap gap-0.5">
-        <Seg on={S.skel} title={INSPECT_COPY.skeletonTitle} onClick={() => patch({ skel: !S.skel })} disabled={!overlay}>
+      <div className="flex flex-wrap gap-1">
+        <Switch on={S.skel} title={INSPECT_COPY.skeletonTitle} onClick={() => patch({ skel: !S.skel })} disabled={!overlay}>
           {INSPECT_COPY.skeleton}
-        </Seg>
+        </Switch>
         {VIEWS.map(([id, label]) => (
-          <Button key={id} type="button" variant="hud-ghost" title={viewTitle(label)} onClick={() => b.onView(id)} disabled={!overlay} className={cn(TOGGLE, "h-[27px] px-2.5 text-[length:calc(13px*var(--fs))]")}>
+          <Button key={id} type="button" variant="outline" title={viewTitle(label)} onClick={() => b.onView(id)} disabled={!overlay} className={ACTION}>
             {label}
           </Button>
         ))}
         {b.headUI.url && doc.rig?.rest?.straightened ? (
-          <Seg on={S.head === "both"} title={INSPECT_COPY.originalTitle} onClick={() => b.onHead(S.head === "both" ? "rigged" : "both")}>
+          <Switch on={S.head === "both"} title={INSPECT_COPY.originalTitle} onClick={() => b.onHead(S.head === "both" ? "rigged" : "both")}>
             {INSPECT_COPY.original}
-          </Seg>
+          </Switch>
         ) : null}
       </div>
 
@@ -979,7 +990,7 @@ function CheckRow(o: {
           {o.head ? (
             <div className="flex flex-col gap-1">
               {o.head.segments && o.headUI ? (
-                <div role="group" className="flex gap-0.5">
+                <div role="group" className={cn(TRAY, "w-fit")}>
                   {HEAD_SEGMENTS.map(([id, l, t]) => (
                     <Seg key={id} on={o.headMode === id} title={t} onClick={() => o.onHead(id)}>
                       {l}

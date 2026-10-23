@@ -29,7 +29,7 @@ export function PanelToggle({ panel, open, controls, onToggle, ref, title, class
       aria-controls={controls}
       title={title}
       onClick={onToggle}
-      className={cn(TOGGLE, "aria-expanded:bg-accent aria-expanded:text-accent-foreground", className)}
+      className={cn(TOGGLE, className)}
     >
       {children ?? PANEL_TITLES[panel]}
     </Button>
