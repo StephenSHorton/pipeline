@@ -1,3 +1,4 @@
+import { LayoutGrid, Plus, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { getHealth, type Health } from "@/lib/api";
@@ -9,14 +10,15 @@ import { onJobChip } from "./open";
 import { navigate, type Route } from "./router";
 
 // The glass top bar from the approved Make-panel design: brand left, Make / Library / Settings right; on an
-// asset the stage rail sits in the middle (legacy #stage-rail). At phone width the factory line hides (its tooltip
-// text is in the job chip and on Home), the brand word goes below 400 px and the nav tightens.
+// asset the stage rail sits in the middle (legacy #stage-rail), and takes its own row below 960 px, before seven
+// stages would clip. At phone width the factory line hides (its tooltip text is in the job chip and on Home), the
+// brand word goes below 400 px and the nav turns to icons.
 export function TopBar({ route }: { route: Route }) {
   const active = route.name === "home" ? (route.section === "library" ? "library" : "make") : route.name === "settings" ? "settings" : null;
   return (
     <header
       data-slot="topbar"
-      className="relative z-10 mx-[clamp(12px,2vw,20px)] mt-3 flex min-w-0 items-center justify-between gap-2 rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] py-1.5 pr-2 pl-3.5 shadow-[var(--topbar-shadow)] [-webkit-backdrop-filter:blur(var(--glass-blur))_saturate(var(--glass-saturate))] [backdrop-filter:blur(var(--glass-blur))_saturate(var(--glass-saturate))] sm:gap-4 max-sm:flex-wrap max-sm:pl-2.5"
+      className="relative z-10 mx-[clamp(12px,2vw,20px)] mt-3 flex min-w-0 items-center justify-between gap-2 rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] py-1.5 pr-2 pl-3.5 shadow-[var(--topbar-shadow)] [-webkit-backdrop-filter:blur(var(--glass-blur))_saturate(var(--glass-saturate))] [backdrop-filter:blur(var(--glass-blur))_saturate(var(--glass-saturate))] sm:gap-4 max-[960px]:flex-wrap max-sm:pl-2.5"
     >
       <a
         href="/"
@@ -36,8 +38,8 @@ export function TopBar({ route }: { route: Route }) {
         <span className="max-[400px]:sr-only">Pipeline</span>
       </a>
       {route.name === "asset" ? (
-        // At phone width the rail takes its own row under the brand and the nav.
-        <div className="flex min-w-0 flex-1 justify-center max-sm:order-last max-sm:basis-full max-sm:pb-0.5">
+        // Below 960 px the rail takes its own row under the brand and the nav.
+        <div className="flex min-w-0 flex-1 justify-center max-[960px]:order-last max-[960px]:basis-full max-[960px]:pb-0.5">
           <StageRail stem={route.stem} />
         </div>
       ) : null}
@@ -46,25 +48,30 @@ export function TopBar({ route }: { route: Route }) {
         <JobChip />
         <FactoryPill />
         <nav aria-label="Main" className="flex shrink-0 gap-1 max-sm:gap-0">
-          <NavButton current={active === "make"} onClick={() => navigate({ name: "home", section: "make" })}>Make</NavButton>
-          <NavButton current={active === "library"} onClick={() => navigate({ name: "home", section: "library" })}>Library</NavButton>
-          <NavButton current={active === "settings"} onClick={() => navigate({ name: "settings" })}>Settings</NavButton>
+          <NavButton current={active === "make"} icon={<Plus />} onClick={() => navigate({ name: "home", section: "make" })}>Make</NavButton>
+          <NavButton current={active === "library"} icon={<LayoutGrid />} onClick={() => navigate({ name: "home", section: "library" })}>Library</NavButton>
+          <NavButton current={active === "settings"} icon={<Settings />} onClick={() => navigate({ name: "settings" })}>Settings</NavButton>
         </nav>
       </div>
     </header>
   );
 }
 
+// The current page is a white pill, as the open stage is: --secondary is nearly the top bar's own colour.
 const navClass = (current: boolean) =>
   cn(
-    "h-auto min-h-11 rounded-[10px] px-[0.85rem] text-[0.85rem] no-underline max-sm:px-2",
-    current ? "font-semibold" : "font-medium text-ink-3 hover:text-ink",
+    "h-auto min-h-9 rounded-[10px] px-[0.85rem] text-[0.85rem] no-underline max-sm:min-w-9 max-sm:px-2 hit-44",
+    current ? "bg-white font-semibold text-ink shadow-[0_1px_3px_rgba(30,41,90,0.12)] hover:bg-white" : "font-medium text-ink-3 hover:bg-white/60 hover:text-ink",
   );
 
-function NavButton({ current, onClick, children }: { current: boolean; onClick: () => void; children: React.ReactNode }) {
+/** Phones: the icon only (the word is the aria-label), so the bar stays on one row with the stage rail. */
+function NavButton({ current, icon, onClick, children }: { current: boolean; icon: React.ReactNode; onClick: () => void; children: string }) {
   return (
-    <Button variant={current ? "secondary" : "ghost"} aria-current={current ? "page" : undefined} className={navClass(current)} onClick={onClick}>
-      {children}
+    <Button variant="ghost" aria-current={current ? "page" : undefined} aria-label={children} title={children} className={navClass(current)} onClick={onClick}>
+      <span aria-hidden="true" className="hidden max-sm:contents">
+        {icon}
+      </span>
+      <span className="max-sm:sr-only">{children}</span>
     </Button>
   );
 }
@@ -85,7 +92,7 @@ function JobChip() {
       onClick={onJobChip}
       data-state={job.state}
       title={text}
-      className="h-auto min-h-11 min-w-0 max-w-[16rem] justify-start gap-2 rounded-full bg-[var(--glass-bg)] px-3 text-[0.8rem] font-medium text-ink shadow-[var(--glass-shadow)] max-sm:max-w-[7.5rem]"
+      className="hit-44 h-auto min-h-9 min-w-0 max-w-[16rem] justify-start gap-2 rounded-full bg-[var(--glass-bg)] px-3 text-[0.8rem] font-medium text-ink shadow-[var(--glass-shadow)] max-sm:max-w-[7.5rem]"
     >
       <span
         aria-hidden="true"
@@ -119,7 +126,7 @@ function FactoryPill() {
       title={`Factory: ${healthLabel(h)}${shapeMvNote(h?.features)}`}
       className={cn("max-w-[22rem] truncate px-2 text-[0.8rem] max-sm:hidden", state === "error" ? "text-danger-text" : "text-ink-3")}
     >
-      {text || "Ready."}
+      {text === "Ready." || !text ? "Factory ready" : text}
     </span>
   );
 }

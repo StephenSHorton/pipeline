@@ -5,10 +5,10 @@
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { currentEntry, entryTime, imageUrl, useActivity, type ActivityEntry } from "@/lib/activity";
+import { collapseRuns, currentEntry, detailText, entryTime, imageUrl, useActivity, type ActivityEntry } from "@/lib/activity";
 import { displayStem, useJobs } from "@/lib/jobs";
 import { cn } from "@/lib/utils";
-import { PANEL } from "@/screens/viewer/classes";
+import { PANEL, TOGGLE } from "@/screens/viewer/classes";
 import { navigate } from "./router";
 
 function who(e: ActivityEntry): string {
@@ -52,9 +52,10 @@ export function ActivityChip() {
       aria-controls="activity-drawer"
       onClick={() => setOpen(!open)}
       title={cur ? text : "What Claude and the factory did"}
-      className="h-auto min-h-11 min-w-0 max-w-[20rem] justify-start gap-2 rounded-full bg-[var(--glass-bg)] px-3 text-[0.8rem] font-medium text-ink shadow-[var(--glass-shadow)] max-sm:max-w-[8rem]"
+      className="hit-44 h-auto min-h-9 min-w-0 max-w-[20rem] justify-start gap-2 rounded-full bg-[var(--glass-bg)] px-3 text-[0.8rem] font-medium text-ink shadow-[var(--glass-shadow)] max-sm:max-w-[8rem]"
     >
-      <Dot state={cur ? "running" : undefined} />
+      {/* Idle, the dot would mean nothing: only a running step shows one. */}
+      {cur ? <Dot state="running" /> : null}
       <span className="truncate">{text}</span>
     </Button>
   );
@@ -71,7 +72,7 @@ export function ActivityDrawer() {
   const cur = currentEntry(entries);
   const curImage = cur ? imageUrl(cur) : null;
   return (
-    <div className="pointer-events-none fixed top-[4.5rem] right-[clamp(12px,2vw,20px)] z-30 flex max-h-[calc(100vh-6rem)] w-[min(24rem,calc(100vw-32px))] flex-col">
+    <div className="pointer-events-none fixed top-[5rem] right-[clamp(12px,2vw,20px)] z-30 flex max-h-[calc(100vh-6rem)] w-[min(24rem,calc(100vw-32px))] flex-col">
       <Card
         id="activity-drawer"
         size="hud"
@@ -85,12 +86,11 @@ export function ActivityDrawer() {
         <div className="flex items-center gap-2 border-b border-[var(--topbar-border)] py-2 pr-2 pl-4">
           <h2 className="flex-1 text-[0.95rem] font-semibold">Activity</h2>
           <Button
-            variant="ghost"
-            size="sm"
+            variant="hud-ghost"
             aria-pressed={follow}
             onClick={() => setFollow(!follow)}
             title="Open the asset Claude is working on and show each model as it lands"
-            className="h-auto min-h-9 rounded-[8px] px-2.5 text-[0.8rem] font-semibold text-ink-3 aria-pressed:bg-accent aria-pressed:text-accent-foreground"
+            className={cn(TOGGLE, "text-[0.8rem]")}
           >
             Follow Claude
           </Button>
@@ -103,7 +103,7 @@ export function ActivityDrawer() {
             <p className="text-[0.7rem] font-semibold tracking-wide text-ink-3 uppercase">Now · {who(cur)}</p>
             <p className="mt-0.5 font-medium">{displayStem(cur.title)}</p>
             <p className="text-[0.8rem] text-ink-3">
-              {[cur.detail, entryTime(cur, now)].filter(Boolean).join(" · ")}
+              {[detailText(cur.detail), entryTime(cur, now)].filter(Boolean).join(" · ")}
             </p>
             {curImage ? <img src={curImage} alt="" className="mt-2 max-h-56 w-full rounded-[10px] bg-muted object-contain" /> : null}
           </section>
@@ -112,7 +112,7 @@ export function ActivityDrawer() {
           {entries.length === 0 ? (
             <li className="px-2 py-3 text-[0.85rem] text-ink-3">Nothing yet. When Claude works on an asset, each step shows here.</li>
           ) : (
-            entries.map((e) => <Row key={e.id} e={e} now={now} />)
+            collapseRuns(entries).map(({ e, n }) => <Row key={e.id} e={e} n={n} now={now} />)
           )}
         </ol>
       </Card>
@@ -120,14 +120,17 @@ export function ActivityDrawer() {
   );
 }
 
-function Row({ e, now }: { e: ActivityEntry; now: number }) {
+function Row({ e, n, now }: { e: ActivityEntry; n: number; now: number }) {
   const img = imageUrl(e);
-  const line = e.state === "error" ? e.error : e.detail;
+  const line = e.state === "error" ? e.error : detailText(e.detail);
   return (
     <li className="flex gap-2.5 rounded-[10px] px-2 py-2 hover:bg-muted/60">
       <Dot state={e.state} className="mt-1.5" />
       <div className="min-w-0 flex-1">
-        <p className="text-[0.85rem] leading-snug font-medium">{displayStem(e.title)}</p>
+        <p className="text-[0.85rem] leading-snug font-medium">
+          {displayStem(e.title)}
+          {n > 1 ? <span className="ml-1.5 text-[0.75rem] font-normal text-ink-3 tabular-nums">×{n}</span> : null}
+        </p>
         {line ? (
           <p className={cn("text-[0.78rem] leading-snug", e.state === "error" ? "text-danger-text" : "text-ink-3")}>{line}</p>
         ) : null}
@@ -137,7 +140,7 @@ function Row({ e, now }: { e: ActivityEntry; now: number }) {
           {e.stem ? (
             <button
               type="button"
-              className="rounded underline-offset-2 hover:text-ink hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              className="rounded font-medium text-primary underline underline-offset-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
               onClick={() => navigate({ name: "asset", stem: e.stem! })}
             >
               Open {displayStem(e.stem)}
@@ -145,7 +148,7 @@ function Row({ e, now }: { e: ActivityEntry; now: number }) {
           ) : null}
         </p>
       </div>
-      {img ? <img src={img} alt="" loading="lazy" className="size-12 shrink-0 rounded-[8px] bg-muted object-cover" /> : null}
+      {img ? <img src={img} alt="" loading="lazy" className="size-12 shrink-0 rounded-[8px] bg-muted object-contain" /> : null}
     </li>
   );
 }
