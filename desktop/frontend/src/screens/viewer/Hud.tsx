@@ -48,6 +48,8 @@ export interface HudProps {
   isPs1: boolean;
   onPixel: (on: boolean) => void;
   on240: () => void;
+  /** Compare (./compare.ts), when the stage has an earlier version to show; null hides the toggle. */
+  compare?: { on: boolean; onToggle: (on: boolean) => void } | null;
   onRenamed: (stem: string) => void;
   /** What the rail and dock panels get (ViewerPanelProps minus id, open, onClose). */
   panel: ViewerPanelBase;
@@ -228,6 +230,18 @@ function ViewCard(p: HudProps) {
         >
           PS1 240p
         </Toggle>
+      ) : null}
+      {p.compare ? (
+        <>
+          <Separator orientation="vertical" className="mx-0.5 h-5 w-px bg-hair" />
+          <Toggle
+            on={p.compare.on}
+            onClick={() => p.compare?.onToggle(!p.compare.on)}
+            title="Show an earlier version beside this one, turning and playing together. Click a version to choose which."
+          >
+            Compare
+          </Toggle>
+        </>
       ) : null}
     </Card>
   );

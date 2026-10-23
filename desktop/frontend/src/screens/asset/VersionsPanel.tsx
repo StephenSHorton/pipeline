@@ -5,17 +5,20 @@
 // card on the left: the last thing in the viewer's left column (under the asset card and the panel rail, passed in
 // through ViewerScreen), and at the left edge on the other stages (AssetScreen places it). The heading folds it;
 // it starts folded on phones, where the screen has no room to spare. It is gone when it has nothing to say.
+// While the viewer compares (screens/viewer/compare.ts), a click shows that version on the left instead of picking it:
+// nothing is written.
 import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { navigate } from "@/app/router";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { conceptStill, pickTake, snapshotTake, useFlow, type Stage } from "@/lib/flow";
+import { conceptStill, flowEntry, pickTake, snapshotTake, useFlow, type Stage } from "@/lib/flow";
 import { toast } from "@/lib/ui";
 import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
 import type { NestedIntent } from "@/screens/home/make";
-import { PANEL } from "@/screens/viewer/classes";
+import { MUTE, PANEL } from "@/screens/viewer/classes";
+import { comparing, currentTake, leftTake, useCompare } from "@/screens/viewer/compare";
 import { buildFromConcept, stackFromPicture, useStacking } from "./takes/api";
 import { groupItems, panelHeading, stripItems, versionsSummary, type StripAction, type StripItem } from "./takes/logic";
 import type { StageProps } from "./types";
@@ -61,9 +64,20 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
     if (top < g.scrollTop || top + tile.offsetHeight > g.scrollTop + g.clientHeight) g.scrollTop = top + tile.offsetHeight - g.clientHeight;
   }, [currentId, open, stem]);
 
+  // Comparing: the version on the left, which a click changes.
+  const compare = useCompare((s) => comparing(s, stem, stage));
+  const chosenLeft = useCompare((s) => s.left);
+  const entry = flowEntry(flow, stage);
+  const leftId = compare ? leftTake(entry, chosenLeft) : null;
+
   if (!items.length) return null;
 
   const pick = async (take: string) => {
+    if (compare) {
+      // View only: the current version is already on the right.
+      if (take !== currentTake(entry)) useCompare.getState().setLeft(take);
+      return;
+    }
     if (pending) return;
     setPendingStem(stem);
     try {
@@ -131,10 +145,11 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
             className="grid min-h-12 max-h-[min(11.5rem,30vh)] grid-cols-4 gap-1 overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
           >
             {g.takes.map((it) => (
-              <Take key={it.id} item={it} stage={stage} disabled={pending} onPick={pick} />
+              <Take key={it.id} item={it} stage={stage} disabled={pending && !compare} compare={compare} left={it.id === leftId} onPick={pick} />
             ))}
           </div>
         ) : null}
+        {compare ? <p className={cn(MUTE, "px-1.5")}>Comparing. Click a version to show it on the left.</p> : null}
         {g.rest.length ? (
           <div className="flex flex-col gap-1">
             {g.rest.map((it, i) =>
@@ -165,19 +180,27 @@ function Take({
   item,
   stage,
   disabled,
+  compare,
+  left,
   onPick,
 }: {
   item: Extract<StripItem, { type: "take" }>;
   stage: Stage;
   disabled: boolean;
+  /** The viewer compares: a click shows this version on the left. */
+  compare: boolean;
+  /** It is the one on the left now. */
+  left: boolean;
   onPick: (id: string) => void;
 }) {
+  const title = !compare ? item.title : item.pressed ? `${item.title} · on the right` : left ? `${item.title} · on the left` : `Show on the left: ${item.title}`;
   return (
     <button
       type="button"
       aria-pressed={item.pressed}
-      aria-label={item.title}
-      title={item.title}
+      aria-current={left || undefined}
+      aria-label={title}
+      title={title}
       // aria-disabled, not disabled: the button just pressed keeps keyboard focus while the pick runs.
       aria-disabled={disabled || undefined}
       onClick={() => onPick(item.id)}
@@ -185,6 +208,8 @@ function Take({
         "group/take relative flex flex-col items-center gap-0.5 rounded-[9px] border border-transparent p-0.5 outline-none",
         "text-[length:calc(11.5px*var(--fs))] font-medium text-ink-3 tabular-nums hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-wait aria-disabled:opacity-60",
         "aria-pressed:border-primary aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:text-primary aria-pressed:shadow-[var(--glass-shadow)]",
+        // The left side of a compare: a dashed outline, so it never reads as the picked one.
+        "aria-[current=true]:border-dashed aria-[current=true]:border-ink-3 aria-[current=true]:bg-background aria-[current=true]:font-semibold aria-[current=true]:text-ink",
       )}
     >
       {item.src ? (
