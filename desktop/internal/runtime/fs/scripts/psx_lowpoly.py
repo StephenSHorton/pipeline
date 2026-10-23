@@ -32,6 +32,11 @@ each leg gets an N-sided (--leg-sides) prism on the straight line through its ce
 body, radius --leg-scale times the measured leg radius at the top tapering to --leg-taper of that at the floor. The
 columns come out of the --faces budget (the body is decimated to the rest) and bake from their own leg's texels.
 A shape with no legs (a hay bale) keeps its own, with a note in psx.json's legs and degraded.
+
+--leg-weight W (default 1, off) keeps the decimated legs but gives them W times their share of the budget, as
+--head-weight does the head: before the cut each leg's x,z are scaled W times about its centre line (fading out over
+the top of the leg band, heights unchanged), and the low mesh is mapped back exactly after it. The legs stay part of
+the mesh; tidy them on the detailed mesh first (workbench mesh_edit tidy_legs). Not with --legs clean.
 """
 from __future__ import annotations
 
@@ -149,6 +154,94 @@ def decimate_head(mesh: trimesh.Trimesh, faces: int, weight: float, f0: float = 
     back = np.asarray(low.vertices, float).copy()
     back[:, :2] = centre[:2] + (back[:, :2] - centre[:2]) / scale(back)[:, None]
     return trimesh.Trimesh(vertices=back, faces=low.faces, process=False)
+
+
+# --leg-weight: the legs get a bigger share of the budget, the way --head-weight gives the head one.
+LEG_CORE = 1.3  # each leg is scaled whole out to this many of its measured radii from its centre line
+LEG_WEIGHT_RAMP = 0.15  # the scale fades to 1 over this top share of the leg band, where the legs meet the belly
+
+
+def leg_warp(high: trimesh.Trimesh) -> dict:
+    """The legs of the placed high mesh for --leg-weight, with workbench/edit.py's finder (the sturdy one trim_belly
+    and tidy_legs use, which copes with a shortened leg whose hoof splits): band floor and top, and per leg its centre
+    line (per-height centres) and core radius. Raises edit.EditError when there are no legs."""
+    from workbench import edit
+    P = edit._surface(high)
+    floor = float(P[:, 1].min())
+    top = edit.leg_top(high, P)
+    legs, how = edit._sturdy_legs(P, floor, top)
+    return {"floor": floor, "top": top, "ys": legs.ys, "C": legs.C, "R": LEG_CORE * legs.R, "from": how}
+
+
+def _warp_legs(v: np.ndarray, warp: dict, weight: float, inverse: bool = False) -> np.ndarray:
+    """Scale each leg's x,z about its centre line by s(y) = 1 + (weight - 1) w(y), w fading from 1 to 0 over the top
+    LEG_WEIGHT_RAMP of the band. Per leg the distance d from the line maps piecewise linearly, (0, R, R + b) to
+    (0, s R, R + b), identity past R + b, so it is one-to-one at every height and its inverse is exact; heights never
+    change. The legs are warped one after another (each map a bijection of the plane), the inverse in reverse order,
+    so legs whose scaled cores overlap still come back exactly."""
+    out = np.asarray(v, float).copy()
+    floor, top = warp["floor"], warp["top"]
+    band = max(top - floor, 1e-9)
+    y = out[:, 1]
+    wy = 1.0 - smoothstep((y - (top - LEG_WEIGHT_RAMP * band)) / (LEG_WEIGHT_RAMP * band))
+    s = 1.0 + (weight - 1.0) * wy
+    order = range(len(warp["R"]))
+    for i in (reversed(order) if inverse else order):
+        R = float(warp["R"][i])
+        b = 2.0 * np.abs(s - 1.0) * R + 0.5 * R  # the outer slope (R + b - s R) / b stays above 1/2
+        c = np.stack([np.interp(y, warp["ys"], warp["C"][i][:, a]) for a in range(2)], axis=1)
+        rel = out[:, [0, 2]] - c
+        d = np.linalg.norm(rel, axis=1)
+        k0, k1 = (np.full_like(s, R), s * R) if not inverse else (s * R, np.full_like(s, R))  # inner knot: from, to
+        e = R + b
+        d2 = np.where(d < k0, d * k1 / k0, np.where(d < e, k1 + (d - k0) * (e - k1) / (e - k0), d))
+        out[:, [0, 2]] = c + rel * (d2 / np.maximum(d, 1e-12))[:, None]
+    return out
+
+
+def decimate_weighted(mesh: trimesh.Trimesh, faces: int, head_weight: float, leg_weight: float = 1.0,
+                      warp: dict | None = None) -> trimesh.Trimesh:
+    """decimate_head() with the legs also given leg_weight times their share of the budget: before decimating, each
+    leg's x,z are scaled about its centre line (_warp_legs), the decimator spends triangles where the error is big,
+    then the low mesh is mapped back exactly (the head warp is undone inside decimate_head, then the legs')."""
+    if leg_weight == 1.0:
+        return decimate_head(mesh, faces, head_weight)
+    warp = warp or leg_warp(mesh)
+    warped = mesh.copy()
+    warped.vertices = _warp_legs(np.asarray(mesh.vertices, float), warp, leg_weight)
+    low = decimate_head(warped, faces, head_weight)
+    back = _warp_legs(np.asarray(low.vertices, float), warp, leg_weight, inverse=True)
+    return trimesh.Trimesh(vertices=_feet_down(back, warp), faces=low.faces, process=False)
+
+
+FOOT_SNAP = 0.05  # a decimated hoof left this share of the leg band (or less) above the floor is set back down on it
+
+
+def _feet_down(v: np.ndarray, warp: dict) -> np.ndarray:
+    """Put every leg back on the floor: the decimator can leave a hoof's lowest corner a little up (a third of an inch
+    on the sheep). Per leg (vertices nearest its centre line, in the bottom of the band) whose lowest point m sits up to
+    FOOT_SNAP of the band above the floor, heights below m + FOOT_SNAP band drop by m, tapering to nothing at the top
+    of that span: order by height is kept, so nothing turns over, and the rest of the leg is as cut."""
+    out = v.copy()
+    floor, top = warp["floor"], warp["top"]
+    span = FOOT_SNAP * (top - floor)
+    low = np.nonzero(out[:, 1] < floor + 0.25 * (top - floor))[0]
+    if not len(low):
+        return out
+    y = out[low, 1]
+    d = np.stack([np.linalg.norm(out[low][:, [0, 2]] - np.stack([np.interp(y, warp["ys"], C[:, a]) for a in range(2)], 1),
+                                 axis=1) for C in warp["C"]])
+    lab = d.argmin(0)
+    for i in range(len(warp["C"])):
+        mine = low[lab == i]
+        if not len(mine):
+            continue
+        m = float(out[mine, 1].min()) - floor
+        if 0.0 < m <= span:
+            u = out[mine, 1] - floor - m
+            drop = m * np.clip(1.0 - u / span, 0.0, 1.0)
+            out[mine, 1] -= drop
+    return out
 
 
 # --legs clean: the decimated legs (Hunyuan's lumpy, slanted legs cut to a few dozen facets, flat triangles splayed
@@ -632,6 +725,9 @@ def main() -> int:
     ap.add_argument("--atlas", type=int, default=256, help="texture size; the PS1 topped out at 256")
     ap.add_argument("--head-weight", type=float, default=1.0,
                     help="give a creature's head this many times its share of the triangles (ears, face); 1 = off")
+    ap.add_argument("--leg-weight", type=float, default=1.0,
+                    help="give a creature's legs this many times their share of the triangles, so the cut does not "
+                         "pinch them (composes with --head-weight; not with --legs clean); 1 = off")
     ap.add_argument("--yaw", type=float, default=0, help="extra turn about the up axis, degrees")
     ap.add_argument("--up", choices=("z", "y"), default="y", help=".obj axes: y = glTF, Y up, +Z front (s&box); z = Z up, +X front (Source)")
     ap.add_argument("--glb", dest="glb_out", type=Path, default=None, help="also write the model as a GLB here")
@@ -653,6 +749,10 @@ def main() -> int:
     args = ap.parse_args()
     if args.leg_sides < 3 or args.leg_scale <= 0 or args.leg_taper <= 0:
         ap.error("--leg-sides is at least 3; --leg-scale and --leg-taper are positive")
+    if args.leg_weight < 1.0:
+        ap.error("--leg-weight is at least 1")
+    if args.leg_weight != 1.0 and args.legs == "clean":
+        ap.error("--leg-weight weights the legs the cut keeps; --legs clean replaces them: give one")
 
     high, texture = load_textured(args.src)
     high = place(high, args.height, FACING[args.facing] + args.yaw)
@@ -670,6 +770,17 @@ def main() -> int:
             print(f"psx_lowpoly: --legs clean found no legs to replace ({e}); kept the decimated legs",
                   file=sys.stderr)
             degraded.append(degrade("psx", "legs_clean", f"no legs to replace ({e}); kept the decimated legs"))
+    if low is None and args.leg_weight != 1.0:
+        from workbench import edit
+        try:
+            warp = leg_warp(high)
+            low = decimate_weighted(high, args.faces, args.head_weight, args.leg_weight, warp)
+            legs_info = {"mode": "weighted", "leg_weight": args.leg_weight, "legs_found": len(warp["R"]),
+                         "top_y": round(float(warp["top"]), 3), "found_from": warp["from"]}
+        except edit.EditError as e:
+            legs_info = {"mode": "keep", "asked": "weighted", "why": str(e)}
+            print(f"psx_lowpoly: --leg-weight found no legs to weight ({e}); cut them as they are", file=sys.stderr)
+            degraded.append(degrade("psx", "leg_weight", f"no legs to weight ({e}); cut as they are"))
     if low is None:
         low = decimate_head(high, args.faces, args.head_weight)
     verts, faces, uvs, image, used = bake(high, texture, low, args.atlas, regions)

@@ -282,6 +282,45 @@ class ToolTests(Base):
         res = self.call("mesh_edit", {"stem": "crate", "src": box, "op": "trim_belly", "params": {"blend": 0.9}})
         self.assertTrue(res["isError"])
 
+    def test_mesh_edit_tidy_legs(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_workbench_edit import crooked_quadruped  # zig-zag, lumpy legs
+        mesh, idx = crooked_quadruped()
+        src = self.asset("crooked", mesh, "mesh.glb")
+        out, _ = self.ok("mesh_edit", {"stem": "crooked", "src": src, "op": "tidy_legs",
+                                       "params": {"thickness": 1.4}})
+        self.assertEqual(out["glb"], "out/crooked/workbench/edit_1.glb")
+        self.assertEqual(out["legs_found"], 4)
+        for leg in out["legs"]:
+            self.assertLess(leg["zigzag_after"], leg["zigzag_before"])
+            self.assertAlmostEqual(leg["slant_after"], leg["slant_before"], delta=3)
+        for params in ({"thickness": 5}, {"straighten": 2}, {"wobble": 1}):
+            res = self.call("mesh_edit", {"stem": "crooked", "src": src, "op": "tidy_legs", "params": params})
+            self.assertTrue(res["isError"], params)
+        box = self.asset("crate", trimesh.creation.box([1, 1, 1]), "mesh.glb")
+        res = self.call("mesh_edit", {"stem": "crate", "src": box, "op": "tidy_legs", "params": {}})
+        self.assertTrue(res["isError"])
+        self.assertIn("tidy_legs", res["content"][0]["text"])
+
+    def test_psx_passes_leg_weight(self) -> None:
+        src = self.asset("bale", quadruped(), "textured_photo.glb")
+        got = {}
+
+        def psx(root, glb, out_dir, glb_out, name, height, facing, faces_=None, atlas=None, **kw):
+            got.update(kw)
+            raise tools.bake.BakeError("stop here")
+
+        self.addCleanup(setattr, tools.bake, "psx", tools.bake.psx)
+        tools.bake.psx = psx
+        self.call("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera", "leg_weight": 2.5,
+                          "head_weight": 2})
+        self.assertEqual(got, {"leg_weight": 2.5, "head_weight": 2})
+        res = self.call("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera", "leg_weight": 2,
+                                "legs": "clean"})
+        self.assertTrue(res["isError"])
+        res = self.call("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera", "leg_weight": 9})
+        self.assertTrue(res["isError"])
+
     def fake_psx(self, faces: int = 1200, fail: bool = False):
         """Stand in for psx_lowpoly (bake.psx): write what it writes, record where, and answer its report."""
         seen = []

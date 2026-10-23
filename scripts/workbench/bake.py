@@ -107,10 +107,11 @@ def fill(root: Path, glb: Path, photo: Path, out: Path, keep: float | None = Non
 def psx(root: Path, glb: Path, out_dir: Path, glb_out: Path, name: str, height: float, facing: str,
         faces: int | None = None, atlas: int | None = None, head_weight: float | None = None,
         legs: str | None = None, leg_sides: int | None = None, leg_scale: float | None = None,
-        leg_taper: float | None = None) -> dict:
+        leg_taper: float | None = None, leg_weight: float | None = None) -> dict:
     """psx_lowpoly.py with its facing check off. Returns psx.json's report (the PSX_RESULT line). legs clean swaps
     each decimated leg for a straight tapered prism (leg_sides, leg_scale times the measured radius, leg_taper bottom
-    over top); the leg_* values are passed only with it."""
+    over top); the leg_* values are passed only with it. leg_weight (above 1) keeps the legs and gives them that many
+    times their share of the triangles."""
     argv = [str(SCRIPTS / "psx_lowpoly.py"), str(glb), "--out", str(out_dir), "--name", name,
             "--height", str(height), "--facing", facing, "--glb", str(glb_out), "--facing-check", "off"]
     if faces:
@@ -119,6 +120,8 @@ def psx(root: Path, glb: Path, out_dir: Path, glb_out: Path, name: str, height: 
         argv += ["--atlas", str(atlas)]
     if head_weight and head_weight != 1.0:
         argv += ["--head-weight", str(head_weight)]
+    if leg_weight and leg_weight != 1.0:
+        argv += ["--leg-weight", str(leg_weight)]
     if legs == "clean":
         argv += ["--legs", "clean"]
         for flag, value in (("--leg-sides", leg_sides), ("--leg-scale", leg_scale), ("--leg-taper", leg_taper)):

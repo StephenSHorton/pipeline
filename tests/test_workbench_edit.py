@@ -374,6 +374,151 @@ class TrimBellyTests(unittest.TestCase):
         np.testing.assert_array_equal(out[t], V[t])
 
 
+RINGS, SECTIONS = 25, 16
+LEG_H = 0.6
+SLANT_Z = 0.08  # each crooked leg's top sits this far further forward (+z) than its foot
+
+
+def crooked_tube(x: float, z: float, seed: int) -> trimesh.Trimesh:
+    """tube() made crooked like Hunyuan's sheep legs: slanted forward, its centre zig-zagging (and wobbling) with
+    height and its radius lumpy, rings kept so each ring's centroid is the leg's centre at that height."""
+    rng = np.random.default_rng(seed)
+    a = np.linspace(0, 2 * np.pi, SECTIONS, endpoint=False)
+    V = []
+    for y in np.linspace(0, LEG_H, RINGS):
+        t = y / LEG_H
+        cx = x + 0.035 * np.sin(5 * np.pi * t)  # a zig-zag of knees: forward, back, forward
+        cz = z + SLANT_Z * t + 0.01 * np.sin(11 * t + seed)
+        r = LEG_R * (1 + 0.25 * np.sin(13 * t + seed) + 0.08 * rng.uniform(-1, 1))
+        V += [[cx + r * np.cos(q), y, cz + r * np.sin(q)] for q in a]
+    F = []
+    for i in range(RINGS - 1):
+        for j in range(SECTIONS):
+            p, q = i * SECTIONS + j, i * SECTIONS + (j + 1) % SECTIONS
+            F += [[p, q + SECTIONS, q], [p, p + SECTIONS, q + SECTIONS]]
+    V += [[np.mean([v[0] for v in V[:SECTIONS]]), 0, np.mean([v[2] for v in V[:SECTIONS]])]]
+    b = len(V) - 1
+    F += [[b, j, (j + 1) % SECTIONS] for j in range(SECTIONS)]  # the sole; the top stays open inside the body
+    return trimesh.Trimesh(np.array(V, float), np.array(F), process=False)
+
+
+def crooked_quadruped() -> tuple[trimesh.Trimesh, dict]:
+    body = trimesh.creation.icosphere(subdivisions=4)
+    body.apply_scale([0.4, 0.35, 1.0])
+    body.apply_translation([0, 0.8, 0])
+    head = trimesh.creation.icosphere(subdivisions=3, radius=0.25).apply_translation([0, 1.0, 1.15])
+    parts = [("body", body), ("head", head)] + [(f"leg{i}", crooked_tube(x, z, i)) for i, (x, z) in enumerate(LEGS)]
+    ranges, off = {}, 0
+    for name, m in parts:
+        ranges[name] = np.arange(off, off + len(m.vertices))
+        off += len(m.vertices)
+    return trimesh.util.concatenate([m for _, m in parts]), ranges
+
+
+def rings(V: np.ndarray, leg: np.ndarray, below: float):
+    """A crooked leg's ring heights, centroids (xz) and mean radii, for the rings below a height."""
+    R = V[leg[:RINGS * SECTIONS]].reshape(RINGS, SECTIONS, 3)
+    R = R[R[:, 0, 1] < below]
+    c = R[:, :, [0, 2]].mean(1)
+    r = np.linalg.norm(R[:, :, [0, 2]] - c[:, None], axis=2).mean(1)
+    return R[:, 0, 1], c, r
+
+
+def slant(y: np.ndarray, c: np.ndarray) -> float:
+    """Degrees from vertical of the straight line through a leg's centroids."""
+    k = np.polyfit(y, c, 1)[0]
+    return float(np.degrees(np.arctan(np.linalg.norm(k))))
+
+
+class TidyLegsTests(unittest.TestCase):
+    def test_headless_shape_refused(self) -> None:
+        with self.assertRaises(edit.EditError):  # too many parts, or legs with no head: either way not a creature
+            edit.tidy_legs(headless()["box on wheels"])
+
+    def test_leg_wider_at_the_hoof_keeps_its_mean_radius(self) -> None:
+        # Legs that widen toward the floor (a cow's): at thickness 1 the level radius is the leg's mean, not its
+        # widest, so the leg does not swell into a tube.
+        body = trimesh.creation.icosphere(subdivisions=4)
+        body.apply_scale([0.4, 0.35, 1.0])
+        body.apply_translation([0, 0.8, 0])
+        head = trimesh.creation.icosphere(subdivisions=3, radius=0.25).apply_translation([0, 1.0, 1.15])
+        legs = []
+        for x, z in LEGS:
+            leg = tube(x, z, r=0.06, h=0.6)
+            v = np.asarray(leg.vertices).copy()
+            k = 1.5 - (v[:, 1] / 0.6)  # 1.5 at the floor, 0.5 at the top
+            v[:, [0, 2]] = np.array([x, z]) + (v[:, [0, 2]] - np.array([x, z])) * k[:, None]
+            leg.vertices = v
+            legs.append(leg)
+        _, info = edit.tidy_legs(trimesh.util.concatenate([body, head, *legs]), thickness=1.0)
+        for leg in info["legs"]:
+            self.assertLess(abs(leg["radius_after"] / leg["radius_before"] - 1), 0.12, leg)
+
+    def test_straightens_and_smooths_crooked_legs(self) -> None:
+        mesh, idx = crooked_quadruped()
+        V = np.asarray(mesh.vertices)
+        out, info = edit.tidy_legs(mesh, thickness=1.0)
+        self.assertEqual(info["legs_found"], 4)
+        top = info["top_y"]
+        # Measured where the move is whole: below the blend into the belly.
+        below = top - edit.TIDY_BLEND * (top - float(V[:, 1].min()))
+        for i in range(4):
+            leg = idx[f"leg{i}"]
+            y, c0, r0 = rings(V, leg, below)
+            _, c1, r1 = rings(out, leg, below)
+            zig0 = np.abs(np.diff(c0, 2, axis=0)).max()
+            zig1 = np.abs(np.diff(c1, 2, axis=0)).max()
+            self.assertLess(zig1, 0.55 * zig0, f"leg{i} centre line still zig-zags")
+            self.assertLess(zig1, 0.008)
+            dev = c1 - np.stack([np.polyval(np.polyfit(y, c1[:, a], 1), y) for a in range(2)], axis=1)
+            dev0 = c0 - np.stack([np.polyval(np.polyfit(y, c0[:, a], 1), y) for a in range(2)], axis=1)
+            self.assertLess(np.abs(dev).max(), 0.3 * np.abs(dev0).max(), f"leg{i} strays from a straight line")
+            res0 = r0 - np.polyval(np.polyfit(y, r0, 2), y)
+            res1 = r1 - np.polyval(np.polyfit(y, r1, 2), y)
+            self.assertLess(np.abs(res1).max(), 0.5 * np.abs(res0).max(), f"leg{i} still lumpy")
+            self.assertLess(np.abs(res1).max() / r1.mean(), 0.1)
+            self.assertAlmostEqual(slant(y, c1), slant(y, c0), delta=3.0)  # the slant stays
+            self.assertGreater(slant(y, c1), 3.0)  # (and there was one: about 8 degrees)
+        # Heights never move: the feet stay on the floor.
+        np.testing.assert_array_equal(out[:, 1], V[:, 1])
+        legs = np.concatenate([idx[f"leg{i}"] for i in range(4)])
+        self.assertEqual(float(out[legs, 1].min()), 0.0)
+        # The body and head are untouched, and next to nothing turns over.
+        body = np.concatenate([idx["body"], idx["head"]])
+        np.testing.assert_array_equal(out[body], V[body])
+        self.assertLessEqual(info["turned_faces"], 0.002 * len(mesh.faces))
+        self.assertEqual(info["turned_faces"], int(edit._turned(V, out, np.asarray(mesh.faces)).sum()))
+        for leg in info["legs"]:
+            self.assertLess(leg["zigzag_after"], 0.4 * leg["zigzag_before"])
+            self.assertLess(leg["lumps_after"], leg["lumps_before"])
+
+    def test_thickness_and_the_blend_into_the_body(self) -> None:
+        mesh, idx = crooked_quadruped()
+        V = np.asarray(mesh.vertices)
+        thin, _ = edit.tidy_legs(mesh, thickness=1.0)
+        thick, info = edit.tidy_legs(mesh, thickness=1.5)
+        top = info["top_y"]
+        below = top - edit.TIDY_BLEND * top
+        for i in range(4):
+            leg = idx[f"leg{i}"]
+            _, _, r1 = rings(thin, leg, below)
+            _, _, r15 = rings(thick, leg, below)
+            np.testing.assert_allclose(r15 / r1, 1.5, rtol=0.08)
+            above = leg[V[leg, 1] >= top]
+            np.testing.assert_array_equal(thick[above], V[above])  # past the band the leg is as it was
+            self.assertEqual(len(info["legs"][i]["radius_profile"]), 4)
+
+    def test_off_is_a_no_op_and_no_legs_refused(self) -> None:
+        mesh, _ = crooked_quadruped()
+        V = np.asarray(mesh.vertices)
+        out, info = edit.tidy_legs(mesh, thickness=1.0, straighten=0.0, smooth=0.0)
+        np.testing.assert_allclose(out, V, atol=1e-12)
+        with self.assertRaises(edit.EditError):
+            edit.tidy_legs(trimesh.creation.box([1, 1, 2]))
+        with self.assertRaises(edit.EditError):
+            edit.tidy_legs(headless()["box on wheels"])
+
+
 class TextureTests(unittest.TestCase):
     def test_glb_keeps_uvs_and_material(self) -> None:
         mesh, _ = quadruped()
