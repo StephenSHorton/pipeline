@@ -2,6 +2,7 @@
 // one text field, Add photo and Make; the kind switch under it; one route line; quiet chips for what is automatic
 // (head direction, height, file name, detail) with an Options disclosure to change them.
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type FormEvent } from "react";
+import { ChevronDown, ChevronsUpDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -284,7 +285,9 @@ export function MakePanel() {
 
   // The job, on Home too (legacy #home-job): every state, hidden only while you watch it run.
   const showChip = !!job && !(watching && (job.state === "running" || !!job.next));
-  const quietBtn = "h-auto min-h-11 rounded-xl border-input bg-white px-[0.85rem] text-[0.8rem] font-normal text-ink-2 hover:bg-white hover:text-ink";
+  const quietBtn = "hit-44 h-auto min-h-9 gap-1.5 rounded-xl border-input bg-white px-[0.85rem] text-[0.8rem] font-normal text-ink-2 hover:bg-[#f5f7fc] hover:text-ink";
+  // A cycle button steps to the next value on each click; the up-down chevrons say so.
+  const cycleIcon = <ChevronsUpDown aria-hidden="true" className="size-3.5 text-ink-3" />;
 
   return (
     <section aria-labelledby="mk-h" className="w-full max-w-[38rem]">
@@ -369,7 +372,8 @@ export function MakePanel() {
               "h-auto min-h-11 gap-2 rounded-xl px-[1.1rem] text-[0.9rem] font-semibold",
               makeReady
                 ? "shadow-[0_1px_2px_rgba(37,99,235,0.25),0_6px_16px_rgba(37,99,235,0.2)] hover:bg-blue-deep"
-                : cn("bg-muted text-ink-3 hover:bg-muted", busy ? "cursor-wait" : "cursor-not-allowed"),
+                : // Off: the primary at half strength, as every other disabled button, not a grey that looks pressable.
+                  cn("opacity-50 hover:bg-primary", busy ? "cursor-wait" : "cursor-not-allowed"),
             )}
           >
             {cur.make}
@@ -384,7 +388,7 @@ export function MakePanel() {
         <TabsList
           variant="hud"
           aria-label="What are you making"
-          className="mx-auto box-border flex w-fit max-w-full flex-wrap justify-center gap-[0.35rem] rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] p-[0.3rem]"
+          className="mx-auto box-border flex w-fit max-w-full flex-wrap justify-center gap-[0.35rem] rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] p-[0.3rem] max-sm:grid max-sm:grid-cols-2"
         >
           {KINDS.map((k) => (
             <TabsTrigger key={k.id} variant="hud" value={k.id} title={k.hint} className={KIND_TAB}>
@@ -398,22 +402,19 @@ export function MakePanel() {
         <p aria-live="polite" className="m-0 max-w-[32rem] text-center text-[0.85rem] leading-normal text-ink-3">
           {routeLine}
         </p>
-        <div className="flex flex-wrap items-center justify-center gap-[0.35rem]">
-          {chips.map((c) => (
-            <Badge key={c} variant="secondary" className="h-[26px] rounded-full px-[0.6rem] text-[0.75rem] font-medium">
-              {c}
-            </Badge>
-          ))}
-          <Button
-            variant="ghost"
-            onClick={() => setOptions((o) => !o)}
-            aria-expanded={options}
-            aria-controls="mk-options"
-            className="h-auto min-h-11 rounded-[10px] px-[0.6rem] text-[0.8rem] font-semibold text-blue-deep hover:bg-transparent hover:text-ink aria-expanded:bg-transparent aria-expanded:text-blue-deep"
-          >
-            {options ? "Hide options" : "Options"}
-          </Button>
-        </div>
+        {/* The summary is the Options button: one outline button that says what Make will use and opens the
+            choices. While they are open it says Hide options, so nothing is listed twice. */}
+        <Button
+          variant="outline"
+          onClick={() => setOptions((o) => !o)}
+          aria-expanded={options}
+          aria-controls="mk-options"
+          title={options ? "Hide the options" : "Change these"}
+          className="hit-44 h-auto min-h-9 max-w-full gap-1.5 rounded-xl px-[0.85rem] text-[0.8rem] font-medium whitespace-normal text-ink-2 aria-expanded:bg-white aria-expanded:text-ink-2"
+        >
+          <span className="min-w-0 truncate">{options ? "Hide options" : ["Options", ...chips].join(" · ")}</span>
+          <ChevronDown aria-hidden="true" className={cn("size-3.5 shrink-0 text-ink-3 transition-transform", options && "rotate-180")} />
+        </Button>
 
         {options ? (
           <div id="mk-options" className="flex flex-wrap justify-center gap-[0.4rem]">
@@ -421,6 +422,7 @@ export function MakePanel() {
               <>
                 <Button variant="outline" className={quietBtn} title="Height in inches: Person 72, Animal 58, Bust 30, Prop 24" onClick={() => setSizeIdx(((sizeIdx ?? guess) + 1) % SIZES.length)}>
                   Size <strong className="font-semibold">{sizeText}</strong>
+                  {cycleIcon}
                 </Button>
                 <Button
                   variant="outline"
@@ -429,12 +431,14 @@ export function MakePanel() {
                   onClick={() => setFacingPick(FACING_CYCLE[(FACING_CYCLE.indexOf(facingPick) + 1) % FACING_CYCLE.length])}
                 >
                   Head points <strong className="font-semibold">{facingText}</strong>
+                  {cycleIcon}
                 </Button>
               </>
             ) : null}
             {kind === "model" || kind === "stack" ? (
               <Button variant="outline" className={quietBtn} title={polyDef.hint} onClick={() => setPoly(POLYS[(POLYS.indexOf(polyDef) + 1) % POLYS.length].id)}>
                 Detail <strong className="font-semibold">{polyDef.label}</strong>
+                {cycleIcon}
               </Button>
             ) : null}
             {editingName ? (
@@ -472,7 +476,7 @@ export function MakePanel() {
                       key={s.id}
                       variant="outline"
                       aria-pressed={on}
-                      className={cn(quietBtn, on && "border-primary bg-secondary font-semibold hover:bg-secondary")}
+                      className={cn(quietBtn, "aria-pressed:border-[#bcd2fb] aria-pressed:bg-accent aria-pressed:font-semibold aria-pressed:text-accent-foreground")}
                       title={`After the picture: ${s.label.toLowerCase()}`}
                       onClick={() => setSteps((cur) => (on ? cur.filter((x) => x !== s.id) : [...cur, s.id]))}
                     >
@@ -491,7 +495,7 @@ export function MakePanel() {
                       onChange={(e) => setStepText((t) => ({ ...t, [s.id]: e.target.value }))}
                       placeholder={s.placeholder}
                       spellCheck={false}
-                      className="h-11 rounded-xl border-input bg-white px-3 text-[0.85rem] md:text-[0.85rem]"
+                      className="h-9 rounded-xl border-input bg-white px-3 text-[0.85rem] md:text-[0.85rem]"
                     />
                   </label>
                 ))}

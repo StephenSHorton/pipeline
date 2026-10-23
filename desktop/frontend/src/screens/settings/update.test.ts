@@ -16,7 +16,7 @@ import {
   type UpdateState,
 } from "./update";
 
-const base: UpdateState = { status: "idle", version: "", updatingTo: "", error: "", buttonLabel: "Check for Updates" };
+const base: UpdateState = { status: "idle", version: "", updatingTo: "", error: "", buttonLabel: "Check for updates" };
 const view = (p: Partial<UpdateState>) => updateView({ ...base, ...p });
 
 const DESKTOP = { messageHandlers: { external: { postMessage: () => {} } } };
@@ -58,7 +58,7 @@ describe("update row", () => {
     expect(view({ status: "boot" })).toMatchObject({ hint: "Checking…", tone: "", buttonDisabled: false });
   });
   it("covers every state with the legacy copy and colour", () => {
-    expect(view({ version: "1.2.0" })).toEqual({ hint: "Pipeline v1.2.0", tone: "", buttonLabel: "Check for Updates", buttonDisabled: false });
+    expect(view({ version: "1.2.0" })).toEqual({ hint: "Pipeline v1.2.0", tone: "", buttonLabel: "Check for updates", buttonDisabled: false });
     expect(view({ status: "checking" })).toEqual({ hint: "Pipeline dev · Checking…", tone: "running", buttonLabel: "Checking…", buttonDisabled: true });
     expect(view({ status: "uptodate", version: "1.2.0" })).toMatchObject({ hint: "Pipeline v1.2.0 · Up to date", tone: "ok", buttonDisabled: false });
     expect(view({ status: "error", error: "boom" })).toMatchObject({ hint: "boom", tone: "error" });
@@ -90,7 +90,7 @@ describe("checkForUpdates", () => {
   it("manual, outside Wails: says it runs in the desktop app", async () => {
     await checkForUpdates(true);
     expect(useUpdate.getState()).toMatchObject({ status: "error", error: OUTSIDE_WAILS });
-    expect(updateView(useUpdate.getState()).hint).toBe("Check for Updates runs in the desktop app.");
+    expect(updateView(useUpdate.getState()).hint).toBe("Check for updates runs in the desktop app.");
   });
   it("silent, outside Wails: stays idle", async () => {
     await checkForUpdates(false);
@@ -123,7 +123,7 @@ describe("checkForUpdates", () => {
     expect(useUpdate.getState()).toMatchObject({ status: "error", error: "no network" });
     await checkForUpdates(false);
     expect(useUpdate.getState().status).toBe("idle");
-    expect(updateView(useUpdate.getState()).buttonLabel).toBe("Check for Updates");
+    expect(updateView(useUpdate.getState()).buttonLabel).toBe("Check for updates");
   });
 });
 
@@ -132,14 +132,14 @@ describe("in a plain browser", () => {
     // The Wails runtime script loads in Chrome too; with no native bridge every call resolves to "".
     (globalThis as { window?: unknown }).window = { wails: { Call: { ByName: async () => "" } } };
     await checkForUpdates(true);
-    expect(updateView(useUpdate.getState()).hint).toBe("Check for Updates runs in the desktop app.");
+    expect(updateView(useUpdate.getState()).hint).toBe("Check for updates runs in the desktop app.");
   });
 });
 
 describe("update:installing", () => {
   it("from idle keeps the button text, disabled", () => {
     markInstalling("");
-    expect(updateView(useUpdate.getState())).toMatchObject({ hint: "Updating… Pipeline will restart.", buttonLabel: "Check for Updates", buttonDisabled: true });
+    expect(updateView(useUpdate.getState())).toMatchObject({ hint: "Updating… Pipeline will restart.", buttonLabel: "Check for updates", buttonDisabled: true });
   });
   it("subscribes at once when the runtime is there", async () => {
     let cb: ((ev: { data?: unknown }) => void) | undefined;

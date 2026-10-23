@@ -40,7 +40,7 @@ describe("finishRig", () => {
     useJobs.setState({ job: j });
     const f = fakes({ "rig/rig.json": { class: "quadruped", clips: ["Walk", "Idle"], fbx: "x.fbx" }, "rig/summary.json": { level: "warn", line: "Head 9° off" } });
     await finishRig(j, f.d);
-    expect(f.calls).toEqual(["enter rig", "toast Rig ready: big cow · Four legs, 2 clips, FBX for s&box · Head 9° off · Degraded: rig clips_dropped: Fly [Export →]"]);
+    expect(f.calls).toEqual(["enter rig", "toast Rig ready: big cow · Four legs, 2 clips, FBX for s&box · Head 9° off · Clips left out: Fly [Export →]"]);
     expect(useJobs.getState().job).toBeNull();
     f.click();
     expect(f.calls.at(-1)).toBe("enter export");

@@ -272,7 +272,7 @@ export function relativeTime(sec: number, nowMs = Date.now()): string {
   const d = nowMs / 1000 - sec;
   if (d < 3600) return `${Math.max(1, Math.round(d / 60))} min ago`;
   if (d < 86400) return `${Math.round(d / 3600)} h ago`;
-  if (d < 86400 * 14) return `${Math.round(d / 86400)} days ago`;
+  if (d < 86400 * 14) return Math.round(d / 86400) === 1 ? "yesterday" : `${Math.round(d / 86400)} days ago`;
   return new Date(sec * 1000).toLocaleDateString();
 }
 
