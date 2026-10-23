@@ -31,14 +31,22 @@
    point, so on flat-shaded (unshared-corner) meshes each triangle got its own bones and the mesh tore when it moved.
 4. Influences from bones far from the vertex (compared with its nearest bone) are dropped (raw weights sometimes
    tie a hand to a foot, or a chicken's foot to a wing tip). Weight on
-   the root and on tip (leaf) bones goes to the nearest real parent, as Mesh2Motion does. Corners at the same point
-   then get the same weights, so no seam can open.
+   the root and on tip (leaf) bones goes to the nearest real parent, as Mesh2Motion does. Then the weight territory
+   (scripts/rig_territory.py, --territory on, quadrupeds): each leg keeps its weight only below the mesh's leg band
+   top (the wool / belly above it goes to the trunk), the neck only in front of its root joint, the tail only behind
+   its root and near its bones; then the weights are smoothed over the welded mesh (6 Laplacian steps) and limited
+   again (the sheep's hind pelvis/thigh bones had owned 22% of the mesh: Walk lifted the rump by half its height).
+   Corners at the same point then get the same weights, so no seam can open. --reuse-skin keeps rig/skinned_raw.glb
+   when it was skinned on the same mesh and skeleton (re-cleaning and re-baking a rig without skin-tokens).
 5. Clips (a ground bird gets Idle and Walk; flight clips only if they keep the body together): each template clip is played on the template, and every bone of ours takes the same world-space rotation
    change from the reference pose (skin-tokens' bones have identity rest rotations, so the clip's local rotations
    can't be used as they are). The root also moves by the template root's offset, scaled to our size.
    Floor pass (rig_pred.floor_pass): per frame the body is grounded the way the template is (touching its floor
    when the template touches), each leg is bent / stretched (two-bone IK) so its foot keeps the template foot's
-   clearance, and a head through the floor is lifted at the neck. People are only grounded. rig/rigged_nofloor.glb
+   clearance, and a head through the floor is lifted at the neck. Head reach (--head-reach on, the fixed path): while
+   the standing template's head comes near its floor (Eating), the neck bones are aimed the way the template's point,
+   the trunk tipped forward about the hind legs if the neck is too short, and the neck bent, until the head has the
+   template head's clearance (scaled). People are only grounded. rig/rigged_nofloor.glb
    keeps the clips before it.
 6. Check: rig/inspect.json and rig/summary.json (scripts/rig_inspect.py), with every clip played and measured for
    tears and stretch (scripts/rig_motion.py).
@@ -720,6 +728,38 @@ def run_skin(mesh: Path, skeleton: Path, out: Path, fit: str = "none") -> float:
     return time.time() - t
 
 
+def skin_reusable(raw: Path, mesh: Path, skeleton: Path, tol: float = 1e-5) -> str | None:
+    """None when raw (an earlier skin-tokens output) was skinned on this mesh and this skeleton: the same vertex
+    positions, the same joint names and world positions (rest rotations included). Else why not."""
+    if not raw.is_file():
+        return "no rig/skinned_raw.glb"
+    try:
+        rd, rb = read_glb(raw)
+        md, mb = read_glb(mesh)
+        sd, _ = read_glb(skeleton)
+        Pr = accessor(rd, rb, rd["meshes"][0]["primitives"][0]["attributes"]["POSITION"]).astype(float)
+        Pm = accessor(md, mb, md["meshes"][0]["primitives"][0]["attributes"]["POSITION"]).astype(float)
+        if Pr.shape != Pm.shape or float(np.abs(Pr - Pm).max()) > tol * max(float(np.ptp(Pm[:, 1])), 1e-9) + 1e-7:
+            return "the mesh changed"
+        if "JOINTS_0" not in rd["meshes"][0]["primitives"][0]["attributes"]:
+            return "it has no weights"
+
+        def joints(doc: dict) -> dict:  # positions only: skin-tokens writes the joints with identity rotations
+            sk = Skeleton(doc)
+            w = sk.world({})
+            return {doc["nodes"][i].get("name"): w[i][0] for i in doc["skins"][0]["joints"]}
+        a, b = joints(rd), joints(sd)
+        if list(a) != list(b):
+            return "the skeleton's joints changed"
+        H = max(float(np.ptp(Pm[:, 1])), 1e-9)
+        for n, p in a.items():
+            if float(np.abs(p - b[n]).max()) > 1e-4 * H:
+                return f"joint {n} moved"
+    except Exception as e:  # noqa: BLE001 - unreadable: skin again
+        return f"unreadable ({str(e)[:80]})"
+    return None
+
+
 def local_weights(P: np.ndarray, J: np.ndarray, W: np.ndarray, joint_pos: np.ndarray, child: dict[int, int],
                   height: float, skip: tuple[int, ...] = ()) -> tuple[np.ndarray, np.ndarray, int]:
     """Drop influences whose bone is far from the vertex (relative to its nearest influence); renormalise."""
@@ -812,6 +852,64 @@ def share_corners(P: np.ndarray, J: np.ndarray, W: np.ndarray, tol: float = 1e-5
     split = len(np.unique(inv[np.abs(M - mean[inv]).sum(1) > 1e-3]))
     J2, W2 = to_top4(mean[inv])
     return J2, W2, split
+
+
+TERRITORY_CLASSES = ("quadruped",)  # measured on (the sheep on the horse template); others keep the plain cleanup
+
+
+def clean_weights(P: np.ndarray, faces: np.ndarray | None, ours: dict, J: np.ndarray, W: np.ndarray,
+                  skip_extra: tuple[int, ...] = (), territory: str = "on", neck_root: str | None = None,
+                  territory_opts: dict | None = None, note=print) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Step 4 on raw (per-corner) weights: far influences dropped (local_weights), root/tip weight folded to parents,
+    the weight territory (rig_territory: limbs own only their part of the mesh, then smoothed) when `territory` is
+    "on", and corners at the same point given the same weights. skip_extra: joint indices never taken as a point's
+    nearest bone (folded, unsupported chains). Returns J, W and {dropped, reassigned, folded, split, kept, territory}."""
+    skel = Skeleton(ours)
+    joints = ours["skins"][0]["joints"]
+    world = skel.world({})
+    jpos = np.array([world[i][0] for i in joints])
+    child = {}
+    for k, i in enumerate(joints):
+        kids = [joints.index(c) for c in skel.nodes[i].get("children", []) if c in joints]
+        if kids:
+            child[k] = kids[0]
+    height = float(np.ptp(P[:, 1]))
+    local_weights.reassigned = 0
+    root_k = next(k for k, i in enumerate(joints) if skel.parent.get(i) not in joints)
+    # the root's bone runs from the floor to the hips through the belly; its weight is folded away anyway
+    J, W, dropped = local_weights(P, J, W, jpos, child, height, skip=tuple([root_k, *skip_extra]))
+    if local_weights.reassigned:
+        note(f"{local_weights.reassigned} points had only far bones and went wholly to their nearest bone")
+    kept = W > 0
+    note(f"Ignored {dropped} pulls from bones too far away")
+    names_j = [skel.nodes[i].get("name", "") for i in joints]
+    parent_j = {k: joints.index(skel.parent[i]) for k, i in enumerate(joints) if skel.parent.get(i) in joints}
+    root_j = next(k for k in range(len(joints)) if k not in parent_j)
+    hips_j = names_j.index("hips") if "hips" in names_j else root_j
+    J, W, folded = fold_tips(J, W, parent_j, root_j, hips_j)
+    note(f"Moved {folded:.1%} of the weight from root and tip bones to their parents")
+    terr = None
+    if territory == "on":
+        import rig_territory
+        try:
+            J, W, terr = rig_territory.territory(P, faces, J, W, names_j, [parent_j.get(k, -1) for k in range(len(joints))],
+                                                 jpos, neck_root=neck_root, **(territory_opts or {}))
+        except Exception as e:  # noqa: BLE001 - the plain cleanup still stands
+            terr = {"applied": False, "error": str(e)[:300]}
+            note(f"warn: couldn't limit the limbs' weights ({str(e)[:160]}); kept the plain cleanup")
+        if terr.get("applied"):
+            mv = terr.get("moved") or {}
+            note(f"Limited each limb's weights to its own part of the mesh (legs below {terr['leg_line_rel']:.2f}× height, "
+                 f"from the {terr['leg_line_from']}): moved " + ", ".join(f"{v:.0f} from the {k}" for k, v in mv.items())
+                 + f" to the trunk; limbs own {terr['limb_share_before']:.0%} → {terr['limb_share_after']:.0%} of the weight"
+                 + (f", smoothed {terr['smooth']}×" if terr.get("smooth") else ""))
+    else:
+        terr = {"applied": False, "why": territory}
+    J, W, split = share_corners(P, J, W)
+    note(f"Gave every copy of a point the same bones ({split} points had copies on different bones)" if split
+         else "Checked that every copy of a point has the same bones, so corners move together")
+    return J, W, {"dropped": dropped, "reassigned": int(local_weights.reassigned), "folded": folded, "split": split,
+                  "kept": kept, "territory": terr}
 
 
 def bake_clips(template: dict, names: list[str], ours: dict, our_skel: Skeleton, ref_store: dict) -> tuple[list[dict], list[str]]:
@@ -1262,6 +1360,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="the model's own predicted skeleton as the fitting target: auto (poor match or a missed body), "
                          "always, never")
     ap.add_argument("--floor", choices=("0", "1"), default=env("RIG_FLOOR") or "1", help="the floor pass (default 1)")
+    ap.add_argument("--territory", choices=("on", "off"), default=env("RIG_TERRITORY") or "on",
+                    help="limit each limb's weights to its own part of the mesh, then smooth them (rig_territory; "
+                         "default on, quadrupeds)")
+    ap.add_argument("--head-reach", choices=("on", "off"), default=env("RIG_HEAD_REACH") or "on",
+                    help="bend the neck so the head gets as near the floor as the template's does (Eating; default on)")
+    ap.add_argument("--reuse-skin", action="store_true", default=env("RIG_REUSE_SKIN") == "1",
+                    help="reuse rig/skinned_raw.glb when it was skinned on this mesh and this skeleton (no skin-tokens)")
     ap.add_argument("--render", choices=("0", "1"), default=env("RIG_RENDER") or "1",
                     help="render the contact sheet (rig/preview/) after the rig (default 1)")
     ap.add_argument("--reframe", choices=("0", "1", "auto"), default=env("RIG_REFRAME") or "auto",
@@ -1575,6 +1680,7 @@ def main(argv: list[str] | None = None) -> int:
         note(f"Joined {len(inv)} corners into {int(inv.max()) + 1} points before skinning")
     binder = args.binder
     binder_report = None
+    reused_skin = False
     if binder == "pred" and pred is not None and pred_ctx.get("same_vertices") and pred_ctx.get("labels"):
         t0 = time.time()
         bdoc, bbin = rig_pred.ours_from_posed(posed)
@@ -1601,8 +1707,16 @@ def main(argv: list[str] | None = None) -> int:
                 binder = "skin"
         if binder != "heat":
             binder = "skin"
-            secs = run_skin(work / "welded.glb" if inv is not None else source, posed, raw)
-            note(f"Learned the skin weights in {secs:.0f} s")
+            skin_mesh = work / "welded.glb" if inv is not None else source
+            why = skin_reusable(raw, skin_mesh, posed) if args.reuse_skin else "not asked"
+            if why is None:
+                secs, reused_skin = 0.0, True
+                note("Reused the skin weights learned before (rig/skinned_raw.glb: same mesh, same skeleton)")
+            else:
+                if args.reuse_skin:
+                    note(f"Couldn't reuse rig/skinned_raw.glb ({why}); learning the weights again")
+                secs = run_skin(skin_mesh, posed, raw)
+                note(f"Learned the skin weights in {secs:.0f} s")
 
     stage("clean", "Cleaning up the weights")
     ours, obin = read_glb(raw)
@@ -1619,17 +1733,9 @@ def main(argv: list[str] | None = None) -> int:
     joints = ours["skins"][0]["joints"]
     world = skel.world({})
     jpos = np.array([world[i][0] for i in joints])
-    child = {}
-    for k, i in enumerate(joints):
-        kids = [joints.index(c) for c in skel.nodes[i].get("children", []) if c in joints]
-        if kids:
-            child[k] = kids[0]
     height = float(np.ptp(P[:, 1]))
     raw_J, raw_W = J.copy(), W.copy()
-    local_weights.reassigned = 0
-    root_k = next(k for k, i in enumerate(joints) if skel.parent.get(i) not in joints)
-    # the root's bone runs from the floor to the hips through the belly; its weight is folded away anyway
-    skip_k = [root_k]
+    skip_k = []
     if fitinfo.get("unsupported"):  # folded, unsupported chains (a ground bird's wings) never stand in as the nearest bone
         groups = (rig_pred.paths_for(cls, plan_used) or {}).get("groups", {})
         roots_u = [r_ for g in fitinfo["unsupported"] for r_ in groups.get(g, [])]
@@ -1638,20 +1744,12 @@ def main(argv: list[str] | None = None) -> int:
             k = sub.pop()
             skip_k.append(k)
             sub += [joints.index(c) for c in skel.nodes[joints[k]].get("children", []) if c in joints]
-    J, W, dropped = local_weights(P, J, W, jpos, child, height, skip=tuple(skip_k))
-    if local_weights.reassigned:
-        note(f"{local_weights.reassigned} points had only far bones and went wholly to their nearest bone")
-    kept = W > 0
-    note(f"Ignored {dropped} pulls from bones too far away")
+    territory = args.territory if cls in TERRITORY_CLASSES or args.territory == "off" else f"not for {cls} yet"
+    J, W, cinfo = clean_weights(P, faces, ours, J, W, skip_extra=tuple(skip_k), territory=territory,
+                                neck_root=rig_plan.spec(plan_used, cls, "neck_lift", None), note=note)
+    dropped, folded, split, kept = cinfo["dropped"], cinfo["folded"], cinfo["split"], cinfo["kept"]
     names_j = [skel.nodes[i].get("name", "") for i in joints]
     parent_j = {k: joints.index(skel.parent[i]) for k, i in enumerate(joints) if skel.parent.get(i) in joints}
-    root_j = next(k for k in range(len(joints)) if k not in parent_j)
-    hips_j = names_j.index("hips") if "hips" in names_j else root_j
-    J, W, folded = fold_tips(J, W, parent_j, root_j, hips_j)
-    note(f"Moved {folded:.1%} of the weight from root and tip bones to their parents")
-    J, W, split = share_corners(P, J, W)
-    note(f"Gave every copy of a point the same bones ({split} points had copies on different bones)" if split
-         else "Checked that every copy of a point has the same bones, so corners move together")
 
     out_glb = asset / "rigged.glb"
     wanted = [c.strip() for c in args.clips.split(",") if c.strip()]
@@ -1704,7 +1802,8 @@ def main(argv: list[str] | None = None) -> int:
         lateral = R.from_euler("y", float(fitinfo.get("yaw", 0)), degrees=True).apply([1.0, 0, 0])
         Hs = float(np.ptp(P[:, 1]))
         floor = rig_pred.floor_pass(clips, ours, P, np.asarray(J), np.asarray(W), template, cls, Hs, lateral,
-                                    plan=plan_used, prefer_track=built is not None)
+                                    plan=plan_used, prefer_track=built is not None,
+                                    head_reach=args.head_reach == "on" and built is None)
         if fixing:
             write_rigged(out_glb, ours, obin, src, sbin, J, W, clips)
             far = far_motion(out_glb)
@@ -1729,7 +1828,8 @@ def main(argv: list[str] | None = None) -> int:
         "reassigned_points": int(local_weights.reassigned),
         "binder": binder, "pred": {k: v for k, v in pred_ctx.items() if k not in ("independent",)} | (
             {"independent": {k: v for k, v in pred_ctx["independent"].items() if k != "chains"}} if pred_ctx.get("independent") else {}),
-        "unsupported_clips": unsupported_clips, "floor": floor,
+        "unsupported_clips": unsupported_clips, "floor": floor, "territory": cinfo.get("territory"),
+        "head_reach": args.head_reach, "reused_skin": reused_skin,
         "clips_report": clips_report, "clips_failed": clips_failed, "facing_prior": facing_prior,
         "build_error": build_error, "binder_report": binder_report, "reframe": reframed, "fbx_check": None,
         "degraded": degraded,
