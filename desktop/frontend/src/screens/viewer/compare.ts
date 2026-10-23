@@ -101,3 +101,50 @@ export function boneMap(left: string[], right: string[]): Int32Array {
 
 /** The right side's bone `bone` is not in the left skeleton (the left says so). */
 export const missingBone = (left: string[], right: string[], bone: number) => bone >= 0 && bone < right.length && !left.includes(right[bone]);
+
+/** The HUD's edge margin (top-3, left-3...), which the panes' frame keeps too, and the air between a card and it. */
+const EDGE = 12;
+const AIR = 8;
+/** Narrower halves stack top and bottom instead (tablet widths, where the HUD columns leave a thin strip). */
+export const MIN_HALF = 260;
+/** Below this the panes take the HUD's room back rather than shrink to nothing. */
+const MIN_CLEAR = 240;
+
+/** The HUD cards the panes keep clear of, in px (0 for one that is not there). */
+export interface HudSizes {
+  width: number;
+  height: number;
+  narrow: boolean;
+  /** The left column (asset card, rail, versions). */
+  left: { width: number; height: number };
+  /** The right column under the view card (camera stack, Rig check dock). */
+  right: number;
+  /** The view card's height (top right). */
+  top: number;
+  /** The bottom stack's height (pickers, and on phones the view card). */
+  bottom: number;
+}
+
+export interface PaneLayout {
+  inset: { top: number; right: number; bottom: number; left: number };
+  stacked: boolean;
+}
+
+/**
+ * Where the two panes go: a framed window in the room the HUD leaves, so each model is centred where nothing covers it.
+ * Wide, that is between the columns and under the view card (side by side, or stacked when the halves would be too
+ * thin); on phones, between the left column and the bottom stack, one pane above the other.
+ */
+export function paneLayout(h: HudSizes): PaneLayout {
+  const gap = (n: number) => (n > 0 ? EDGE + n + AIR : EDGE);
+  if (h.narrow) {
+    const bottom = gap(h.bottom);
+    const top = Math.max(EDGE, Math.min(gap(h.left.height), h.height - bottom - MIN_CLEAR));
+    return { inset: { top, right: EDGE, bottom, left: EDGE }, stacked: true };
+  }
+  let left = gap(h.left.width);
+  let right = gap(h.right);
+  if (h.width - left - right < MIN_CLEAR) right = EDGE;
+  if (h.width - left - right < MIN_CLEAR) left = EDGE;
+  return { inset: { top: gap(h.top), right, bottom: EDGE, left }, stacked: (h.width - left - right) / 2 < MIN_HALF };
+}

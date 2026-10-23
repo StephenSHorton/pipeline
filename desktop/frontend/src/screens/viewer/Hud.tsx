@@ -59,13 +59,22 @@ export interface HudProps {
 
 export function Hud(p: HudProps) {
   const info = p.load.state === "ready" ? p.load.info : null;
+  // Comparing on a phone, the HUD yields room for two panes: no asset card or model picker, and a shorter left
+  // column (an open panel scrolls). The panes keep clear of what is left (data-hud-col, ViewerScreen measures it).
+  const yields = !!p.compare?.on;
   return (
     <div data-hud className="pointer-events-none absolute inset-0 z-[5] text-ink tracking-[var(--track)]">
       {/* The asset card, the panel rail under it (legacy left cubby rail), then the versions panel: the left side
           is one stack. The column stops above the bottom pickers on phones and scrolls the open panel instead of
           running off the screen; the versions panel shrinks with the rail and scrolls its own body. */}
-      <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:w-[calc(100%-24px)] max-sm:max-h-[calc(100%-200px)]">
-        <AssetCard {...p} info={info} />
+      <div
+        data-hud-col="left"
+        className={cn(
+          "absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:w-[calc(100%-24px)]",
+          yields ? "max-sm:max-h-[40%]" : "max-sm:max-h-[calc(100%-200px)]",
+        )}
+      >
+        <AssetCard {...p} info={info} className={yields ? "max-sm:hidden" : undefined} />
         <PanelRail side="left" base={p.panel} />
         {p.versions}
       </div>
@@ -73,13 +82,15 @@ export function Hud(p: HudProps) {
           the bottom, in normal flow, so nothing overlaps: the toggles with Reset view, then the model and clip
           pickers (the dock's panels join the left rail there). */}
       {/* Below 1360 px the bottom clip bar reaches under this column, so the column stops above it. */}
-      <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-[1360px]:max-h-[calc(100%-80px)] max-sm:hidden">
-        <ViewCard {...p} />
+      <div data-hud-col="right" className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-[1360px]:max-h-[calc(100%-80px)] max-sm:hidden">
+        <div data-hud-col="top">
+          <ViewCard {...p} />
+        </div>
         <CameraStack />
         <PanelRail side="right" base={p.panel} className="w-[min(342px,calc(100vw-24px))]" />
       </div>
       <Status load={p.load} />
-      <div className="absolute inset-x-3 bottom-3 flex flex-col items-center gap-2">
+      <div data-hud-col="bottom" className="absolute inset-x-3 bottom-3 flex flex-col items-center gap-2">
         <div className="flex max-w-full items-stretch gap-2 sm:hidden">
           <ViewCard {...p} />
           <Card size="hud" className={cn(PANEL, "justify-center p-1")}>
@@ -87,7 +98,7 @@ export function Hud(p: HudProps) {
           </Card>
         </div>
         <div className="flex max-w-full flex-wrap items-end justify-center gap-2">
-          <ModelPicker lods={p.lods} hasRig={p.hasRig} current={info?.lod ?? ""} onPick={p.onPickLod} />
+          <ModelPicker lods={p.lods} hasRig={p.hasRig} current={info?.lod ?? ""} onPick={p.onPickLod} className={yields ? "max-sm:hidden" : undefined} />
           {p.clips.length ? <ClipPicker {...p} /> : null}
         </div>
       </div>
@@ -97,7 +108,7 @@ export function Hud(p: HudProps) {
 
 /* ------------------------------------------------------------------ asset card (top left) */
 
-function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo | null }) {
+function AssetCard({ stem, docs, info, onRenamed, className }: HudProps & { info: ModelInfo | null; className?: string }) {
   const kind = docs?.intent?.output ? KIND_NAMES[docs.intent.output] : null;
   const insp = docs?.inspect;
   // inspect.json describes one file; when another file is on screen its own counts are shown instead.
@@ -108,7 +119,7 @@ function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo
   const degraded = degradedLine(docs?.degraded);
   const summary = docs?.summary;
   return (
-    <Card size="hud" className={cn(PANEL, "w-full shrink-0 gap-1.5 px-4 pt-3 pb-3")}>
+    <Card size="hud" className={cn(PANEL, "w-full shrink-0 gap-1.5 px-4 pt-3 pb-3", className)}>
       <TitleInput stem={stem} onRenamed={onRenamed} />
       <div className="flex flex-wrap items-center gap-1.5">
         {kind ? <Badge variant="info" size="hud-sm">{kind}</Badge> : null}
@@ -302,7 +313,7 @@ function CamBtn({ label, onClick, children }: { label: string; onClick: () => vo
 
 /* ------------------------------------------------------------------ model + clip pickers (bottom) */
 
-function ModelPicker({ lods, hasRig, current, onPick }: { lods: Lod[]; hasRig: boolean; current: string; onPick: (id: string) => void }) {
+function ModelPicker({ lods, hasRig, current, onPick, className }: { lods: Lod[]; hasRig: boolean; current: string; onPick: (id: string) => void; className?: string }) {
   const items = [...(hasRig ? [{ id: RIGGED, label: "Rigged", title: "The rigged model, with its clips." }] : []), ...lods.map((l) => ({
     id: l.id,
     label: l.label || l.id,
@@ -310,7 +321,7 @@ function ModelPicker({ lods, hasRig, current, onPick }: { lods: Lod[]; hasRig: b
   }))];
   if (items.length < 2) return null;
   return (
-    <Card size="hud" className={cn(PANEL, "max-w-full p-1")}>
+    <Card size="hud" className={cn(PANEL, "max-w-full p-1", className)}>
       <Tabs value={current} onValueChange={(v) => typeof v === "string" && v !== current && onPick(v)}>
         <TabsList variant="hud" aria-label="Model" className="max-w-full flex-wrap justify-start">
           {items.map((it) => (

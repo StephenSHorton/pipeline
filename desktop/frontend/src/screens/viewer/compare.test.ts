@@ -1,7 +1,7 @@
 // Compare's rules: which version goes on the left, the side labels, the left file, and bones matched by name.
 import { describe, expect, it } from "vitest";
 import type { FlowEntry, FlowTake } from "@/lib/flow";
-import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, sideLabels, takeModelFiles, useCompare, versionNo } from "./compare";
+import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, paneLayout, sideLabels, takeModelFiles, useCompare, versionNo } from "./compare";
 
 const take = (id: string, files: string[] = []): FlowTake => ({ id, made: 0, files });
 const rig = (e: Partial<FlowEntry> = {}): FlowEntry => ({
@@ -99,5 +99,28 @@ describe("bones by name", () => {
     expect(missingBone(["root", "neck"], ["root", "head"], 1)).toBe(true);
     expect(missingBone(["root", "head"], ["head", "root"], 0)).toBe(false);
     expect(missingBone(["root"], ["root"], -1)).toBe(false);
+  });
+});
+
+describe("where the panes go", () => {
+  const wide = (width: number, right = 342) => ({ width, height: 830, narrow: false, left: { width: 340, height: 430 }, right, top: 40, bottom: 50 });
+
+  it("sits side by side between the HUD columns and under the view card", () => {
+    expect(paneLayout(wide(1440))).toEqual({ inset: { top: 60, right: 362, bottom: 12, left: 360 }, stacked: false });
+    expect(paneLayout(wide(1280)).stacked).toBe(false);
+    // The 3D stage has only the camera stack on the right.
+    expect(paneLayout(wide(1280, 47)).inset.right).toBe(67);
+  });
+
+  it("stacks when the halves would be too thin, and takes the dock's room back when the strip is", () => {
+    expect(paneLayout(wide(1024))).toEqual({ inset: { top: 60, right: 362, bottom: 12, left: 360 }, stacked: true });
+    expect(paneLayout(wide(800)).inset).toEqual({ top: 60, right: 12, bottom: 12, left: 360 });
+    expect(paneLayout(wide(500)).inset).toEqual({ top: 60, right: 12, bottom: 12, left: 12 });
+  });
+
+  it("stacks between the left column and the bottom stack on phones, keeping room for both panes", () => {
+    const phone = (left: number) => ({ width: 390, height: 728, narrow: true, left: { width: 366, height: left }, right: 0, top: 0, bottom: 180 });
+    expect(paneLayout(phone(260))).toEqual({ inset: { top: 280, right: 12, bottom: 200, left: 12 }, stacked: true });
+    expect(paneLayout(phone(500)).inset.top).toBe(288);
   });
 });

@@ -35,6 +35,8 @@ export interface CompareSideProps {
   wire: boolean;
   spin: boolean;
   pixel: PixelLook;
+  /** The panes are one above the other (phones, thin room): the label goes by the line across the middle. */
+  stacked: boolean;
 }
 
 type Left = { state: "loading" } | { state: "ready"; model: PreparedModel; clips: AnimationClip[] } | { state: "error"; message: string };
@@ -81,7 +83,7 @@ export function CompareSide(p: CompareSideProps) {
   return (
     <>
       <Diorama follower model={model} clips={clips} clip={p.clip} playing={p.playing} clay={p.clay} wire={p.wire} spin={p.spin} pixel={p.pixel} />
-      <SideLabel side="left" text={p.label} notes={[status, heatNote, clipNote]} />
+      <SideLabel side="left" text={p.label} notes={[status, heatNote, clipNote]} stacked={p.stacked} />
     </>
   );
 }
@@ -127,15 +129,15 @@ function useLeftHeat(stem: string, stage: ViewerStage, model: PreparedModel | nu
   return show === "heat" && missingBone(leftNames, right, bone) ? `No “${right[bone]}” bone in ${label}.` : "";
 }
 
-/** A side's name, at the divider: the left's top right, the right's top left (stacked on phones: either side of the
- * line across the middle). Notes under it: loading, a missing bone or clip. Never takes the pointer. */
-export function SideLabel({ side, text, notes = [] }: { side: "left" | "right"; text: string; notes?: string[] }) {
+/** A side's name, at the divider: the left's top right, the right's top left (stacked: either side of the line across
+ * the middle). Notes under it: loading, a missing bone or clip. Never takes the pointer. */
+export function SideLabel({ side, text, notes = [], stacked }: { side: "left" | "right"; text: string; notes?: string[]; stacked: boolean }) {
   const lines = notes.filter(Boolean);
   return (
     <div
       className={cn(
         "pointer-events-none absolute z-[1] flex max-w-[calc(100%-24px)] flex-col gap-1",
-        side === "left" ? "top-3 right-3 items-end max-sm:top-auto max-sm:bottom-3" : "top-3 left-3 items-start max-sm:right-3 max-sm:left-auto max-sm:items-end",
+        side === "left" ? (stacked ? "right-3 bottom-3 items-end" : "top-3 right-3 items-end") : stacked ? "top-3 right-3 items-end" : "top-3 left-3 items-start",
       )}
     >
       <Card size="hud" role="note" className={cn(PANEL, "pointer-events-none px-2.5 py-1 font-semibold text-ink tabular-nums")}>
