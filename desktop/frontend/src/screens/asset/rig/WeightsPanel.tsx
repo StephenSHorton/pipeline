@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { flowEntry } from "@/lib/flow";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
-import { ACTION, COMMIT, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
+import { ACTION, COMMIT, LABEL, MUTE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import { PanelToggle, type PanelToggleProps } from "@/screens/viewer/panels/PanelToggle";
 import { ViewerPanel } from "@/screens/viewer/panels/ViewerPanel";
 import type { ViewerPanelProps } from "@/screens/viewer/types";
@@ -19,8 +19,6 @@ import { BRUSH_SIZE, BRUSH_STRENGTH, boneChains, boneRgb, changedText, GRAB, WEI
 import { saveWeights, setWeightsSession, useWeights, weightsFor, weightsSession } from "./weightsApi";
 import { WeightsSession } from "./weightsView";
 
-const LABEL = "text-[length:calc(11px*var(--fs))] font-semibold tracking-[0.08em] text-ink-3 uppercase";
-const MUTE = "m-0 text-[length:calc(12.5px*var(--fs))] leading-snug text-ink-3";
 const SLIDER = "hit-44 min-w-0 flex-1 accent-primary";
 const hex = (rgb: [number, number, number]) => `rgb(${rgb.map((x) => Math.round(x * 255)).join(",")})`;
 

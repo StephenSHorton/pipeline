@@ -70,7 +70,8 @@ export function Hud(p: HudProps) {
       {/* Wide: view toggles and the camera stack top right, the Rig check dock under them. Phones: one column at
           the bottom, in normal flow, so nothing overlaps: the toggles with Reset view, then the model and clip
           pickers (the dock's panels join the left rail there). */}
-      <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-sm:hidden">
+      {/* Below 1360 px the bottom clip bar reaches under this column, so the column stops above it. */}
+      <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-[1360px]:max-h-[calc(100%-80px)] max-sm:hidden">
         <ViewCard {...p} />
         <CameraStack />
         <PanelRail side="right" base={p.panel} className="w-[min(342px,calc(100vw-24px))]" />

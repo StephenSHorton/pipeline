@@ -5,14 +5,14 @@
 // Copy and rules live in ./rig.ts and ./inspect.ts, the model side in ./overlay.ts; this file only lays them out.
 // The clip row of the legacy bar is the HUD's clip picker (Hud.tsx ClipPicker), not repeated here.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { LoaderCircle } from "lucide-react";
+import { ChevronDown, LoaderCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { headOut, outUrl } from "@/lib/api";
 import { flowEntry, pickTake, useFlow } from "@/lib/flow";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
-import { ACTION, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
+import { ACTION, LABEL, MUTE, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import type { PanelToggleProps } from "@/screens/viewer/panels/PanelToggle";
 import { openViewerPanel } from "@/screens/viewer/panels/store";
 import { ViewerPanel } from "@/screens/viewer/panels/ViewerPanel";
@@ -91,8 +91,6 @@ const CHIP: Record<string, string> = {
   fail: "border-destructive/40 bg-destructive/10 text-danger-text before:content-['×_']",
 };
 const TONE: Record<string, string> = { "": "", warn: "rounded-[4px] bg-signal px-1 text-signal-foreground", fail: "font-medium text-danger-text" };
-const LABEL = "mt-1.5 text-[length:calc(12px*var(--fs))] font-semibold tracking-[0.08em] text-ink-3 uppercase";
-const MUTE = "m-0 text-[length:calc(13px*var(--fs))] text-ink-3";
 // One-shot buttons (Re-rig, Check this version, Show me): the shared ACTION chip, the same size as the toggles.
 const SMALL = ACTION;
 const SELECT = "hit-44 h-[29px] max-w-full cursor-pointer rounded-[8px] border border-input bg-white px-2 text-[length:calc(13px*var(--fs))] text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -139,7 +137,10 @@ export function RigToggle(p: Omit<PanelToggleProps, "panel"> & { props: ViewerPa
           className={cn(TOGGLE, "h-auto min-h-[29px] max-w-full gap-1.5 text-left whitespace-normal")}
         >
           <span aria-hidden className={cn("size-2 shrink-0 rounded-full", LEVEL_DOT[status.level] ?? "bg-signal")} />
-          {status.label}
+          {/* It opens the Rig check, so it says so; the worst finding follows in lighter text. */}
+          <span>
+            {INSPECT_COPY.label} <span className="font-normal">· {status.label}</span>
+          </span>
         </Button>
       ) : null}
       {recheck.kind === "checking" ? <span className={cn(MUTE, "px-2 whitespace-nowrap")}>{RIG_COPY.checking}</span> : null}
@@ -883,15 +884,16 @@ function ChecksTab(b: BodyProps) {
         <Rows rows={fitRows(doc)} extra={roles.length ? { at: 1, label: "Stick colours", node: <Sticks roles={roles} /> } : undefined} />
       </details>
 
+      {/* The rigger's raw notes run long (key=value lines): folded by default, as Skeleton fit is. */}
       {(doc.notes || []).length ? (
-        <>
-          <h3 className={LABEL}>{INSPECT_COPY.riggerDid}</h3>
+        <details>
+          <summary className={cn(LABEL, "hit-44 cursor-pointer")}>{INSPECT_COPY.riggerDid}</summary>
           <ul className="m-0 list-disc pl-4 text-[length:calc(13px*var(--fs))] text-ink-2">
             {doc.notes!.map((n) => (
               <li key={n}>{n}</li>
             ))}
           </ul>
-        </>
+        </details>
       ) : null}
     </>
   );
@@ -922,8 +924,9 @@ function Sticks({ roles }: { roles: string[] }) {
 function Rows({ rows, extra }: { rows: CardRow[]; extra?: { at: number; label: string; node: ReactNode } }) {
   const items: ReactNode[] = rows.map((r) => (
     <tr key={r.label}>
-      <td className="pr-2 align-top text-ink-3">{r.label}</td>
-      <td className={cn("align-top", r.tone ? TONE[r.tone] : "")}>{r.value}</td>
+      <td className="w-[42%] pr-2 align-top text-ink-3">{r.label}</td>
+      {/* The tone on the words, not the cell: a yellow cell read as a bar. */}
+      <td className="align-top">{r.tone ? <span className={TONE[r.tone]}>{r.value}</span> : r.value}</td>
     </tr>
   ));
   if (extra)
@@ -957,19 +960,25 @@ function CheckRow(o: {
 }) {
   const { c } = o;
   const body = o.open ? checkBody(c, o.doc) : null;
+  // A chevron says the row opens; open, the row and its body share one box.
   return (
-    <div className="flex flex-col gap-1">
+    <div className={cn("flex flex-col gap-1 rounded-lg", body && "border border-hair bg-white pb-2")}>
       <button
         type="button"
         aria-expanded={o.open}
         title={c.text}
         onClick={o.onToggle}
-        className={cn("hit-44 rounded-lg border px-2 py-1 text-left text-[length:calc(13px*var(--fs))] leading-snug outline-none focus-visible:ring-2 focus-visible:ring-ring", CHIP[c.level] ?? CHIP.warn)}
+        className={cn(
+          "hit-44 flex items-center gap-1.5 rounded-lg border px-2 py-1 text-left text-[length:calc(13px*var(--fs))] leading-snug outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          CHIP[c.level] ?? CHIP.warn,
+          body && "-m-px",
+        )}
       >
-        {c.label}
+        <span className="min-w-0 flex-1">{c.label}</span>
+        <ChevronDown aria-hidden size={14} className={cn("shrink-0 opacity-60 transition-transform", o.open && "rotate-180")} />
       </button>
       {body ? (
-        <div className="flex flex-col gap-1 pl-2 text-[length:calc(13px*var(--fs))] text-ink-2">
+        <div className="flex flex-col gap-1 px-2 text-[length:calc(13px*var(--fs))] text-ink-2">
           {body.text ? <p className="m-0">{body.text}</p> : null}
           {body.why ? (
             <p className="m-0">
@@ -998,7 +1007,7 @@ function CheckRow(o: {
                   ))}
                 </div>
               ) : null}
-              <div>{o.head.read}</div>
+              {o.head.read && o.head.read !== c.label ? <div>{o.head.read}</div> : null}
               {o.head.kept ? <p className={MUTE}>{o.head.kept}</p> : null}
               {o.head.button ? (
                 <Button type="button" variant="outline" title={o.head.button.title} onClick={() => rigAsset(o.stem, { straighten: o.head!.button!.straighten })} className={cn(SMALL, "w-fit")}>
@@ -1029,7 +1038,8 @@ function SheetTab({ stem }: { stem: string }) {
         <p className={MUTE}>{SHEET_COPY.none}</p>
       ) : (
         <>
-          <a href={url} target="_blank" rel="noopener" title={SHEET_COPY.openTitle} className="block overflow-hidden rounded-lg border border-hair">
+          {/* No rounded clip: its corner cut the sheet's first label. */}
+          <a href={url} target="_blank" rel="noopener" title={SHEET_COPY.openTitle} className="block">
             <img alt={SHEET_COPY.alt} src={url} className="block w-full" />
           </a>
           <p className={MUTE}>{SHEET_COPY.caption}</p>
