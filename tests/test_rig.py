@@ -643,6 +643,30 @@ class BuiltPathTests(unittest.TestCase):
         self.assertTrue(insp["template"]["built"])
         self.assertEqual(len(insp["roles"]), len(insp["bones"]))
 
+    def test_reuse_skin_skips_skin_tokens_on_the_same_mesh_and_skeleton(self) -> None:
+        import contextlib
+        import io
+        saved = (rig.OUT, rig.run_skin, rig_pred.predict)
+        calls: list[int] = []
+        rig.OUT = self.root / "out"
+        rig.run_skin = _stub_skin(calls)
+        rig_pred.predict = lambda source, work, **kw: (Path(self.d["pred"]), 0.0, True)
+        rj = self.asset / "rig" / "rig.json"
+        before = rj.read_bytes()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                code = rig.main(["--stem", self.STEM, "--class", "avian", "--no-fbx", "--render", "0", "--reframe", "1",
+                                 "--reuse-skin"])
+            info = json.loads(rj.read_text())
+        finally:
+            rig.OUT, rig.run_skin, rig_pred.predict = saved
+            rj.write_bytes(before)
+        self.assertEqual(code, 0, buf.getvalue()[-2000:])
+        self.assertEqual(calls, [], buf.getvalue()[-2000:])
+        self.assertTrue(info["reused_skin"])
+        self.assertIn("Reused the skin weights", buf.getvalue())
+
     def test_reframe_stays_last(self) -> None:
         # the designed frames go on after the floor pass and the far-bone check (FK / _skin assume identity rests)
         self.assertEqual(self.calls[-1], "reframe", self.calls)

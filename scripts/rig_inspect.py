@@ -387,13 +387,33 @@ def new_rows(check, asset: Path, info: dict, template: dict, terr: str | None, b
               contact_outside=ck.get("contact_outside") or [])
     segs = rig_metrics.segs_from_parent(parent)
     D = rig_metrics.seg_dist(P, jp, segs) if segs else None
+    terr_mask, terr_note, D_a2 = None, "", D
+    tinfo = info.get("territory") or {}
+    if D is not None and tinfo.get("applied") and tinfo.get("leg_line") is not None:
+        # the weight territory (rig_territory) keeps limbs off the body on purpose: a bone a point may not follow is
+        # not its "nearest bone" (a hind pelvis bone fitted through the rump is nearest to the rump, and the rump
+        # belongs to the hips)
+        try:
+            import rig_territory
+            terr_mask, tch = rig_territory.blocked(P, names, parent, jp, float(tinfo["leg_line"]), tinfo.get("neck_root"),
+                                                   **(tinfo.get("bands") or {}))
+            D = np.where(terr_mask[:, :D.shape[1]], np.inf, D)
+            # and the trunk bones that took the limbs' weight are never "far": they are the body the point belongs to
+            trunk = [k for k in tch["trunk"] if k < D.shape[1]]
+            D_a2 = D.copy()
+            D_a2[:, trunk] = np.minimum(D[:, trunk], D.min(1, keepdims=True))
+            terr_note = (" (nearest among the bones each point may follow after the weight territory; the trunk bones "
+                         "that took the limbs' weight count as near)")
+        except Exception as e:  # noqa: BLE001 - judge by plain distance
+            terr_mask = None
+            print(f"rig_inspect: couldn't rebuild the weight territory ({e})", file=sys.stderr)
     if D is not None:
-        a2 = rig_metrics.a2_far_weight(P, Jf, Wf, jp, segs, H, names, D=D)
+        a2 = rig_metrics.a2_far_weight(P, Jf, Wf, jp, segs, H, names, D=D_a2)
         extra["a2"] = a2
         lvl = "pass" if a2["share"] < 0.02 else "warn"
         check(lvl, "a2", "skin", f"{a2['share']:.1%} of the weight on far bones",
               f"{a2['share']:.1%} of all skin weight sits on bones more than 0.15× height farther from their point than "
-              "its nearest bone" + (" (most: " + ", ".join(f"{plain_bone(str(n))} {s:.1%}" for n, s in a2["worst"][:3]) + ")"
+              "its nearest bone" + terr_note + (" (most: " + ", ".join(f"{plain_bone(str(n))} {s:.1%}" for n, s in a2["worst"][:3]) + ")"
                                     if a2["worst"] and lvl != "pass" else "") + " (warn above 2%).",
               share=a2["share"], worst=a2["worst"])
         chains = _part_chains(cls, plan, names)
