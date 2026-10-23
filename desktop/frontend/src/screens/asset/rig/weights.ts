@@ -669,8 +669,11 @@ export function boneRgb(i: number): [number, number, number] {
   return hslToRgb((i * 0.618034) % 1, 0.62, 0.55);
 }
 
+/** What paintColours reads of a mesh's weights: the edit, or compare's read-only copy (./compareHeat.ts). */
+export type WeightReader = Pick<WeightEdit, "n" | "topBone" | "weightOf">;
+
 /** Fill `out` (3 per point) with the chosen bone's heat, or every point in its top bone's colour. */
-export function paintColours(e: WeightEdit, mode: ShowMode, bone: number, out: Float32Array): void {
+export function paintColours(e: WeightReader, mode: ShowMode, bone: number, out: Float32Array): void {
   for (let v = 0; v < e.n; v++) {
     let c: [number, number, number];
     if (mode === "parts") {

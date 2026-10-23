@@ -1,6 +1,7 @@
 // The Diorama's clip player, for a panel that has to hold a clip still at one moment (the Rig check's "worst
 // moment", legacy pauseClipAt / resumeClip / restPose, index.html 5038-5060, 4782-4783). The Animator registers its
-// mixer and actions here; the HUD's clip and Play/Pause state still come from ViewerScreen.
+// mixer and actions here; the HUD's clip and Play/Pause state still come from ViewerScreen. Only the current side
+// registers: Compare's left side follows its clip time (clipTime).
 import type { AnimationAction, AnimationMixer } from "three";
 
 interface Player {
@@ -35,6 +36,12 @@ export function resumeClip(name: string | null): void {
   a.paused = false;
   a.setEffectiveWeight(1);
   if (!a.isRunning()) a.reset().play();
+}
+
+/** Where `name` is now in seconds, or null when it is neither playing nor held (Compare's left side follows it). */
+export function clipTime(name: string): number | null {
+  const a = player?.actions[name];
+  return a && (a.isRunning() || a.paused) && a.getEffectiveWeight() > 0 ? a.time : null;
 }
 
 /** Every clip off and the mixer applied once: the model at its rest pose. */

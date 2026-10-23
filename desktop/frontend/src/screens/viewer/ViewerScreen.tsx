@@ -2,13 +2,15 @@
 // HUD (./Hud.tsx), with the Cleanup, Paint and Detail levels rail and the Rig check dock (./panels/). Panels reach
 // the model through the tool API (src/viewer/tools.ts), which this screen feeds: the model, the file on screen,
 // and loadFile / reload. The old non-Mokei page (and its link from the HUD) is retired at Stephen's ask; the
-// articulated pivots (articulated.json) it showed have no view here yet.
+// articulated pivots (articulated.json) it showed have no view here yet. Compare (./compare.ts) splits the picture in
+// two: an earlier version on the left (./CompareSide.tsx), this one on the right, one camera and clip for both.
 import { useLook } from "mokei/clay";
 import { useMaterialColor } from "mokei/theme";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import type { AnimationClip } from "three";
 import { navigate } from "@/app/router";
 import { outUrl } from "@/lib/api";
+import { flowEntry } from "@/lib/flow";
 import { onJobFinished } from "@/lib/jobs";
 import type { StageProps } from "@/screens/asset/types";
 import { RIGGED, fileOf, fileTag, isPixelFile, modelCandidates, preferredClip, viewableLods } from "@/viewer/candidates";
@@ -18,8 +20,12 @@ import { readPixelLook, toggle240, writePixelLook, type PixelLook } from "@/view
 import { prepareModel, type PreparedModel } from "@/viewer/prepareModel";
 import { outRelFile, resetViewerTools, setViewerLoader, setViewerModel, useViewerTools, viewerTools, type ViewerTool } from "@/viewer/tools";
 import { useAssetDocs } from "@/viewer/useAssetDocs";
+import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
+import { compareTakes, comparing, leftTake, paneLayout, sideLabels, useCompare, type PaneLayout } from "./compare";
+import { CompareSide, SideLabel } from "./CompareSide";
 import { Hud } from "./Hud";
+import type { ViewerStage } from "./panels/panels";
 import { usePanels } from "./panels/store";
 import type { LoadState, ViewerPanelBase, ViewerView } from "./types";
 
@@ -99,6 +105,7 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
       resetLook();
       resetViewerTools();
       usePanels.getState().close();
+      useCompare.getState().stop();
     },
     [],
   );
@@ -200,10 +207,32 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
     setClip(name);
     setPlaying(true);
   }, []);
+  // Compare: the left take while it is on and there is one to show (the chosen one, else the version before).
+  const viewerStage: ViewerStage = stage.stage === "rig" ? "rig" : "mesh";
+  const entry = flowEntry(stage.flow, viewerStage);
+  const canCompare = compareTakes(entry).length > 0;
+  const compareOn = useCompare((s) => comparing(s, stem, viewerStage)) && canCompare;
+  const chosenLeft = useCompare((s) => s.left);
+  const leftId = compareOn ? leftTake(entry, chosenLeft) : null;
+  const left = leftId ? (entry?.takes.find((t) => t.id === leftId) ?? null) : null;
+  const labels = sideLabels(entry, leftId);
+  // Another stage (3D and Rig share this screen) starts single again.
+  useEffect(() => {
+    const c = useCompare.getState();
+    if (c.stem && (c.stem !== stem || c.stage !== viewerStage)) c.stop();
+  }, [stem, viewerStage]);
+  // The panes sit in the room the HUD leaves (./compare.ts paneLayout), so neither model is centred under a card.
+  const root = useRef<HTMLDivElement>(null);
+  const panes = usePaneLayout(root, !!left);
+  const onCompare = useCallback(
+    (on: boolean) => (on ? useCompare.getState().start(stem, viewerStage) : useCompare.getState().stop()),
+    [stem, viewerStage],
+  );
+
   const view: ViewerView = { clips: clips.map((c) => c.name), clip, onClip, playing, onPlaying: setPlaying, spin, onSpin: setSpin, clay, onClay: setClay, wire, onWire: setWire };
   const panel: ViewerPanelBase = {
     ...stage,
-    stage: stage.stage === "rig" ? "rig" : "mesh",
+    stage: viewerStage,
     docs,
     load,
     lods,
@@ -215,10 +244,44 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
 
   return (
     // The clay fills the stage; the versions panel rides in the HUD's left column, so nothing sits under the ground.
-    <div className="absolute inset-0 overflow-hidden">
-      <OrbitSurface tool={tool}>
-        <Diorama model={model} clips={clips} clip={clip} playing={playing} clay={clay} wire={wire} spin={spin} pixel={pixel} />
-      </OrbitSurface>
+    // Comparing, the two dioramas share a framed window in the room the HUD leaves: left and right, stacked on phones
+    // and when the room is thin. A drag around the window still turns. The right one keeps its place in the tree, so
+    // turning Compare on or off never remounts it (the model stays; the camera keeps its orbit, the zoom re-frames).
+    <div ref={root} className="absolute inset-0 overflow-hidden">
+      {left ? <OrbitSurface tool={null} /> : null}
+      <div
+        className={cn("absolute inset-0 flex", left && "overflow-hidden rounded-[14px] border border-hair", left && panes?.stacked && "flex-col")}
+        style={left && panes ? panes.inset : undefined}
+      >
+        {left ? (
+          // Its own surface without the panel tool: a drag turns both sides, a brush only paints the right.
+          <div className={cn("relative min-h-0 min-w-0 flex-1 border-hair", panes?.stacked ? "border-b" : "border-r")}>
+            <OrbitSurface tool={null}>
+              <CompareSide
+                stem={stem}
+                stage={viewerStage}
+                take={left}
+                label={labels.left}
+                shown={info ? outRelFile(info.url, stem) : ""}
+                clayColor={clayColor}
+                clip={clip}
+                playing={playing}
+                clay={clay}
+                wire={wire}
+                spin={spin}
+                pixel={pixel}
+                stacked={!!panes?.stacked}
+              />
+            </OrbitSurface>
+          </div>
+        ) : null}
+        <div className="relative min-h-0 min-w-0 flex-1">
+          <OrbitSurface tool={tool}>
+            <Diorama model={model} clips={clips} clip={clip} playing={playing} clay={clay} wire={wire} spin={spin} pixel={pixel} />
+          </OrbitSurface>
+          {left ? <SideLabel side="right" text={labels.right} stacked={!!panes?.stacked} /> : null}
+        </div>
+      </div>
       <div className="pointer-events-none absolute inset-0">
         <Hud
           versions={versions}
@@ -244,6 +307,7 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
           isPs1={isPs1}
           onPixel={(on) => setPixel({ ...pixel, on })}
           on240={() => setPixel(toggle240(pixel))}
+          compare={canCompare ? { on: compareOn, onToggle: onCompare } : null}
           onRenamed={(next) => navigate({ name: "asset", stem: next, ...(lod ? { lod } : {}) }, { replace: true })}
           panel={panel}
         />
@@ -253,12 +317,51 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
 }
 
 /**
+ * The panes' room while comparing, measured from the HUD's columns (data-hud-col in ./Hud.tsx): their sizes are
+ * enough, since each is anchored to its edge. Re-measured when one changes (a panel opens, the clips arrive).
+ */
+function usePaneLayout(root: RefObject<HTMLDivElement | null>, on: boolean): PaneLayout | null {
+  const narrow = useNarrow();
+  const [layout, setLayout] = useState<PaneLayout | null>(null);
+  useLayoutEffect(() => {
+    const el = root.current;
+    if (!on || !el) return setLayout(null);
+    const col = (name: string) => el.querySelector<HTMLElement>(`[data-hud-col=${name}]`);
+    const size = (e: Element | null) => (e ? e.getBoundingClientRect() : { width: 0, height: 0 });
+    const measure = () => {
+      const right = col("right");
+      // The right column under the view card: the camera stack and the dock (the view card is the top inset).
+      const under = right ? [...right.children].filter((c) => !c.matches("[data-hud-col=top]")) : [];
+      const next = paneLayout({
+        width: el.clientWidth,
+        height: el.clientHeight,
+        narrow,
+        left: size(col("left")),
+        right: Math.max(0, ...under.map((c) => size(c).width)),
+        top: size(col("top")).height,
+        bottom: size(col("bottom")).height,
+      });
+      setLayout((was) => (JSON.stringify(was) === JSON.stringify(next) ? was : next));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    for (const name of ["left", "right", "top", "bottom"]) {
+      const c = col(name);
+      if (c) ro.observe(c);
+    }
+    return () => ro.disconnect();
+  }, [root, on, narrow]);
+  return layout;
+}
+
+/**
  * Orbit from the DOM: left-drag turns (azimuth) and tilts (elevation); right-drag or shift-drag pans with
  * ClayGround's formula; the wheel zooms through ClayCameraRig. The HUD sits above with pointer-events off.
  * With a panel tool armed (src/viewer/tools.ts), the left button and every move go to the tool, and right-drag
  * turns instead of panning (legacy Carve/Paint: "Orbit with right-drag while this is on").
  */
-function OrbitSurface({ tool, children }: { tool: ViewerTool | null; children: React.ReactNode }) {
+function OrbitSurface({ tool, children }: { tool: ViewerTool | null; children?: React.ReactNode }) {
   const drag = useRef<{ x: number; y: number; pan: boolean; id: number } | null>(null);
   const painting = useRef<number | null>(null);
   const pointer = (e: ReactPointerEvent<HTMLDivElement>, button: number) => {
