@@ -301,30 +301,63 @@ def clean_legs(high: trimesh.Trimesh, faces: int, head_weight: float, sides: int
         kept, removed = again, gone
     Vs, Fs, regions, info_legs = [np.asarray(kept.vertices, float)], [np.asarray(kept.faces)], [], []
     off, foff = len(kept.vertices), len(kept.faces)
-    for leg in legs["legs"]:
+    PUSHES = (LEG_PUSH, 0.75 * LEG_PUSH, 0.5 * LEG_PUSH, 0.25 * LEG_PUSH, 0.0)
+
+    def ends(leg):
         b = np.array([leg["bottom"][0], floor, leg["bottom"][1]])
         t0 = np.array([leg["top"][0], top, leg["top"][1]])
-        r_top = leg["radius"] * scale
-        # Up into the body by LEG_PUSH of the band, less where that would poke out of it: the open top ring has to
-        # stay inside the high mesh. A leg at the very end of the body (a hind leg under the rump's curve, made fat
-        # by --leg-scale) can stick out behind it even at the band top; its top then leans in along the length,
-        # a quarter of the column radius at a time, until it is inside.
+        return b, t0, leg["radius"] * scale
+
+    def max_shift(b, t0, toward):
+        """The lean may bring the top over the foot (a vertical column) but never past it: a pair leaning opposite
+        ways crosses in a V, the crooked look the columns are for."""
+        ahead = (t0[2] - b[2]) * toward  # where the top sits past the foot in the lean's direction (<0: short of it)
+        return -ahead if ahead < 0 else float("inf")
+
+    def column(leg, shift, push):
+        b, t0, r_top = ends(leg)
         toward = -np.sign(t0[2]) if t0[2] else 0.0
-        done = False
-        for shift in np.arange(0, 2.01, 0.25) * r_top:
-            for push in (LEG_PUSH, 0.75 * LEG_PUSH, 0.5 * LEG_PUSH, 0.25 * LEG_PUSH, 0.0):
-                ts = t0 + np.array([0.0, 0.0, toward * shift])
-                t = ts + (ts - b) * push  # along the line, so it stays straight
-                V, F = leg_column(b, t, r_top * taper, r_top, sides)
-                if inside(high, V[sides:]):
-                    done = True
-                    break
-            if done:
-                break
-        if not done:  # nothing covered it: the plain column, as measured
-            shift, push = 0.0, LEG_PUSH
-            t = t0 + (t0 - b) * push
-            V, F = leg_column(b, t, r_top * taper, r_top, sides)
+        ts = t0 + np.array([0.0, 0.0, toward * shift])
+        t = ts + (ts - b) * push  # along the line, so it stays straight
+        V, F = leg_column(b, t, r_top * taper, r_top, sides)
+        return b, t, r_top, V, F
+
+    def fit(leg):
+        """Up into the body by LEG_PUSH of the band, less where that would poke out of it: the open top ring has to
+        stay inside the high mesh. A leg at the very end of the body (a hind leg under the rump's curve, made fat by
+        --leg-scale) can stick out behind it even at the band top; its top then leans in along the length, a
+        quarter of the column radius at a time (never past vertical), until it is inside. None: nothing covers it."""
+        b, t0, r_top = ends(leg)
+        toward = -np.sign(t0[2]) if t0[2] else 0.0
+        cap = min(2.0 * r_top, max_shift(b, t0, toward)) if toward else 0.0
+        for shift in [x for x in np.arange(0, 2.01, 0.25) * r_top if x <= cap + 1e-9]:
+            for push in PUSHES:
+                if inside(high, column(leg, shift, push)[3][sides:]):
+                    return float(shift), push
+        return None
+
+    # Left and right legs of a pair (the nearest leg along the length) lean and push alike, or the two cross in a V.
+    fits = [fit(leg) for leg in legs["legs"]]
+    zs = np.array([leg["top"][1] for leg in legs["legs"]])
+    plan: list[tuple[float, float, bool]] = []
+    for i, leg in enumerate(legs["legs"]):
+        others = [j for j in range(n) if j != i]
+        j = min(others, key=lambda k: abs(zs[k] - zs[i])) if others else None
+        r = leg["radius"] * scale
+        paired = j is not None and abs(zs[j] - zs[i]) < 2.0 * max(r, legs["legs"][j]["radius"] * scale)
+        mine, theirs = fits[i], (fits[j] if paired else fits[i])
+        if mine is None or theirs is None:
+            plan.append((0.0, LEG_PUSH, False))
+            continue
+        shift = max(mine[0], theirs[0])
+        push = min(mine[1], theirs[1])
+        b, t0, r_top = ends(leg)
+        toward = -np.sign(t0[2]) if t0[2] else 0.0
+        shift = min(shift, max_shift(b, t0, toward)) if toward else 0.0
+        plan.append((shift, push, bool(inside(high, column(leg, shift, push)[3][sides:]))))
+    for i, leg in enumerate(legs["legs"]):
+        shift, push, done = plan[i]
+        b, t, r_top, V, F = column(leg, shift, push)
         Vs.append(V)
         Fs.append(F + off)
         regions.append(np.arange(foff, foff + len(F)))
