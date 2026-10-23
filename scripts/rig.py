@@ -1026,10 +1026,13 @@ def write_rigged(out: Path, ours: dict, obin: bytes, src: dict, sbin: bytes, J: 
     g.write(out)
 
 
-def far_motion(glb: Path, samples: int = 16) -> dict:
+def far_motion(glb: Path, samples: int = 16, territory: dict | None = None) -> dict:
     """Per clip, motion that comes from far bones (B2): per vertex sum_k w_k |M_k v - M_n v| over influences whose bone
     is > 0.15x height farther than the vertex's nearest bone n, / height. p99 over vertices (worst frame) and the
-    largest share of vertices above 0.1x height at any frame. fail: share > 10% or p99 > 0.75x height."""
+    largest share of vertices above 0.1x height at any frame. fail: share > 10% or p99 > 0.75x height.
+    territory: clean_weights' report. When it applied, "nearest" is among the bones each point may follow, and the
+    trunk bones that took the limbs' weight count as near (as rig_inspect judges it): otherwise a rump point that
+    follows the hips, as the territory means it to, reads as pulled by a far bone (the thigh runs through the rump)."""
     import rig_motion
     doc, b = read_glb(glb)
     pr = doc["meshes"][0]["primitives"][0]
@@ -1056,8 +1059,23 @@ def far_motion(glb: Path, samples: int = 16) -> dict:
             out = np.minimum(out, np.linalg.norm(p - (jp[k] + t[:, None] * ab), axis=1))
         return out
     D = np.stack([segd(P, k) for k in range(len(joints))], 1)
+    Dw = D
+    if territory and territory.get("applied") and territory.get("leg_line") is not None:
+        try:
+            import rig_territory
+            names = [nodes[j].get("name", f"joint_{k}") for k, j in enumerate(joints)]
+            par = [joints.index(parent[j]) if parent.get(j) in joints else -1 for j in joints]
+            mask, tch = rig_territory.blocked(P, names, par, jp, float(territory["leg_line"]), territory.get("neck_root"),
+                                              **(territory.get("bands") or {}))
+            D = np.where(mask[:, :D.shape[1]], np.inf, D)
+            Dw = D.copy()
+            trunk = [k for k in tch["trunk"] if k < D.shape[1]]
+            Dw[:, trunk] = np.minimum(D[:, trunk], D.min(1, keepdims=True))
+        except Exception as e:  # noqa: BLE001 - judge by plain distance
+            print(f"rig: far motion by plain distance (couldn't rebuild the weight territory: {e})", file=sys.stderr)
+            D = Dw = np.stack([segd(P, k) for k in range(len(joints))], 1)
     nearest = D.argmin(1)
-    far = (np.take_along_axis(D, J, 1) - D.min(1)[:, None]) / H > 0.15
+    far = (np.take_along_axis(Dw, J, 1) - Dw.min(1)[:, None]) / H > 0.15
     out = {}
     for anim in doc.get("animations", []):
         dur, ch = rig_motion.channels(doc, b, anim)
@@ -1776,7 +1794,7 @@ def main(argv: list[str] | None = None) -> int:
             note("A ground bird (as tall as it is long): Idle and Walk; flight clips only if they keep the body together")
         clips, missing = bake_clips(template, names, ours, skel, ref_store)
     write_rigged(out_glb, ours, obin, src, sbin, J, W, clips)
-    far = far_motion(out_glb)
+    far = far_motion(out_glb, territory=cinfo.get("territory"))
     if any(c in far for c in names):
         shutil.copy2(out_glb, work / "rigged_allclips.glb")
     if trial:  # B2 alone passes a correctly bound chicken whose Flap still spreads its body sides into slabs
@@ -1806,7 +1824,7 @@ def main(argv: list[str] | None = None) -> int:
                                     head_reach=args.head_reach == "on" and built is None)
         if fixing:
             write_rigged(out_glb, ours, obin, src, sbin, J, W, clips)
-            far = far_motion(out_glb)
+            far = far_motion(out_glb, territory=cinfo.get("territory"))
         note(("Floor pass (" if rig_pred.paths_for(cls, plan_used) else "Floor pass, grounding only (") + f"{time.time() - t0:.0f} s): " + "; ".join(
             f"{c} lowest {v['low_min_before']:+.2f}→{v['low_min_after']:+.2f}× height" for c, v in floor.items()))
     gone_clips = list(dict.fromkeys(list(unsupported_clips) + list(dropped_clips) + [f["name"] for f in clips_failed]))
