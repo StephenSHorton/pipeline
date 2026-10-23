@@ -124,6 +124,8 @@ class CleanLegsTests(unittest.TestCase):
             foot = bottom[:, [0, 2]].mean(0)
             near = min(np.linalg.norm(foot - (np.array(f) - centre) * scale) for f in FEET)
             self.assertLess(near, 1.5 * LEG_R * scale)
+            # Leaning forward with the legs, as they do (SLANT), not some other way.
+            self.assertGreater(float(top[:, 2].mean() - bottom[:, 2].mean()), 0.0)
             # Up into the body past the band top.
             self.assertGreater(float(top[:, 1].min()), self.info["top_y"])
 

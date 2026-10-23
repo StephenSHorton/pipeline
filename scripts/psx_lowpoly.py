@@ -155,6 +155,7 @@ def decimate_head(mesh: trimesh.Trimesh, faces: int, weight: float, f0: float = 
 # at the hooves) are swapped for one straight tapered prism per leg.
 LEG_FIT = (0.1, 0.75)  # the leg's centre line and radius are read over this share of the band: above the hoof's
 #                        forward bulge, below the wool hanging among the tops of the legs
+LEG_TOP = (0.5, 0.85)  # the leg's top centre is the median of the finder's centres over this share of the band
 LEG_MARGIN = 0.05  # low faces are removed only wholly below the band top less this share of the band
 LEG_REACH = 1.6  # ... and within this many source radii of a leg's centre line
 LEG_PUSH = 0.25  # the column runs this share of the band up into the body, so the hole it leaves is covered
@@ -168,10 +169,12 @@ def column_faces(sides: int) -> int:
 
 def measure_legs(high: trimesh.Trimesh) -> dict:
     """The legs of the placed high mesh with workbench/edit.py's leg finder: the band top, and per leg a straight
-    centre line (least squares over LEG_FIT of the band, read at the floor and at the top) and its radius (the median
-    over that span of each height's 80th percentile distance from the centre line), and its reach for leg_faces.
-    Raises edit.EditError when the
-    shape has no legs to find (a hay bale, a crate)."""
+    centre line, its radius (the median over LEG_FIT of the band of each height's 80th percentile distance from the
+    finder's centre line) and its reach for leg_faces. The line runs from the finder's centre at the floor (where the
+    hoof stands) through its median centre over LEG_TOP of the band, on to the top: the centre right at the top drifts into the wool
+    hanging there, and a line fitted through a zigzag shank (hoof forward, cannon back, forearm forward again) and
+    stretched to the ends leans three or four times as far as the leg does. Raises edit.EditError when the shape has
+    no legs to find (a hay bale, a crate)."""
     from workbench import edit
     P = edit._surface(high)
     floor = float(P[:, 1].min())
@@ -188,14 +191,20 @@ def measure_legs(high: trimesh.Trimesh) -> dict:
         y, xz, d = Q[mine, 1], Q[mine][:, [0, 2]], dist[mine]
         if len(y) < 30:
             raise edit.EditError(f"leg {i} has too few points over the middle of the band")
-        A = np.stack([y, np.ones_like(y)], axis=1)
-        coef, *_ = np.linalg.lstsq(A, xz, rcond=None)  # xz = y * slope + intercept
+        bottom = found.at(found.C[i], np.array([floor]))[0]
+        upper = found.ys[(found.ys >= floor + LEG_TOP[0] * band) & (found.ys <= floor + LEG_TOP[1] * band)]
+        if len(upper):  # the line through the floor centre and the upper centre (at its own height), up to the top
+            mid = np.median(found.at(found.C[i], upper), axis=0)
+            head = bottom + (mid - bottom) * band / max(float(np.median(upper)) - floor, 1e-9)
+        else:
+            head = found.at(found.C[i], np.array([top]))[0]
         k = np.digitize(y, edges) - 1
         per = [float(np.percentile(d[k == b], 80)) for b in range(len(edges) - 1) if (k == b).sum() >= 10]
         # How far the leg's surface reaches from the straight line at most (its lumps, its bend), for the cut.
-        off = np.linalg.norm(xz - A @ coef, axis=1)
+        line = bottom[None, :] + ((y - floor) / max(band, 1e-9))[:, None] * (head - bottom)[None, :]
+        off = np.linalg.norm(xz - line, axis=1)
         radius = float(np.median(per)) if per else float(found.R[i])
-        legs.append({"bottom": np.array([floor, 1.0]) @ coef, "top": np.array([top, 1.0]) @ coef,
+        legs.append({"bottom": bottom, "top": head,
                      "radius": radius, "reach": max(LEG_REACH * radius, 1.3 * float(np.percentile(off, 98)))})
     return {"floor": floor, "top": top, "legs": legs, "finder": found}
 
@@ -247,6 +256,15 @@ def leg_column(bottom: np.ndarray, top: np.ndarray, r_bottom: float, r_top: floa
     return V, F
 
 
+def inside(mesh: trimesh.Trimesh, points: np.ndarray) -> bool:
+    """Whether every point is enclosed by the mesh as far as rays up and out along +-x and +-z can tell (Hunyuan's
+    meshes are not watertight, so contains() can't be trusted): each of the five rays from each point hits it."""
+    dirs = np.array([[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]], float)
+    origins = np.repeat(np.asarray(points, float), len(dirs), axis=0)
+    hit = mesh.ray.intersects_any(origins, np.tile(dirs, (len(points), 1)))
+    return bool(np.all(hit))
+
+
 def clean_legs(high: trimesh.Trimesh, faces: int, head_weight: float, sides: int = 6, scale: float = 1.0,
                taper: float = 0.8):
     """decimate_head() with the legs replaced by straight columns. Returns (low, info, regions): regions pairs each
@@ -283,13 +301,30 @@ def clean_legs(high: trimesh.Trimesh, faces: int, head_weight: float, sides: int
         kept, removed = again, gone
     Vs, Fs, regions, info_legs = [np.asarray(kept.vertices, float)], [np.asarray(kept.faces)], [], []
     off, foff = len(kept.vertices), len(kept.faces)
-    lift = LEG_PUSH * band
     for leg in legs["legs"]:
         b = np.array([leg["bottom"][0], floor, leg["bottom"][1]])
-        t = np.array([leg["top"][0], top, leg["top"][1]])
-        t = t + (t - b) * (lift / max(band, 1e-9))  # along the line, so it stays straight
+        t0 = np.array([leg["top"][0], top, leg["top"][1]])
         r_top = leg["radius"] * scale
-        V, F = leg_column(b, t, r_top * taper, r_top, sides)
+        # Up into the body by LEG_PUSH of the band, less where that would poke out of it: the open top ring has to
+        # stay inside the high mesh. A leg at the very end of the body (a hind leg under the rump's curve, made fat
+        # by --leg-scale) can stick out behind it even at the band top; its top then leans in along the length,
+        # a quarter of the column radius at a time, until it is inside.
+        toward = -np.sign(t0[2]) if t0[2] else 0.0
+        done = False
+        for shift in np.arange(0, 2.01, 0.25) * r_top:
+            for push in (LEG_PUSH, 0.75 * LEG_PUSH, 0.5 * LEG_PUSH, 0.25 * LEG_PUSH, 0.0):
+                ts = t0 + np.array([0.0, 0.0, toward * shift])
+                t = ts + (ts - b) * push  # along the line, so it stays straight
+                V, F = leg_column(b, t, r_top * taper, r_top, sides)
+                if inside(high, V[sides:]):
+                    done = True
+                    break
+            if done:
+                break
+        if not done:  # nothing covered it: the plain column, as measured
+            shift, push = 0.0, LEG_PUSH
+            t = t0 + (t0 - b) * push
+            V, F = leg_column(b, t, r_top * taper, r_top, sides)
         Vs.append(V)
         Fs.append(F + off)
         regions.append(np.arange(foff, foff + len(F)))
@@ -297,7 +332,7 @@ def clean_legs(high: trimesh.Trimesh, faces: int, head_weight: float, sides: int
         foff += len(F)
         info_legs.append({"bottom": [round(float(x), 3) for x in b], "top": [round(float(x), 3) for x in t],
                           "source_radius": round(leg["radius"], 3), "radius_top": round(r_top, 3),
-                          "radius_bottom": round(r_top * taper, 3),
+                          "radius_bottom": round(r_top * taper, 3), "push": round(push, 4), "lean_in": round(float(shift), 3), "covered": done,
                           "slant_deg": round(float(np.degrees(np.arctan2(np.linalg.norm((t - b)[[0, 2]]),
                                                                         (t - b)[1]))), 1)})
     low = trimesh.Trimesh(vertices=np.vstack(Vs), faces=np.vstack(Fs), process=False)
