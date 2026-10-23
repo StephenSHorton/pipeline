@@ -31,7 +31,9 @@ export function ViewerPanel({
       role="region"
       aria-label={title}
       hidden={!open}
-      className={cn(PANEL, "min-h-0 w-full gap-2.5 overflow-y-auto px-4 pt-3 pb-3.5 [&[hidden]]:hidden", className)}
+      // data-[size=hud]: the hud Card sets overflow-visible through its data-size selector, which beats a plain
+      // overflow-y-auto, so a long panel (Detail levels with its turnaround) ran under the versions panel unscrolled.
+      className={cn(PANEL, "min-h-0 w-full gap-2.5 px-4 pt-3 pb-3.5 [scrollbar-width:thin] data-[size=hud]:overflow-y-auto [&[hidden]]:hidden", className)}
     >
       <div className="flex items-center justify-between gap-2">
         <h2 className="m-0 text-[0.95rem] font-semibold text-ink">{title}</h2>
