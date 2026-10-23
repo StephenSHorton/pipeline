@@ -11,7 +11,7 @@ import { Separator } from "@/components/ui/separator";
 import { useJobs } from "@/lib/jobs";
 import { cn } from "@/lib/utils";
 import { writePixelLook } from "@/viewer/pixelLook";
-import { PANEL, TOGGLE } from "@/screens/viewer/classes";
+import { ACTION, COMMIT, PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import type { StageProps } from "../types";
 import { saveStackPaint } from "./actions";
 import { readStackMeta, sheetUrl } from "./api";
@@ -26,7 +26,6 @@ import {
   LOOK_BUTTONS,
   openCubby,
   PAINT_COPY,
-  PAINT_TOGGLE,
   PALETTE_COPY,
   PBR_SLIDERS,
   pbrReadout,
@@ -41,7 +40,6 @@ import {
   STACK_COPY,
   stateForMeta,
   statsParts,
-  STEP_LINKS,
   TOGGLE_BUTTONS,
   TOGGLE_RESET,
   type PaletteEntry,
@@ -221,7 +219,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
     <section aria-label={STACK_COPY.pane} className="absolute inset-0 overflow-hidden bg-[#0c0d0b]">
       <div ref={host} className={cn("absolute inset-0", paint.on && "cursor-crosshair")} />
       <div className="pointer-events-none absolute inset-0">
-        <Card size="hud" className={cn(PANEL, "absolute top-3 left-3 max-w-[min(420px,calc(100%-24px))] gap-1 px-4 pt-2.5 pb-3 max-sm:right-3")}>
+        <Card size="hud" className={cn(PANEL, "absolute top-3 left-3 max-w-[min(420px,calc(100%-390px))] gap-1 px-4 pt-2.5 pb-3 max-md:right-3 max-md:max-w-none")}>
           <h2 className="m-0 text-[0.95rem] font-semibold text-ink">{STACK_COPY.pane}</h2>
           <p className="m-0 text-[0.8rem] leading-snug text-ink-3 empty:hidden">
             {ready && meta ? statsParts(state, meta).map((p, i) => (p.b ? <b key={i} className="font-semibold text-ink">{p.text}</b> : <span key={i}>{p.text}</span>)) : failed ? STACK_COPY.noStack : null}
@@ -236,8 +234,10 @@ function StackBody({ stem, flowVersion }: StageProps) {
           </div>
         ) : null}
 
-        <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] w-[min(342px,calc(100%-24px))] flex-col items-end gap-2 max-sm:top-auto max-sm:bottom-3 max-sm:max-h-[60%]">
-          <Card size="hud" role="group" aria-label="Dock" className={cn(PANEL, "w-fit max-w-full flex-row flex-wrap items-center justify-end gap-0.5 p-1")}>
+        {/* The dock sizes to its buttons (one row); only the panels under it are capped at 342 px. Below md the
+            column moves to the bottom, clear of the title card. */}
+        <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] max-w-[calc(100%-24px)] flex-col items-end gap-2 max-md:top-auto max-md:bottom-3 max-md:max-h-[60%]">
+          <Card size="hud" role="group" aria-label="Dock" className={cn(PANEL, "w-max max-w-full flex-row flex-wrap items-center justify-end gap-1 p-1")}>
             {ready
               ? CUBBIES.map((c) => (
                   <Button
@@ -250,7 +250,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
                     aria-expanded={open === c}
                     aria-controls={cubbyId(stem, c)}
                     onClick={() => setOpen((o) => openCubby(o, c))}
-                    className={cn(TOGGLE, "aria-expanded:bg-accent aria-expanded:text-accent-foreground")}
+                    className={TOGGLE}
                   >
                     {CUBBY_LABELS[c]}
                   </Button>
@@ -264,36 +264,27 @@ function StackBody({ stem, flowVersion }: StageProps) {
 
           {/* The dock is hidden while the pane is empty (legacy setEmpty: sliders.root.hidden). */}
           {ready && meta ? (
-            <div className="flex min-h-0 w-full flex-col overflow-y-auto">
+            <div className="flex min-h-0 w-[min(342px,calc(100vw-24px))] flex-col overflow-y-auto">
               <Cubby id={cubbyId(stem, "stack-look")} cubby="stack-look" open={open === "stack-look"} onClose={() => closeCubby("stack-look")}>
                 <p className="m-0 text-[0.8rem] leading-snug text-ink-3">{STACK_COPY.lookBlurb}</p>
-                <Group label="Look">
+                <div role="group" aria-label="Look" className={cn(TRAY, "w-fit")}>
                   {LOOK_BUTTONS.map((b) => (
-                    <Toggle key={b.look} on={state.look === b.look} title={b.title} onClick={() => state.look !== b.look && update({ look: b.look })}>
+                    <Button key={b.look} type="button" variant="hud-ghost" aria-pressed={state.look === b.look} title={b.title} onClick={() => state.look !== b.look && update({ look: b.look })} className={TRAY_ITEM}>
                       {b.label}
-                    </Toggle>
+                    </Button>
                   ))}
-                </Group>
+                </div>
                 <Group label="Stack">
                   {TOGGLE_BUTTONS.map((b) => (
                     <Toggle key={b.key} on={state[b.key]} title={b.title} onClick={() => update({ [b.key]: !state[b.key] })}>
                       {b.label}
                     </Toggle>
                   ))}
-                  <Button type="button" variant="hud-ghost" title={TOGGLE_RESET.title} onClick={() => update(resetState(stateRef.current, defaults, meta))} className={TOGGLE}>
-                    {TOGGLE_RESET.label}
-                  </Button>
-                  <Toggle on={paint.on} title={PAINT_TOGGLE.title} onClick={() => setPaint((p) => ({ ...p, on: !p.on }))}>
-                    {PAINT_TOGGLE.label}
-                  </Toggle>
                 </Group>
-                <div className="flex flex-wrap gap-1">
-                  {STEP_LINKS.map((l) => (
-                    <Button key={l.cubby} type="button" variant="outline" onClick={() => setOpen(l.cubby)} className="hit-44 h-8 bg-white px-3 text-[0.8rem]">
-                      {l.label}
-                    </Button>
-                  ))}
-                </div>
+                {/* Reset is a one-shot, so it is a button on its own row, not a fifth switch. */}
+                <Button type="button" variant="outline" title={TOGGLE_RESET.title} onClick={() => update(resetState(stateRef.current, defaults, meta))} className={cn(ACTION, "self-start")}>
+                  {TOGGLE_RESET.label}
+                </Button>
               </Cubby>
 
               <Cubby id={cubbyId(stem, "stack-sliders")} cubby="stack-sliders" open={open === "stack-sliders"} onClose={() => closeCubby("stack-sliders")}>
@@ -324,7 +315,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
                   text={String(palCount)}
                   onChange={setPalCount}
                 />
-                <Button type="button" variant="outline" title={PALETTE_COPY.reduce.title} onClick={reduce} className="hit-44 h-9 self-start bg-white px-4">
+                <Button type="button" variant="outline" title={PALETTE_COPY.reduce.title} onClick={reduce} className={cn(ACTION, "self-start")}>
                   {PALETTE_COPY.reduce.label}
                 </Button>
                 {palette ? (
@@ -360,29 +351,31 @@ function StackBody({ stem, flowVersion }: StageProps) {
                   <Toggle on={paint.erase} title={PAINT_COPY.erase.title} onClick={() => setPaint((p) => ({ ...p, erase: !p.erase }))}>
                     {PAINT_COPY.erase.label}
                   </Toggle>
-                  <Button type="button" variant="hud-ghost" title={PAINT_COPY.undo.title} onClick={() => view.current?.undoStroke()} className={TOGGLE}>
+                </Group>
+                <div className="flex flex-wrap gap-1">
+                  <Button type="button" variant="outline" title={PAINT_COPY.undo.title} onClick={() => view.current?.undoStroke()} className={ACTION}>
                     {PAINT_COPY.undo.label}
                   </Button>
                   {/* aria-disabled, not disabled: the button just pressed keeps keyboard focus while the save runs. */}
                   <Button
                     type="button"
-                    variant="hud-ghost"
+                    variant="default"
                     title={PAINT_COPY.save.title}
                     aria-disabled={saving}
                     onClick={() => !saving && void save()}
-                    className={cn(TOGGLE, "aria-disabled:opacity-50")}
+                    className={cn(COMMIT, "aria-disabled:opacity-50")}
                   >
                     {PAINT_COPY.save.label}
                   </Button>
-                </Group>
-                <label className="flex min-h-11 items-center gap-3">
+                </div>
+                <label className="flex min-h-8 items-center gap-3">
                   <span className="w-16 shrink-0 text-[0.78rem] font-semibold text-ink-3">{PAINT_COPY.color.label}</span>
                   <input
                     type="color"
                     value={paint.color}
                     title={PAINT_COPY.color.title}
                     onChange={(e) => setPaint((p) => ({ ...p, color: e.target.value }))}
-                    className="h-9 w-14 cursor-pointer rounded-[8px] border border-input bg-white p-0.5"
+                    className="hit-44 size-[29px] cursor-pointer rounded-[8px] border border-input bg-white p-0.5"
                   />
                 </label>
                 <Slider
@@ -432,7 +425,7 @@ function Cubby({ id, cubby, open, onClose, children }: { id: string; cubby: Stac
 
 function Group({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div role="group" aria-label={label} className="flex flex-wrap items-center gap-0.5 rounded-[10px] bg-muted/60 p-0.5">
+    <div role="group" aria-label={label} className="flex flex-wrap items-center gap-1">
       {children}
     </div>
   );
@@ -448,7 +441,7 @@ function Toggle({ on, title, onClick, children }: { on: boolean; title: string; 
 
 function Slider(p: { label: string; title: string; min: number; max: number; step: number; value: number; text: string; onChange: (v: number) => void }) {
   return (
-    <label title={p.title} className="grid min-h-11 grid-cols-[4.25rem_minmax(0,1fr)_3rem] items-center gap-2">
+    <label title={p.title} className="grid min-h-8 grid-cols-[4.75rem_minmax(0,1fr)_3rem] items-center gap-2">
       <span className="text-[0.78rem] font-semibold text-ink-3">{p.label}</span>
       <input
         type="range"
@@ -457,7 +450,7 @@ function Slider(p: { label: string; title: string; min: number; max: number; ste
         step={p.step}
         value={p.value}
         onChange={(e) => p.onChange(Number(e.target.value))}
-        className="h-6 w-full cursor-pointer accent-primary"
+        className="hit-44 h-6 w-full cursor-pointer accent-primary"
       />
       <strong className="text-right text-[0.8rem] font-semibold text-ink tabular-nums">{p.text}</strong>
     </label>

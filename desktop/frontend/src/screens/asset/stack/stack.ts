@@ -157,23 +157,23 @@ export const statsText = (parts: StatsPart[]) => parts.map((p) => p.text).join("
 
 export const STACK_COPY = {
   pane: "Sprite stack",
-  /** #stack-empty: initial, on any load failure, and after unload. `<stem>` is literal, not the asset. */
-  empty: "No sprite stack yet. Generate writes out/<stem>/stack/.",
+  /** #stack-empty: initial, on any load failure, and after unload. It names the Versions panel's two actions. */
+  empty: "No sprite stack yet. Use Build sprite stack or Stack from picture (bottom left).",
   slicing: "Slicing…",
   generating: "Generating…",
   /** #stack-stats when the stack would not load. */
   noStack: "No sprite stack",
-  lookBlurb: "Voxel cubes are the asset. Round welds neighbors into one surface. Pixel is the screen-space look. Plane and Contour stay parked.",
+  lookBlurb: "Voxel cubes are what the game uses. Plane and Contour are older experiments.",
   paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
-  paintHint: "Color the mesh and the stack with the same 3D brush. Save writes files under out/.",
+  paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
 } as const;
 
 /** The three cubbies (legacy CUBBY_LABELS): the dock's bar labels. */
 export type StackCubby = "stack-look" | "stack-sliders" | "stack-palette" | "paint";
 export const CUBBY_LABELS: Record<StackCubby, string> = {
-  "stack-look": "Sprite stack",
-  "stack-sliders": "Stack",
-  "stack-palette": "Palette",
+  "stack-look": "Look",
+  "stack-sliders": "Shape",
+  "stack-palette": "Colors",
   paint: "Paint",
 };
 /** Sprite stack is the one open by default (index.html 2172). */
@@ -181,40 +181,33 @@ export const CUBBY_DEFAULT: StackCubby = "stack-look";
 /** Legacy openStep: open the named cubby, or close it when it is the open one. */
 export const openCubby = (open: StackCubby | null, name: StackCubby): StackCubby | null => (open === name ? null : name);
 
-/** The blurb buttons under the toggles (data-step="stack-sliders" / "stack-palette"). */
-export const STEP_LINKS: { cubby: StackCubby; label: string }[] = [
-  { cubby: "stack-sliders", label: "Spacing" },
-  { cubby: "stack-palette", label: "Palette" },
-];
-
 export const LOOK_BUTTONS: { look: StackLook; label: string; title: string }[] = [
   { look: "voxel", label: "Voxel", title: "Instanced cubes per texel. The factory asset." },
-  { look: "plane", label: "Plane", title: "Parked. One textured quad per slice." },
-  { look: "contour", label: "Contour", title: "Parked. Marching-squares slabs. Not the product path." },
+  { look: "plane", label: "Plane", title: "An older experiment: one flat picture per slice." },
+  { look: "contour", label: "Contour", title: "An older experiment: smooth outlined slabs. Not what the game uses." },
 ];
 
 export type StackToggle = "pixel" | "main" | "outline" | "auto" | "shade";
-/** #stack-sliders, in legacy order; Reset and Paint sit between and after (TOGGLE_RESET, PAINT_TOGGLE). */
+/** #stack-sliders, in legacy order; Reset sits after them, on its own row (TOGGLE_RESET). */
 export const TOGGLE_BUTTONS: { key: StackToggle; label: string; title: string }[] = [
   {
     key: "pixel",
-    label: "Pixel",
-    title: "Render the stack at a low internal resolution, then upscale with t3ssel8r's pixel-art AA. Does not change the cubes.",
+    label: "Pixel edges",
+    title: "Draw the stack at a low resolution, then scale it up with crisp pixel edges. Does not change the cubes.",
   },
-  { key: "main", label: "Main", title: "Keep only the largest connected voxel piece. Off keeps Hunyuan scraps." },
+  { key: "main", label: "Main piece", title: "Keep only the largest connected piece. Off keeps the stray bits too." },
   { key: "outline", label: "Outline", title: "1-pixel screen-space outlines from the depth buffer, at the internal pixel grid." },
-  { key: "auto", label: "Sync", title: "Keep this camera at the same angle and slow turn as the mesh." },
+  { key: "auto", label: "Follow 3D", title: "Keep this camera at the same angle and slow turn as the 3D model." },
   { key: "shade", label: "Shade", title: "Darken lower slabs so height is easier to read." },
 ];
 export const TOGGLE_RESET = {
   label: "Reset",
   title: "Restore factory stack look: 120 texels, spacing/height 1, contrast and saturation 1.20.",
 };
-export const PAINT_TOGGLE = { label: "Paint", title: "Same paint mode as the left pane." };
 
 /** The step-bar game look (#game-look-bar), which the Stack stage showed: the shared pipeline.pixelLook. */
 export const GAME_TOGGLE = {
-  label: "Pixel",
+  label: "Game look",
   title: "Game look: render both panes small with crisp pixels, iso camera and shadows. Settings are under View.",
 };
 
@@ -233,7 +226,7 @@ export interface SliderSpec {
 
 /** The Stack cubby's sliders (index.html 2204-2214), in order. */
 export const SLIDERS: SliderSpec[] = [
-  { key: "pixelSize", label: "Px", min: 1, max: 8, step: 1, digits: null, title: "Internal pixel size. 1 is native. 3–4 is the t3ssel8r-style chunk." },
+  { key: "pixelSize", label: "Pixel size", min: 1, max: 8, step: 1, digits: null, title: "How big each screen pixel is. 1 is full resolution; 3–4 is chunky pixel art." },
   {
     key: "round",
     label: "Round",
@@ -299,13 +292,13 @@ export const pbrReadout = (v: number) => Number(v).toFixed(2);
 /* ---------------------------------------------------------------- paint (index.html 2113-2124, 5372-5515) */
 
 export const PAINT_COPY = {
-  paint: { label: "Paint", title: "Click-drag to paint. Right-drag still orbits." },
+  paint: { label: "Brush", title: "Click-drag to paint. Right-drag still orbits." },
   drop: { label: "Drop", title: "Next click samples color from the surface." },
   erase: { label: "Erase", title: "Brush restores the original colors." },
   undo: { label: "Undo", title: "Undo the last stroke." },
   save: { label: "Save", title: "Write painted stack sheet and textured_paint.glb." },
   color: { label: "Color", title: "Brush color", value: "#2ecc71" },
-  radius: { label: "Brush", min: 0.01, max: 0.2, step: 0.005, value: 0.04, title: "Paint sphere size, as a fraction of the mesh." },
+  radius: { label: "Size", min: 0.01, max: 0.2, step: 0.005, value: 0.04, title: "Paint sphere size, as a fraction of the mesh." },
 } as const;
 /** Brush's readout: the page's "0.04" until the slider moves, then toFixed(3) (legacy paintRadiusEl input). */
 export const radiusReadout = (v: number, moved = true) => (moved ? Number(v).toFixed(3) : String(v));
