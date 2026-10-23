@@ -1,7 +1,7 @@
 // The viewer's glass HUD (Mokei playground look): panels at the edges, the model in the clear middle.
 // Panels drop the backdrop blur on purpose: at 0.9 white the frost barely shows, and in the macOS webview
 // (WebKit applies -webkit-backdrop-filter) it re-blurs the WebGL canvas behind every panel on every frame.
-import { House, Minus, Pause, Play, Plus, RotateCcw, RotateCw } from "lucide-react";
+import { ChevronDown, House, Minus, Pause, Play, Plus, RotateCcw, RotateCw } from "lucide-react";
 import { useLook } from "mokei/clay";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -62,7 +62,7 @@ export function Hud(p: HudProps) {
       {/* The asset card, the panel rail under it (legacy left cubby rail), then the versions panel: the left side
           is one stack. The column stops above the bottom pickers on phones and scrolls the open panel instead of
           running off the screen; the versions panel shrinks with the rail and scrolls its own body. */}
-      <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:max-h-[calc(100%-160px)]">
+      <div className="absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:w-[calc(100%-24px)] max-sm:max-h-[calc(100%-200px)]">
         <AssetCard {...p} info={info} />
         <PanelRail side="left" base={p.panel} />
         {p.versions}
@@ -70,16 +70,17 @@ export function Hud(p: HudProps) {
       {/* Wide: view toggles and the camera stack top right, the Rig check dock under them. Phones: one column at
           the bottom, in normal flow, so nothing overlaps: the toggles with Reset view, then the model and clip
           pickers (the dock's panels join the left rail there). */}
-      <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-sm:hidden">
+      {/* Below 1360 px the bottom clip bar reaches under this column, so the column stops above it. */}
+      <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-[1360px]:max-h-[calc(100%-80px)] max-sm:hidden">
         <ViewCard {...p} />
         <CameraStack />
         <PanelRail side="right" base={p.panel} className="w-[min(342px,calc(100vw-24px))]" />
       </div>
       <Status load={p.load} />
       <div className="absolute inset-x-3 bottom-3 flex flex-col items-center gap-2">
-        <div className="flex max-w-full items-center gap-2 sm:hidden">
+        <div className="flex max-w-full items-stretch gap-2 sm:hidden">
           <ViewCard {...p} />
-          <Card size="hud" className={cn(PANEL, "p-1")}>
+          <Card size="hud" className={cn(PANEL, "justify-center p-1")}>
             <ResetView />
           </Card>
         </div>
@@ -150,7 +151,8 @@ function RigLine({ summary }: { summary: NonNullable<AssetDocs["summary"]> }) {
         <Badge variant={lv.variant} size="hud-sm" className="shrink-0">
           {lv.word}
         </Badge>
-        {summary.line ? <span className="line-clamp-2 pt-0.5 text-[length:calc(13px*var(--fs))] text-ink-3">{summary.line}</span> : null}
+        {summary.line ? <span className="line-clamp-2 min-w-0 flex-1 pt-0.5 text-[length:calc(13px*var(--fs))] text-ink-3">{summary.line}</span> : null}
+        {problems.length ? <ChevronDown aria-hidden size={15} className="mt-0.5 shrink-0 text-ink-3 transition-transform group-open/rig:rotate-180" /> : null}
       </summary>
       <p className="m-0 mt-1 text-[length:calc(13px*var(--fs))] whitespace-pre-line text-ink-2">{tip}</p>
     </details>
@@ -195,7 +197,7 @@ function TitleInput({ stem, onRenamed }: { stem: string; onRenamed: (stem: strin
           requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
         }
       }}
-      className="-mx-1.5 w-[calc(100%+12px)] rounded-[8px] border border-transparent bg-transparent px-1.5 py-0.5 text-[1.05rem] font-semibold text-ink outline-none hover:border-input focus:border-ring focus:bg-white"
+      className="-mx-1.5 w-[calc(100%+12px)] cursor-text rounded-[8px] border border-transparent bg-transparent px-1.5 py-0.5 text-[1.05rem] font-semibold text-ink outline-none hover:border-input hover:bg-white focus:border-ring focus:bg-white"
     />
   );
 }
@@ -204,7 +206,7 @@ function TitleInput({ stem, onRenamed }: { stem: string; onRenamed: (stem: strin
 
 function ViewCard(p: HudProps) {
   return (
-    <Card size="hud" className={cn(PANEL, "flex-row flex-wrap items-center justify-end gap-0.5 p-1")}>
+    <Card size="hud" className={cn(PANEL, "flex-row flex-wrap items-center justify-end gap-1 p-1")}>
       <Toggle on={p.spin} onClick={() => p.onSpin(!p.spin)} title="Slowly turn the model on its pad.">
         Spin
       </Toggle>
@@ -233,7 +235,7 @@ function ViewCard(p: HudProps) {
 
 function Toggle({ on, onClick, title, disabled, children }: { on: boolean; onClick: () => void; title: string; disabled?: boolean; children: ReactNode }) {
   return (
-    <Button type="button" variant="hud-ghost" aria-pressed={on} disabled={disabled} title={title} onClick={onClick} className={TOGGLE}>
+    <Button type="button" variant="hud-ghost" aria-pressed={on} disabled={disabled} title={title} onClick={onClick} className={cn(TOGGLE, "max-sm:px-2")}>
       {children}
     </Button>
   );
@@ -296,7 +298,7 @@ function ModelPicker({ lods, hasRig, current, onPick }: { lods: Lod[]; hasRig: b
   return (
     <Card size="hud" className={cn(PANEL, "max-w-full p-1")}>
       <Tabs value={current} onValueChange={(v) => typeof v === "string" && v !== current && onPick(v)}>
-        <TabsList variant="hud" aria-label="Model" className="max-w-full flex-wrap justify-start bg-transparent p-0">
+        <TabsList variant="hud" aria-label="Model" className="max-w-full flex-wrap justify-start">
           {items.map((it) => (
             <TabsTrigger key={it.id} variant="hud" value={it.id} title={it.title} className="hit-44">
               {it.label}
@@ -310,7 +312,7 @@ function ModelPicker({ lods, hasRig, current, onPick }: { lods: Lod[]; hasRig: b
 
 function ClipPicker({ clips, clip, playing, onClip, onPlaying }: HudProps) {
   return (
-    <Card size="hud" className={cn(PANEL, "max-w-full flex-row items-center gap-1 p-1")}>
+    <Card size="hud" className={cn(PANEL, "max-w-full min-w-0 flex-row items-center gap-1 p-1")}>
       <Tooltip>
         <TooltipTrigger
           render={<Button type="button" variant="hud-cam" size="hud-cam" aria-label={playing ? "Pause" : "Play"} onClick={() => onPlaying(!playing)} className="hit-44 h-[29px] w-[32px]" />}
@@ -319,8 +321,8 @@ function ClipPicker({ clips, clip, playing, onClip, onPlaying }: HudProps) {
         </TooltipTrigger>
         <TooltipContent>{playing ? "Pause" : "Play"}</TooltipContent>
       </Tooltip>
-      <Tabs value={clip ?? ""} onValueChange={(v) => typeof v === "string" && onClip(v)}>
-        <TabsList variant="hud" aria-label="Clips" className="max-w-full flex-wrap justify-start bg-transparent p-0">
+      <Tabs value={clip ?? ""} onValueChange={(v) => typeof v === "string" && onClip(v)} className="min-w-0">
+        <TabsList variant="hud" aria-label="Clips" className="max-w-full flex-wrap justify-start max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:[scrollbar-width:none]">
           {clips.map((name) => (
             <TabsTrigger key={name} variant="hud" value={name} title={`Play the “${name}” animation on the mesh.`} className="hit-44">
               {name.replace(/_/g, " ")}

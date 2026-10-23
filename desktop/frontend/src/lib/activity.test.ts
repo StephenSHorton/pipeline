@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { followStep } from "@/app/follow";
-import { absorb, currentEntry, durationText, entryTime, imageUrl, mergeEntries, onActivity, splitOut, useActivity, type ActivityEntry } from "./activity";
+import { absorb, collapseRuns, currentEntry, detailText, durationText, entryTime, imageUrl, mergeEntries, onActivity, splitOut, useActivity, type ActivityEntry } from "./activity";
 
 const e = (id: string, seq: number, more: Partial<ActivityEntry> = {}): ActivityEntry => ({ id, seq, ts: seq, started: seq, ...more });
 
@@ -9,6 +9,22 @@ describe("mergeEntries", () => {
     const list = mergeEntries([e("a", 1, { state: "running" })], [e("b", 2), e("a", 3, { state: "ok", started: 1 })]);
     expect(list.map((x) => [x.id, x.state])).toEqual([["b", undefined], ["a", "ok"]]);
     expect(mergeEntries(list, [e("a", 2, { state: "running", started: 1 })]).find((x) => x.id === "a")?.state).toBe("ok");
+  });
+});
+
+describe("collapseRuns and detailText", () => {
+  it("folds identical finished steps in a row, never a running one or a different line", () => {
+    const done = { title: "Rigging mlg-sheep", detail: "Done", state: "ok" as const, stem: "mlg-sheep" };
+    const runs = collapseRuns([e("a", 3, done), e("b", 2, done), e("c", 1, { ...done, detail: "kept as version t16" }), e("d", 0, done)]);
+    expect(runs.map((r) => [r.e.id, r.n])).toEqual([["a", 2], ["c", 1], ["d", 1]]);
+    const live = { ...done, state: "running" as const };
+    expect(collapseRuns([e("a", 2, live), e("b", 1, live)]).map((r) => r.n)).toEqual([1, 1]);
+  });
+
+  it("capitalises the line and drops the t from a version id", () => {
+    expect(detailText("kept as version t16")).toBe("Kept as version 16");
+    expect(detailText("Done")).toBe("Done");
+    expect(detailText(undefined)).toBe("");
   });
 });
 

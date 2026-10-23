@@ -32,7 +32,7 @@ function ToastHost() {
         <span className="min-w-0 flex-1 whitespace-pre-line">{t.text}</span>
         {t.actLabel ? (
           <Button
-            size="sm"
+            className="hit-44"
             onClick={() => {
               hide();
               t.act?.();

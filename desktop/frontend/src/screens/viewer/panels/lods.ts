@@ -18,15 +18,16 @@ export const TURNAROUND_LABEL = "Turnaround";
 /** The fallback figure's caption when views.json lists no views (index.html 4284). */
 export const INPUT_IMAGE = "Input image";
 
-/** A button's text: the label, then the face count with thousands separators ("PSX 1,184", "Photo bake"). Legacy lodLabel. */
+/** A button's text: the label, then the face count in words ("PSX · 1,184 faces", "Photo bake"). Legacy lodLabel
+ *  showed a bare number. */
 export function lodLabel(item: Pick<Lod, "label" | "faces">): string {
-  const faces = item.faces ? ` ${Number(item.faces).toLocaleString()}` : "";
+  const faces = item.faces ? ` · ${Number(item.faces).toLocaleString()} faces` : "";
   return `${item.label}${faces}`;
 }
 
-/** A button's tooltip, word for word (index.html 5255). */
+/** A button's tooltip (legacy index.html 5255 named a left pane the app no longer has). */
 export function lodTitle(item: Pick<Lod, "id" | "label" | "file">): string {
-  return `Show ${item.label || item.id} in the left pane (${item.file}).`;
+  return `Show the ${item.label || item.id} model (${item.file}).`;
 }
 
 /** One view in out/<stem>/views.json. */

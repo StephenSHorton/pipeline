@@ -41,11 +41,10 @@ export function SettingsScreen() {
       <div aria-hidden="true" className="pointer-events-none absolute top-[262px] left-1/2 -ml-[550px] h-[520px] w-[1100px] rounded-[50%] bg-ground-ellipse" />
       <div aria-hidden="true" className="pointer-events-none absolute top-[312px] left-1/2 -ml-[380px] h-[360px] w-[760px] rounded-[50%] bg-clay-grass opacity-70" />
       <div className="relative flex min-h-full flex-col items-center px-4 pt-[clamp(2rem,8vh,4.5rem)] pb-12">
-        <Card className="w-full max-w-[38rem] gap-0 p-0">
+        <Card className="w-full max-w-[38rem] gap-0 p-0 data-[size=default]:py-0">
           <div className="px-6 pt-6 pb-5 max-sm:px-4">
-            <div className="text-[0.75rem] font-semibold tracking-wide text-ink-3 uppercase">Pipeline</div>
-            <h1 className="mt-1 text-[1.6rem] leading-tight font-semibold tracking-tight text-ink">Settings</h1>
-            <p className="mt-1.5 text-sm text-ink-3">Version, updates, and the factory folder. That’s it.</p>
+            <h1 className="text-[1.25rem] leading-tight font-semibold text-ink">Settings</h1>
+            <p className="mt-1 text-sm text-ink-3">Version, updates, and the factory folder.</p>
           </div>
           <Separator />
           <Row
@@ -53,14 +52,14 @@ export function SettingsScreen() {
             labelId="settings-updates"
             hint={
               <span id="settings-updates-hint" role="status" aria-live="polite" className={cn("flex items-start gap-2", TONE_TEXT[view.tone])}>
-                <span aria-hidden="true" className={cn("mt-[0.45em] size-2 shrink-0 rounded-full", TONE_DOT[view.tone])} />
+                {view.tone ? <span aria-hidden="true" className={cn("mt-[0.45em] size-2 shrink-0 rounded-full", TONE_DOT[view.tone])} /> : null}
                 <span data-state={view.tone || undefined}>{view.hint}</span>
               </span>
             }
           >
             <Button
               variant="outline"
-              className="min-h-11 min-w-[11rem] px-4"
+              className="hit-44 min-h-9 min-w-[10rem] px-4"
               aria-describedby="settings-updates-hint"
               disabled={view.buttonDisabled}
               onClick={() => void checkForUpdates(true)}
@@ -83,7 +82,7 @@ export function SettingsScreen() {
               </span>
             }
           >
-            <Button variant="outline" className="min-h-11 min-w-[5.5rem] px-4" aria-describedby="settings-folder-hint" onClick={() => void openFolder()}>
+            <Button variant="outline" className="hit-44 min-h-9 min-w-[10rem] px-4" aria-describedby="settings-folder-hint" onClick={() => void openFolder()}>
               Open
             </Button>
           </Row>

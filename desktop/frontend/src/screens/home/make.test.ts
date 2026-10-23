@@ -140,6 +140,7 @@ describe("library", () => {
     expect(relativeTime(now / 1000 - 120, now)).toBe("2 min ago");
     expect(relativeTime(now / 1000 - 7200, now)).toBe("2 h ago");
     expect(relativeTime(now / 1000 - 3 * 86400, now)).toBe("3 days ago");
+    expect(relativeTime(now / 1000 - 30 * 3600, now)).toBe("yesterday");
   });
   it("drawTimeNote", () => {
     expect(drawTimeNote({ loaded: true, times: { attempt: 33, ground: 11 } })).toBe(" About 45 s last time.");

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { flowEntry } from "@/lib/flow";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
-import { TOGGLE } from "@/screens/viewer/classes";
+import { ACTION, COMMIT, LABEL, MUTE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import { PanelToggle, type PanelToggleProps } from "@/screens/viewer/panels/PanelToggle";
 import { ViewerPanel } from "@/screens/viewer/panels/ViewerPanel";
 import type { ViewerPanelProps } from "@/screens/viewer/types";
@@ -19,8 +19,6 @@ import { BRUSH_SIZE, BRUSH_STRENGTH, boneChains, boneRgb, changedText, GRAB, WEI
 import { saveWeights, setWeightsSession, useWeights, weightsFor, weightsSession } from "./weightsApi";
 import { WeightsSession } from "./weightsView";
 
-const LABEL = "text-[length:calc(11px*var(--fs))] font-semibold tracking-[0.08em] text-ink-3 uppercase";
-const MUTE = "m-0 text-[length:calc(12.5px*var(--fs))] leading-snug text-ink-3";
 const SLIDER = "hit-44 min-w-0 flex-1 accent-primary";
 const hex = (rgb: [number, number, number]) => `rgb(${rgb.map((x) => Math.round(x * 255)).join(",")})`;
 
@@ -291,7 +289,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
     body = (
       <>
         <p className={MUTE}>{st.brush ? C.armedHint : C.hint}</p>
-        <div className="flex flex-wrap items-center gap-0.5" role="group" aria-label="Show">
+        <div className={cn(TRAY, "w-fit")} role="group" aria-label="Show">
           <Toggle on={st.show === "heat"} title={C.heat.title} onClick={() => useWeights.setState({ show: "heat" })}>
             {C.heat.label}
           </Toggle>
@@ -301,7 +299,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
         </div>
 
         <div className={LABEL}>{C.bones}</div>
-        <div className="-mx-1 max-h-[min(34vh,260px)] shrink-0 overflow-y-auto border-y border-hair px-1 py-1" role="listbox" aria-label="Bones">
+        <div className="-mx-1 max-h-[min(26vh,200px)] shrink-0 overflow-y-auto border-y border-hair px-1 py-1" role="listbox" aria-label="Bones">
           {chains.map((c) => (
             <div key={c.key} className="mb-1">
               <div className="pt-0.5 text-[length:calc(11.5px*var(--fs))] font-semibold text-ink-2">{c.label}</div>
@@ -331,7 +329,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
 
         {st.bone >= 0 ? (
           <label title={C.grab.title} className="flex items-center gap-2 text-[length:calc(12.5px*var(--fs))] font-semibold text-ink-3">
-            <span className="min-w-0 truncate" title={boneName(st.bone)}>
+            <span className="w-[4.6em] shrink-0 truncate" title={boneName(st.bone)}>
               {C.grab.label}
             </span>
             <input
@@ -354,13 +352,13 @@ export function WeightsPanel(p: ViewerPanelProps) {
               }}
               className={SLIDER}
             />
-            <strong className="w-[3.4em] text-right font-mono text-ink tabular-nums">{drag ?? grabNow}%</strong>
+            <strong className="w-[3.4em] text-right font-semibold text-ink tabular-nums">{drag ?? grabNow}%</strong>
           </label>
         ) : null}
         {st.bone >= 0 ? <p className={cn(MUTE, "-mt-1 truncate")}>{boneName(st.bone)}</p> : null}
 
         <div className={LABEL}>Brush</div>
-        <div className="flex flex-wrap items-center gap-0.5" role="group" aria-label="Brush">
+        <div className={cn(TRAY, "w-fit")} role="group" aria-label="Brush">
           {(["add", "erase", "smooth"] as const).map((m) => (
             <Toggle key={m} on={st.brush === m} title={C[m].title} onClick={() => pickBrush(m)}>
               {C[m].label}
@@ -370,7 +368,8 @@ export function WeightsPanel(p: ViewerPanelProps) {
         <Slider label={C.size.label} title={C.size.title} min={BRUSH_SIZE.min} max={BRUSH_SIZE.max} step={BRUSH_SIZE.step} value={st.size} text={`${Math.round(st.size * 100)}%`} onChange={(v) => useWeights.setState({ size: v })} />
         <Slider label={C.strength.label} title={C.strength.title} min={BRUSH_STRENGTH.min} max={BRUSH_STRENGTH.max} step={BRUSH_STRENGTH.step} value={st.strength} text={`${Math.round(st.strength * 100)}%`} onChange={(v) => useWeights.setState({ strength: v })} />
 
-        <div className="flex flex-wrap items-center gap-0.5 border-t border-hair pt-2">
+        {/* Pinned to the panel's foot, so Save is in reach without scrolling past the bone list. */}
+        <div className="sticky -bottom-3.5 z-[1] -mx-4 -mb-3.5 flex flex-wrap items-center gap-1 border-t border-hair bg-white px-4 pt-2 pb-3">
           <Act title={C.undo.title} off={!s.canUndo} onClick={() => s.undo()}>
             {C.undo.label}
           </Act>
@@ -388,14 +387,14 @@ export function WeightsPanel(p: ViewerPanelProps) {
             onClick={() => {
               if (!st.saving && changed) void saveWeights(s);
             }}
-            className="hit-44 ml-auto h-[29px] rounded-[8px] px-3 text-[length:calc(13px*var(--fs))] font-semibold aria-disabled:opacity-50"
+            className={cn(changed ? COMMIT : ACTION, "ml-auto aria-disabled:cursor-default aria-disabled:opacity-50")}
           >
             {st.saving ? C.saving : C.save.label}
           </Button>
+          <p className={cn(MUTE, "basis-full")} aria-live="polite">
+            {changedText(changed)}
+          </p>
         </div>
-        <p className={MUTE} aria-live="polite">
-          {changedText(changed)}
-        </p>
       </>
     );
 
@@ -408,7 +407,7 @@ export function WeightsPanel(p: ViewerPanelProps) {
 
 function Toggle({ on, title, onClick, children }: { on: boolean; title: string; onClick: () => void; children: string }) {
   return (
-    <Button type="button" variant="hud-ghost" aria-pressed={on} title={title} onClick={onClick} className={TOGGLE}>
+    <Button type="button" variant="hud-ghost" aria-pressed={on} title={title} onClick={onClick} className={TRAY_ITEM}>
       {children}
     </Button>
   );
@@ -416,7 +415,7 @@ function Toggle({ on, title, onClick, children }: { on: boolean; title: string; 
 
 function Act({ title, off, onClick, children }: { title: string; off: boolean; onClick: () => void; children: string }) {
   return (
-    <Button type="button" variant="hud-ghost" aria-disabled={off} title={title} onClick={() => !off && onClick()} className={cn(TOGGLE, "aria-disabled:opacity-40")}>
+    <Button type="button" variant="outline" aria-disabled={off} title={title} onClick={() => !off && onClick()} className={cn(ACTION, "aria-disabled:cursor-default aria-disabled:opacity-50")}>
       {children}
     </Button>
   );
@@ -427,7 +426,7 @@ function Slider(p: { label: string; title: string; min: number; max: number; ste
     <label title={p.title} className="flex items-center gap-2 text-[length:calc(12.5px*var(--fs))] font-semibold text-ink-3">
       <span className="w-[4.6em]">{p.label}</span>
       <input type="range" min={p.min} max={p.max} step={p.step} value={p.value} onChange={(e) => p.onChange(Number(e.target.value))} className={SLIDER} />
-      <strong className="w-[3.4em] text-right font-mono text-ink tabular-nums">{p.text}</strong>
+      <strong className="w-[3.4em] text-right font-semibold text-ink tabular-nums">{p.text}</strong>
     </label>
   );
 }

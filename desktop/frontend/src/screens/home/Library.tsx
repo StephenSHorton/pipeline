@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { deleteAsset, listAssets, flowFiles, outUrl, readInspect, type Asset } from "@/lib/api";
-import { degradedLine, onJobEnded } from "@/lib/jobs";
+import { degradedLine, displayStem, onJobEnded } from "@/lib/jobs";
 import { askConfirm } from "@/lib/ui";
 import { openAsset } from "@/app/open";
 import { assetKind, DELETE_MESSAGE, KIND_LABEL, LIB_FILTERS, matchesFilter, relativeTime, type LibKind } from "./make";
@@ -90,7 +90,7 @@ export function Library({
 
   return (
     <section aria-labelledby="mk-library" className="w-full max-w-[52rem]">
-      <h2 id="mk-library" className="m-0 mb-3 px-1 text-[0.85rem] font-bold text-ink-2">
+      <h2 id="mk-library" className="m-0 mb-3 px-1 text-[1.25rem] font-semibold text-ink">
         Library
       </h2>
 
@@ -123,7 +123,7 @@ export function Library({
       ) : !shown.length ? (
         <p className="px-1 text-[0.85rem] text-ink-3">Nothing matches.</p>
       ) : (
-        <ul className="m-0 grid list-none grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-3 p-0">
+        <ul className="m-0 grid list-none grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] items-start gap-3 p-0">
           {shown.map((a) => (
             <AssetCard key={a.id} asset={a} onDelete={() => void remove(a)} />
           ))}
@@ -144,26 +144,33 @@ function AssetCard({ asset: a, onDelete }: { asset: Asset; onDelete: () => void 
     };
   }, [a]);
   const kind = assetKind(a);
-  const name = a.title || a.id;
+  // Titles mix "hay_bale" and "hay bale"; on the card both read as words.
+  const name = (a.title || displayStem(a.id)).replace(/_/g, " ");
   const shot = a.preview || a.input;
   // Every asset opens in the asset screen; one with no mesh (a sprite, Ideas, a drawing never built) lands on the
   // stage its flow says is current (openStem → defaultStage), not on 3D.
   const open = () => openAsset(a.id);
 
   return (
-    <li className="group/tile relative flex flex-col gap-2 rounded-2xl border border-[var(--glass-border)] bg-[var(--glass-bg)] p-2 shadow-[var(--glass-shadow)] transition-shadow hover:shadow-[0_1px_2px_rgba(30,41,90,0.06),0_12px_28px_rgba(30,41,90,0.12)]">
+    <li className="group/tile relative flex flex-col gap-2 rounded-2xl border border-[var(--glass-border)] bg-[var(--glass-bg)] p-2 shadow-[var(--glass-shadow)] transition-[box-shadow,translate] hover:-translate-y-0.5 hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--primary)_30%,transparent),0_12px_28px_rgba(30,41,90,0.12)]">
       <button
         type="button"
         onClick={open}
         title="Open"
         className="flex cursor-pointer flex-col gap-2 rounded-xl border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <div aria-hidden="true" className="flex aspect-[4/3] w-full items-end justify-center overflow-hidden rounded-[11px] bg-clay-sky">
+        <div aria-hidden="true" className="relative flex aspect-[4/3] w-full items-end justify-center overflow-hidden rounded-[11px] bg-clay-sky">
           {shot && !broken ? (
             <img src={outUrl(a.id, shot, a.mtime)} alt="" loading="lazy" onError={() => setBroken(true)} className="size-full object-cover" />
           ) : (
             <Placeholder />
           )}
+          {/* On the picture, so the meta line keeps its full width. */}
+          {x.rigged ? (
+            <Badge variant="success" className="absolute bottom-1.5 left-1.5 h-[22px] rounded-[7px] px-2 text-[0.7rem] font-semibold">
+              Rigged
+            </Badge>
+          ) : null}
         </div>
         <div className="min-w-0 px-1 pb-0.5">
           <div className="line-clamp-2 text-[0.9rem] font-semibold break-words text-ink">{name}</div>
@@ -171,11 +178,6 @@ function AssetCard({ asset: a, onDelete }: { asset: Asset; onDelete: () => void 
             <span className="truncate">
               {KIND_LABEL[kind] || "Asset"} · {relativeTime(a.mtime)}
             </span>
-            {x.rigged ? (
-              <Badge variant="success" className="ml-auto h-[22px] shrink-0 rounded-[7px] px-2 text-[0.7rem] font-semibold">
-                Rigged
-              </Badge>
-            ) : null}
           </div>
         </div>
       </button>

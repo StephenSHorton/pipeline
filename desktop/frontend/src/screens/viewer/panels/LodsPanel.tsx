@@ -1,11 +1,11 @@
 // The Detail levels panel (legacy lods cubby, index.html 2129-2142; the list 5249-5262; fillTurnaround 4274-4296):
 // the hint, Rigged (when there is a rig) and one button per LOD in lods.json order, then the turnaround figures. It
-// is the viewer's only LOD switch, as legacy's list was (the HUD's bottom model tabs are gone). The clips stay in the
-// HUD's clip picker. Layout only: copy and rules are in lods.ts, the views.json read in lodsApi.ts.
+// is the same pick as the HUD's bottom model tabs, so it uses the same segmented tray (vertical). The clips stay in
+// the HUD's clip picker. Layout only: copy and rules are in lods.ts, the views.json read in lodsApi.ts.
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { TOGGLE } from "../classes";
+import { TRAY, TRAY_ITEM } from "../classes";
 import type { ViewerPanelProps } from "../types";
 import { LODS_HINT, LODS_LIST_LABEL, TURNAROUND_LABEL, lodButtons, pressedLod } from "./lods";
 import { readTurnaround, type ShownFigure } from "./lodsApi";
@@ -39,7 +39,7 @@ export function LodsPanel(p: ViewerPanelProps) {
       <p className="m-0 text-[0.8rem] leading-[1.45] text-ink-3">{LODS_HINT}</p>
       {/* No LODs, no list (legacy .lods:empty); the hint still shows. */}
       {buttons.length ? (
-        <div role="group" aria-label={LODS_LIST_LABEL} className="flex flex-col gap-1">
+        <div role="group" aria-label={LODS_LIST_LABEL} className={cn(TRAY, "flex-col items-stretch")}>
           {buttons.map((b) => (
             <Button
               key={b.id}
@@ -48,7 +48,7 @@ export function LodsPanel(p: ViewerPanelProps) {
               aria-pressed={b.id === pressed}
               title={b.title}
               onClick={() => b.id !== pressed && p.onPickLod(b.id)}
-              className={cn(TOGGLE, "w-full justify-start tabular-nums")}
+              className={cn(TRAY_ITEM, "w-full justify-start tabular-nums")}
             >
               {b.label}
             </Button>
@@ -56,11 +56,17 @@ export function LodsPanel(p: ViewerPanelProps) {
         </div>
       ) : null}
       {figures.length ? (
-        <aside aria-label={TURNAROUND_LABEL} className="flex flex-col gap-2">
+        // A two-up grid of unboxed square views, so four views fit without scrolling. Every view is often role
+        // "shape", so the accent ring marks one only when it is the single shape view.
+        <aside aria-label={TURNAROUND_LABEL} className="grid grid-cols-2 gap-2">
           {figures.map((f) => (
-            <figure key={`${f.id}:${f.file}`} className={cn("m-0 overflow-hidden rounded-[10px] border p-1", f.shape ? "border-primary" : "border-border")}>
-              <img src={f.src} alt={f.caption} className="block h-24 w-full rounded-[7px] bg-muted object-contain" />
-              <figcaption className="mt-1.5 font-mono text-[10px] tracking-[0.08em] text-ink-3 uppercase">{f.caption}</figcaption>
+            <figure key={`${f.id}:${f.file}`} className="m-0 flex min-w-0 flex-col gap-1">
+              <img
+                src={f.src}
+                alt={f.caption}
+                className={cn("block aspect-square w-full rounded-[8px] object-contain", f.shape && figures.filter((x) => x.shape).length === 1 && "ring-2 ring-primary")}
+              />
+              <figcaption className="truncate text-[0.75rem] text-ink-3 first-letter:uppercase">{f.caption}</figcaption>
             </figure>
           ))}
         </aside>

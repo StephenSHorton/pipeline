@@ -49,7 +49,10 @@ export function ExportStage({ stem, flow, flowVersion, intent }: StageProps) {
   const live = showsDoc(doc, entry);
   const made = live ? doc.made || 0 : 0;
   const when = made ? new Date(made * 1000).toLocaleString() : "";
-  const lead = leadText(stem, doc, entry, when);
+  // With nothing to export there is no Export button, so the lead does not point at one.
+  const nothing = exportAction(flow, exporting).kind === "none";
+  const leadFull = leadText(stem, doc, entry, when);
+  const lead = nothing ? leadFull.replace(" Press Export below.", "") : leadFull;
   const staleAt = lead.indexOf(" · made from older picks");
   const cards = exportCards(flow, intent, doc);
   // Every file the flow lists, so the rig card asks only for the rig files that are there (null: flow not read yet).
@@ -98,41 +101,39 @@ export function ExportStage({ stem, flow, flowVersion, intent }: StageProps) {
 
 function ActionRow({ stem, exporting, flow }: { stem: string; exporting: boolean; flow: StageProps["flow"] }) {
   const act = exportAction(flow, exporting);
+  // Right under the cards, left-aligned with them, as plain buttons; sticky, so it only floats once the page scrolls.
+  // With nothing to export it is a plain line, not a pill that looks like a button.
+  if (act.kind === "none")
+    return (
+      <div className="pt-3 pb-4">
+        <p className="m-0 px-1 text-[0.85rem] text-ink-3">{NOTHING_TO_EXPORT}</p>
+      </div>
+    );
   return (
-    <div className="pointer-events-none sticky bottom-0 mt-auto pt-6 pb-4">
-      {/* A floating glass pill, not a band: the cards stay readable beside it while the page scrolls under it. */}
-      <Card size="sm" className="pointer-events-auto mx-auto w-fit max-w-full flex-row flex-wrap items-center gap-2 rounded-[14px] bg-white/95! px-2 py-2! shadow-[var(--glass-shadow)]">
+    <div className="pointer-events-none sticky bottom-0 pt-3 pb-4">
+      <div className="pointer-events-auto flex w-fit max-w-full flex-wrap items-center gap-2">
         {/* One live region, mounted for good, so the start and the end of an export are both announced. */}
         <span role="status" aria-live="polite" className="sr-only">
           {act.kind === "exporting" ? "Exporting…" : ""}
         </span>
-        {act.kind !== "none" ? (
-          // The button stays mounted while exporting (disabled, "Exporting…"), so focus does not drop to the body.
-          <Button
-            className="min-h-11 px-4 disabled:opacity-80"
-            title={EXPORT_TITLE}
-            disabled={act.kind === "exporting"}
-            onClick={() => void exportAsset(stem)}
-          >
-            {act.kind === "exporting" ? (
-              <>
-                <LoaderCircle aria-hidden="true" className="animate-spin" />
-                Exporting…
-              </>
-            ) : (
-              act.label
-            )}
-          </Button>
-        ) : (
-          <p className="m-0 inline-flex min-h-11 items-center px-1 text-[0.85rem] text-ink-3">{NOTHING_TO_EXPORT}</p>
-        )}
+        {/* The button stays mounted while exporting (disabled, "Exporting…"), so focus does not drop to the body. */}
+        <Button className="hit-44 min-h-9 px-4 disabled:opacity-80" title={EXPORT_TITLE} disabled={act.kind === "exporting"} onClick={() => void exportAsset(stem)}>
+          {act.kind === "exporting" ? (
+            <>
+              <LoaderCircle aria-hidden="true" className="animate-spin" />
+              Exporting…
+            </>
+          ) : (
+            act.label
+          )}
+        </Button>
         {act.finder ? (
-          <Button variant="outline" className="min-h-11 px-3.5" title={FINDER_TITLE} onClick={() => void showInFinder(stem)}>
+          <Button variant="outline" className="hit-44 min-h-9 px-3.5" title={FINDER_TITLE} onClick={() => void showInFinder(stem)}>
             <FolderOpen aria-hidden="true" />
             Show in Finder
           </Button>
         ) : null}
-      </Card>
+      </div>
     </div>
   );
 }
@@ -151,9 +152,12 @@ function Plain({ card, src }: { card: PlainCard; src: string }) {
     >
       <h3 className={H3}>{card.title}</h3>
       {src ? <img alt="" src={src} className="max-h-[180px] w-full rounded-lg bg-muted object-contain" /> : null}
-      <ul className={cn("m-0 list-none p-0 break-words", MONO, card.missing ? "text-ink-3" : "text-ink")}>
+      <ul className={cn("m-0 list-none p-0 text-[0.8rem] leading-[1.5] break-words", card.missing ? "text-ink-3" : "text-ink")}>
+        {/* Mono for file names only; "Ready" and "Nothing yet" are words. */}
         {card.lines.map((l, i) => (
-          <li key={i}>{l}</li>
+          <li key={i} className={cn(/[./]/.test(l) && MONO)}>
+            {l}
+          </li>
         ))}
       </ul>
     </Card>

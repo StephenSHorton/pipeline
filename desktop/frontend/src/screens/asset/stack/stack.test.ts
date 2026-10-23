@@ -15,7 +15,6 @@ import {
   openCubby,
   ORBIT,
   PAINT_COPY,
-  PAINT_TOGGLE,
   PALETTE_COPY,
   PBR_SLIDERS,
   pbrReadout,
@@ -31,7 +30,6 @@ import {
   stateForMeta,
   statsParts,
   statsText,
-  STEP_LINKS,
   TOGGLE_BUTTONS,
   TOGGLE_RESET,
   worldPaintRadius,
@@ -41,54 +39,49 @@ import {
 const meta: StackMeta = { layers: 87, resolution: 160, pitch: 0.01, extents: [1.6, 0.87, 1.6] };
 
 describe("copy", () => {
-  it("empty states, stats failure and the blurbs match the legacy page", () => {
+  it("empty states, stats failure and the blurbs, in plain English", () => {
     expect(STACK_COPY).toEqual({
       pane: "Sprite stack",
-      empty: "No sprite stack yet. Generate writes out/<stem>/stack/.",
+      empty: "No sprite stack yet. Use Build sprite stack or Stack from picture (bottom left).",
       slicing: "Slicing…",
       generating: "Generating…",
       noStack: "No sprite stack",
-      lookBlurb: "Voxel cubes are the asset. Round welds neighbors into one surface. Pixel is the screen-space look. Plane and Contour stay parked.",
+      lookBlurb: "Voxel cubes are what the game uses. Plane and Contour are older experiments.",
       paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
-      paintHint: "Color the mesh and the stack with the same 3D brush. Save writes files under out/.",
+      paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
     });
-    expect(phaseText("empty")).toBe("No sprite stack yet. Generate writes out/<stem>/stack/.");
+    expect(phaseText("empty")).toBe("No sprite stack yet. Use Build sprite stack or Stack from picture (bottom left).");
     expect(phaseText("slicing")).toBe("Slicing…");
     expect(phaseText("generating")).toBe("Generating…");
     expect(phaseText("ready")).toBe("");
   });
 
-  it("looks: Voxel is the asset, Plane and Contour are parked", () => {
+  it("looks: Voxel is the asset, Plane and Contour are older experiments", () => {
     expect(LOOK_BUTTONS).toEqual([
       { look: "voxel", label: "Voxel", title: "Instanced cubes per texel. The factory asset." },
-      { look: "plane", label: "Plane", title: "Parked. One textured quad per slice." },
-      { look: "contour", label: "Contour", title: "Parked. Marching-squares slabs. Not the product path." },
+      { look: "plane", label: "Plane", title: "An older experiment: one flat picture per slice." },
+      { look: "contour", label: "Contour", title: "An older experiment: smooth outlined slabs. Not what the game uses." },
     ]);
   });
 
-  it("the toggles, Reset and Paint", () => {
+  it("the toggles, Reset and the game look", () => {
     expect(TOGGLE_BUTTONS.map((t) => [t.label, t.title])).toEqual([
-      ["Pixel", "Render the stack at a low internal resolution, then upscale with t3ssel8r's pixel-art AA. Does not change the cubes."],
-      ["Main", "Keep only the largest connected voxel piece. Off keeps Hunyuan scraps."],
+      ["Pixel edges", "Draw the stack at a low resolution, then scale it up with crisp pixel edges. Does not change the cubes."],
+      ["Main piece", "Keep only the largest connected piece. Off keeps the stray bits too."],
       ["Outline", "1-pixel screen-space outlines from the depth buffer, at the internal pixel grid."],
-      ["Sync", "Keep this camera at the same angle and slow turn as the mesh."],
+      ["Follow 3D", "Keep this camera at the same angle and slow turn as the 3D model."],
       ["Shade", "Darken lower slabs so height is easier to read."],
     ]);
     expect(TOGGLE_RESET).toEqual({ label: "Reset", title: "Restore factory stack look: 120 texels, spacing/height 1, contrast and saturation 1.20." });
-    expect(PAINT_TOGGLE).toEqual({ label: "Paint", title: "Same paint mode as the left pane." });
     expect(GAME_TOGGLE).toEqual({
-      label: "Pixel",
+      label: "Game look",
       title: "Game look: render both panes small with crisp pixels, iso camera and shadows. Settings are under View.",
     });
   });
 
-  it("the cubbies: Sprite stack open by default, Spacing and Palette links, one open at a time", () => {
-    expect(CUBBY_LABELS).toEqual({ "stack-look": "Sprite stack", "stack-sliders": "Stack", "stack-palette": "Palette", paint: "Paint" });
+  it("the cubbies: Look open by default, one open at a time", () => {
+    expect(CUBBY_LABELS).toEqual({ "stack-look": "Look", "stack-sliders": "Shape", "stack-palette": "Colors", paint: "Paint" });
     expect(CUBBY_DEFAULT).toBe("stack-look");
-    expect(STEP_LINKS).toEqual([
-      { cubby: "stack-sliders", label: "Spacing" },
-      { cubby: "stack-palette", label: "Palette" },
-    ]);
     expect(openCubby("stack-look", "stack-palette")).toBe("stack-palette");
     expect(openCubby("stack-look", "stack-look")).toBeNull();
     expect(openCubby(null, "stack-sliders")).toBe("stack-sliders");
@@ -96,7 +89,7 @@ describe("copy", () => {
 
   it("the sliders: labels, ranges, steps and titles", () => {
     expect(SLIDERS.map((s) => [s.label, s.min, s.max, s.step, s.title])).toEqual([
-      ["Px", 1, 8, 1, "Internal pixel size. 1 is native. 3–4 is the t3ssel8r-style chunk."],
+      ["Pixel size", 1, 8, 1, "How big each screen pixel is. 1 is full resolution; 3–4 is chunky pixel art."],
       [
         "Round",
         0,
@@ -130,13 +123,13 @@ describe("copy", () => {
       ["Glow", 0, 1, 0.05, "0.00", "Emissive glow for the selected color."],
     ]);
     expect(PAINT_COPY).toEqual({
-      paint: { label: "Paint", title: "Click-drag to paint. Right-drag still orbits." },
+      paint: { label: "Brush", title: "Click-drag to paint. Right-drag still orbits." },
       drop: { label: "Drop", title: "Next click samples color from the surface." },
       erase: { label: "Erase", title: "Brush restores the original colors." },
       undo: { label: "Undo", title: "Undo the last stroke." },
       save: { label: "Save", title: "Write painted stack sheet and textured_paint.glb." },
       color: { label: "Color", title: "Brush color", value: "#2ecc71" },
-      radius: { label: "Brush", min: 0.01, max: 0.2, step: 0.005, value: 0.04, title: "Paint sphere size, as a fraction of the mesh." },
+      radius: { label: "Size", min: 0.01, max: 0.2, step: 0.005, value: 0.04, title: "Paint sphere size, as a fraction of the mesh." },
     });
     expect(radiusReadout(0.04, false)).toBe("0.04");
     expect(radiusReadout(0.04)).toBe("0.040");

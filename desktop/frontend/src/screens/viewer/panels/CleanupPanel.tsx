@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useViewerOverlay } from "@/viewer/ToolBridge";
 import { useViewerTools, type ViewerTool } from "@/viewer/tools";
+import { ACTION, TOGGLE } from "../classes";
 import type { ViewerPanelProps } from "../types";
 import {
   CARVE_BALL,
@@ -50,8 +51,6 @@ function CarveBall() {
   );
 }
 const BALL = <CarveBall />;
-
-const BTN = "min-h-11 flex-1 bg-white aria-pressed:bg-accent aria-pressed:text-accent-foreground";
 
 export function CleanupPanel(p: ViewerPanelProps) {
   const { stem, tools, onPickLod } = p;
@@ -142,13 +141,14 @@ export function CleanupPanel(p: ViewerPanelProps) {
   return (
     <ViewerPanel panel="cleanup" id={p.id} open={p.open} onClose={p.onClose}>
       <span className="text-[0.8rem] text-ink-3">{CLEANUP_HINT}</span>
-      <div className="flex gap-2">
+      {/* Floaters runs once (an action); Carve stays on (a toggle): the shared looks keep them apart. */}
+      <div className="flex flex-wrap gap-1">
         {/* aria-disabled, not disabled: the button just pressed keeps keyboard focus while the clean runs. */}
-        <Button type="button" variant="outline" title={FLOATERS_TITLE} aria-disabled={busy} aria-busy={busy} onClick={onFloaters} className={cn(BTN, busy && "opacity-60")}>
+        <Button type="button" variant="outline" title={FLOATERS_TITLE} aria-disabled={busy} aria-busy={busy} onClick={onFloaters} className={cn(ACTION, "gap-1.5", busy && "opacity-60")}>
           {busy ? <LoaderCircle className="animate-spin" aria-hidden /> : null}
           {FLOATERS_LABEL}
         </Button>
-        <Button type="button" variant="outline" title={CARVE_TITLE} aria-pressed={carveOn} onClick={toggleCarve} className={BTN}>
+        <Button type="button" variant="hud-ghost" title={CARVE_TITLE} aria-pressed={carveOn} onClick={toggleCarve} className={TOGGLE}>
           {CARVE_LABEL}
         </Button>
       </div>
@@ -161,7 +161,7 @@ export function CleanupPanel(p: ViewerPanelProps) {
           step={RADIUS.step}
           value={fraction}
           onChange={(e) => setFraction(Number(e.target.value))}
-          className="h-11 min-w-0 flex-1 accent-primary"
+          className="hit-44 min-w-0 flex-1 accent-primary"
         />
         <strong className="w-9 text-right font-semibold text-ink tabular-nums">{radiusText(fraction)}</strong>
       </label>

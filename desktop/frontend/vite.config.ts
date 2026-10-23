@@ -13,7 +13,7 @@ const HOST = "http://127.0.0.1:8777";
 const PROXIED = [
   "health", "assets", "status", "generate", "upload", "clean", "2d", "inspect", "glb", "stack",
   "paint", "flow", "export", "cancel", "intent", "rig", "facing", "out", "control", "version",
-  "paths", "open-data-dir", "open-export", "diagnostics", "viewer", "wails",
+  "paths", "open-data-dir", "open-export", "diagnostics", "viewer", "wails", "activity",
 ];
 const PROXY_RE = `^/(${PROXIED.join("|")})(/|\\?|$)`;
 

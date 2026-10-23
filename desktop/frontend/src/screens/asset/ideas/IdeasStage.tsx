@@ -34,7 +34,8 @@ import { startMoreIdeas } from "./more";
 
 const msg = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-const PRESSED = "aria-pressed:border-primary/40 aria-pressed:bg-primary/10 aria-pressed:text-primary aria-pressed:font-semibold";
+// Kept shows on the Keep button only (the toggle chip's on look); In use shows as the card's ring only.
+const PRESSED = "aria-pressed:border-[#bcd2fb] aria-pressed:bg-accent aria-pressed:text-accent-foreground aria-pressed:font-semibold";
 
 export function IdeasStage(props: StageProps) {
   // Keyed by stem: the grid, the prompt and the status line start over for another asset.
@@ -202,7 +203,8 @@ function IdeasBody({ stem, flowVersion, enter }: StageProps) {
         onSubmit={more}
         autoComplete="off"
         aria-label="More ideas"
-        className="glass-panel mx-[clamp(12px,2vw,20px)] mb-3 flex flex-wrap items-center gap-2 rounded-[14px] p-2"
+        // As wide as the Concept bar (56rem), not the whole window.
+        className="glass-panel mx-auto mb-3 flex w-[calc(100%-24px)] max-w-[56rem] flex-wrap items-center gap-2 rounded-[14px] p-2"
       >
         <label className="min-w-0 flex-[1_1_16rem]">
           <span className="sr-only">Prompt</span>
@@ -212,16 +214,16 @@ function IdeasBody({ stem, flowVersion, enter }: StageProps) {
             placeholder={IDEAS_COPY.placeholder}
             title={IDEAS_COPY.promptTitle}
             spellCheck={false}
-            className="h-11 rounded-xl bg-white/90 px-3"
+            className="hit-44 h-9 rounded-xl bg-white/90 px-3"
           />
         </label>
         <Tip title={IDEAS_COPY.clearTitle} className="max-sm:flex-1">
-          <Button type="button" variant="outline" title={IDEAS_COPY.clearTitle} disabled={here} onClick={() => void clear()} className="min-h-11 w-full rounded-xl px-4">
+          <Button type="button" variant="outline" title={IDEAS_COPY.clearTitle} disabled={here} onClick={() => void clear()} className="hit-44 min-h-9 w-full rounded-xl px-4">
             Clear unkept
           </Button>
         </Tip>
         <Tip title={IDEAS_COPY.moreTitle} className="max-sm:flex-1">
-          <Button type="submit" title={IDEAS_COPY.moreTitle} disabled={anyRunning || starting} className="min-h-11 w-full rounded-xl px-4">
+          <Button type="submit" title={IDEAS_COPY.moreTitle} disabled={anyRunning || starting} className="hit-44 min-h-9 w-full rounded-xl px-4">
             More ideas
           </Button>
         </Tip>
@@ -262,9 +264,8 @@ function IdeaCard({
       data-kept={item.keep || undefined}
       data-used={item.used || undefined}
       className={cn(
-        "flex flex-col gap-2 rounded-2xl border bg-[var(--glass-bg)] p-2 shadow-[var(--glass-shadow)]",
-        item.keep ? "border-primary" : "border-[var(--glass-border)]",
-        item.used && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+        "flex flex-col gap-2 rounded-2xl border border-[var(--glass-border)] bg-[var(--glass-bg)] p-2 shadow-[var(--glass-shadow)]",
+        item.used && "ring-2 ring-primary",
       )}
     >
       <button
@@ -277,7 +278,7 @@ function IdeaCard({
         <img src={ideaUrl(stem, item)} alt={item.prompt || item.file} title={`Seed ${item.seed}`} loading="lazy" className="size-full object-contain" />
       </button>
       <div className="flex gap-2">
-        <Button type="button" variant="outline" aria-pressed={!!item.keep} onClick={onKeep} className={cn("min-h-11 flex-1 rounded-xl", PRESSED)}>
+        <Button type="button" variant="outline" aria-pressed={!!item.keep} onClick={onKeep} className={cn("hit-44 min-h-8 flex-1 rounded-xl", PRESSED)}>
           {item.keep ? <Check aria-hidden="true" /> : null}
           {item.keep ? "Kept" : "Keep"}
         </Button>
@@ -288,7 +289,7 @@ function IdeaCard({
             title={useTitle}
             disabled={busyHere}
             onClick={onUse}
-            className={cn("min-h-11 w-full rounded-xl", item.used && "border-primary/40 bg-primary/10 font-semibold text-primary")}
+            className={cn("hit-44 min-h-8 w-full rounded-xl", item.used && "font-semibold text-primary")}
           >
             {item.used ? <Check aria-hidden="true" /> : null}
             {item.used ? "In use" : "Use"}

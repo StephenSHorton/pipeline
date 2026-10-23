@@ -295,7 +295,8 @@ export const INSPECT_COPY = {
   sheet: "Sheet",
   sheetTitle: "Every clip rendered on the CPU from fixed cameras: the contact sheet.",
   howRigged: "How it was rigged",
-  inMotion: "In motion",
+  // The clip table's heading: "Clips", so it does not repeat the "In motion" check group above it.
+  inMotion: "Clips",
   notMeasured: "Not measured for this version.",
   checking: "Checking…",
   measure: "Measure",
@@ -312,7 +313,8 @@ export const INSPECT_COPY = {
   originalTitle: "Your model as it was made, as a wireframe over the rig at rest.",
   findBone: "Find a bone",
   pickBone: "Pick a bone to see what it does.",
-  bodyPlan: "Body plan",
+  // The planner's own section; the check group above is "Body plan" too.
+  bodyPlan: "Body plan picture",
   chosen: "Chosen",
   howSure: "How sure",
   notRecorded: "Not recorded",

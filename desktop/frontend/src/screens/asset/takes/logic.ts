@@ -96,7 +96,7 @@ export function stripItems({ stem, stage, flow, output, stacking }: StripInput):
     note(want ? "Next:" : "Make from this picture:");
     for (const out of order) {
       const built = out !== "sprite" && !!mesh?.live && want === out;
-      const label = out === "sprite" ? "2D sprite" : `${built ? "Rebuild" : "Build"} ${OUTPUT_NAMES[out]}`;
+      const label = `${built ? "Rebuild" : "Build"} ${OUTPUT_NAMES[out]}`;
       const title = out === "sprite" ? "Cut this picture into pieces, add motion and sound." : `Make the ${OUTPUT_NAMES[out]} from this picture.`;
       act(label, title, { do: "build", output: out }, out === want);
     }
@@ -116,7 +116,7 @@ export function stripItems({ stem, stage, flow, output, stacking }: StripInput):
       act("Change settings & remake…", "Open the Make form with this asset's settings and picture, and rebuild it with changes.", { do: "remake" });
     }
   } else if (!entry.live && !entry.takes.length) {
-    note(stage === "concept" ? "No picture yet." : "Use a step below to start the 2D sheet.");
+    note(stage === "concept" ? "No picture yet." : "Pick a mode in the bar at the bottom to start the 2D sheet.");
   }
   return items;
 }

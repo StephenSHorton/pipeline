@@ -9,18 +9,18 @@ describe("Detail levels copy (legacy index.html 2131, 2136, 4969-4972, 5255)", (
     expect(LODS_HINT).not.toMatch(/Hero|Game|Lookdev|Proxy/);
   });
 
-  it("labels a LOD with its face count, as lodLabel did", () => {
-    // Node ships full ICU and runs en-US here, so the legacy examples pin literally.
-    expect(lodLabel({ label: "Photo bake", faces: 5000 })).toBe("Photo bake 5,000");
-    expect(lodLabel({ label: "PSX", faces: 1184 })).toBe("PSX 1,184");
+  it("labels a LOD with its face count in words", () => {
+    // Node ships full ICU and runs en-US here, so the examples pin literally.
+    expect(lodLabel({ label: "Photo bake", faces: 5000 })).toBe("Photo bake · 5,000 faces");
+    expect(lodLabel({ label: "PSX", faces: 1184 })).toBe("PSX · 1,184 faces");
     expect(lodLabel({ label: "Painted" })).toBe("Painted");
     // A falsy count adds nothing (legacy `item.faces ? …`).
     expect(lodLabel({ label: "Clean", faces: 0 })).toBe("Clean");
   });
 
-  it("titles a LOD with the legacy template, falling back to the id", () => {
-    expect(lodTitle({ id: "photo", label: "Photo bake", file: "textured_photo.glb" })).toBe("Show Photo bake in the left pane (textured_photo.glb).");
-    expect(lodTitle({ id: "psx-clean", label: "", file: "psx_clean.glb" })).toBe("Show psx-clean in the left pane (psx_clean.glb).");
+  it("titles a LOD with its file, falling back to the id", () => {
+    expect(lodTitle({ id: "photo", label: "Photo bake", file: "textured_photo.glb" })).toBe("Show the Photo bake model (textured_photo.glb).");
+    expect(lodTitle({ id: "psx-clean", label: "", file: "psx_clean.glb" })).toBe("Show the psx-clean model (psx_clean.glb).");
   });
 
   it("lists every LOD in lods.json order, even one, with Rigged first only when there is a rig", () => {
@@ -28,7 +28,7 @@ describe("Detail levels copy (legacy index.html 2131, 2136, 4969-4972, 5255)", (
       { id: "photo", file: "textured_photo.glb", label: "Photo bake" },
       { id: "psx", file: "psx.glb", label: "PSX", faces: 1184 },
     ];
-    expect(lodButtons(lods.slice(0, 1), false)).toEqual([{ id: "photo", label: "Photo bake", title: "Show Photo bake in the left pane (textured_photo.glb)." }]);
+    expect(lodButtons(lods.slice(0, 1), false)).toEqual([{ id: "photo", label: "Photo bake", title: "Show the Photo bake model (textured_photo.glb)." }]);
     expect(lodButtons(lods, true).map((b) => b.id)).toEqual(["rigged", "photo", "psx"]);
     expect(lodButtons(lods, true)[0]).toEqual({ id: "rigged", label: "Rigged", title: "The rigged model, with its clips." });
     expect(lodButtons([], false)).toEqual([]);

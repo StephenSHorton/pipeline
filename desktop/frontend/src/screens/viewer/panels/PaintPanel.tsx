@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useViewerOverlay } from "@/viewer/ToolBridge";
 import { useViewerTools } from "@/viewer/tools";
-import { TOGGLE } from "../classes";
+import { ACTION, COMMIT, TOGGLE } from "../classes";
 import type { ViewerPanelProps } from "../types";
 import { paintTool, saveDeps, savePaint, setBrushRadius, setPaintMode, toggleDrop, toggleErase, undoPaint, type BrushBall, type PaintEnv } from "./paint/actions";
 import { MeshBrush } from "./paint/brush";
@@ -68,7 +68,8 @@ export function PaintPanel(p: ViewerPanelProps) {
   return (
     <ViewerPanel panel="paint" id={p.id} open={p.open} onClose={p.onClose}>
       <span className="text-[0.8rem] text-ink-3">{PAINT_HINT}</span>
-      <div className="flex flex-wrap gap-0.5">
+      {/* Modes on one row, the one-shots (Undo, Save) on their own: Save writes files, so it never looks like a mode. */}
+      <div className="flex flex-wrap gap-1">
         <Toggle on={paint.on} title={PAINT_COPY.paint.title} onClick={() => setPaintMode(env, tool, !paint.on)}>
           {PAINT_COPY.paint.label}
         </Toggle>
@@ -78,32 +79,34 @@ export function PaintPanel(p: ViewerPanelProps) {
         <Toggle on={paint.erase} title={PAINT_COPY.erase.title} onClick={toggleErase}>
           {PAINT_COPY.erase.label}
         </Toggle>
-        <Button type="button" variant="hud-ghost" title={PAINT_COPY.undo.title} onClick={() => undoPaint(env)} className={TOGGLE}>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        <Button type="button" variant="outline" title={PAINT_COPY.undo.title} onClick={() => undoPaint(env)} className={ACTION}>
           {PAINT_COPY.undo.label}
         </Button>
         {/* aria-disabled, not disabled: the button just pressed keeps keyboard focus while Save runs. */}
         <Button
           type="button"
-          variant="hud-ghost"
+          variant="default"
           aria-disabled={paint.saving}
           title={PAINT_COPY.save.title}
           onClick={() => void save()}
-          className={cn(TOGGLE, "aria-disabled:opacity-50")}
+          className={cn(COMMIT, "aria-disabled:opacity-50")}
         >
           {PAINT_COPY.save.label}
         </Button>
       </div>
-      <label className="flex flex-col gap-1">
-        <span className="text-[0.78rem] font-semibold text-ink-3">{PAINT_COPY.color.label}</span>
+      <div className="flex items-center gap-2.5">
+        {/* A square swatch beside the size slider: a full-width colour bar read as a progress bar. */}
         <input
           type="color"
+          aria-label={PAINT_COPY.color.label}
           value={paint.color}
           title={PAINT_COPY.color.title}
           onChange={(e) => usePaint.setState({ color: e.target.value })}
-          className="hit-44 h-7 w-full cursor-pointer rounded-md border border-input bg-white p-0.5"
+          className="hit-44 size-[29px] shrink-0 cursor-pointer rounded-[8px] border border-input bg-white p-0.5"
         />
-      </label>
-      <label title={PAINT_COPY.brush.title} className="flex items-center gap-2 text-[0.78rem] font-semibold text-ink-3">
+      <label title={PAINT_COPY.brush.title} className="flex min-w-0 flex-1 items-center gap-2 text-[0.8rem] font-semibold text-ink-3">
         <span>{PAINT_COPY.brush.label}</span>
         <input
           type="range"
@@ -114,8 +117,9 @@ export function PaintPanel(p: ViewerPanelProps) {
           onChange={(e) => setBrushRadius(e.target.value)}
           className="hit-44 min-w-0 flex-1 accent-primary"
         />
-        <strong className="w-[3.2em] text-right font-mono text-ink tabular-nums">{paint.radiusText}</strong>
+        <strong className="w-[3.2em] text-right font-semibold text-ink tabular-nums">{paint.radiusText}</strong>
       </label>
+      </div>
     </ViewerPanel>
   );
 }

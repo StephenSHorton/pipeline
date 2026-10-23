@@ -26,7 +26,7 @@ import {
 // The legacy cleanup cubby's copy, word for word (index.html 2090-2104, 5311-5317).
 describe("Cleanup copy", () => {
   it("matches the legacy cubby", () => {
-    expect(CLEANUP_HINT).toBe("Knock off generator scraps. Carve is a sphere delete in 3D.");
+    expect(CLEANUP_HINT).toBe("Remove stray bits, or turn on Carve and click to cut away part of the mesh.");
     expect(FLOATERS_LABEL).toBe("Floaters");
     expect(FLOATERS_TITLE).toBe("Delete disconnected bits. Keeps the largest solid.");
     expect(CARVE_LABEL).toBe("Carve");

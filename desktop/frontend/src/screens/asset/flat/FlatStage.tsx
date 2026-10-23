@@ -17,7 +17,8 @@ import { useStage } from "../stage";
 import type { StageProps } from "../types";
 import { flatSpecs, panelAudio, redraw, reviseStep } from "./actions";
 import { getFlatFlags, getSheet } from "./api";
-import { AudioPanel, PANEL, type Bound } from "./AudioPanel";
+import { PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
+import { AudioPanel, type Bound } from "./AudioPanel";
 import {
   audioFields,
   audioPlayers,
@@ -42,8 +43,6 @@ import {
   type SheetState,
 } from "./flat";
 
-const TOGGLE =
-  "hit-44 h-[29px] rounded-[8px] px-[11px] text-[length:calc(14.2px*var(--fs))] font-semibold text-ink-3 hover:bg-muted aria-pressed:bg-accent aria-pressed:text-accent-foreground aria-expanded:bg-accent aria-expanded:text-accent-foreground";
 const NONE: Bound = { rel: "", t: 0 };
 const bind = (rel: string): Bound => ({ rel, t: rel ? Date.now() : 0 });
 
@@ -228,6 +227,8 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
   const pic = stagePicture(stage === "concept" ? "concept" : "flat", sheet.center, still);
   const t = `${flowVersion}-${nonce}`;
   const showParts = flatMode === "pieces" && sheet.parts.length > 0;
+  // Pieces with none cut yet showed the same picture and nothing else: say what to do.
+  const line = status || (flatMode === "pieces" && !sheet.parts.length ? "No pieces yet. Type what the pieces are and press Generate." : "");
   const panelId = `flat-audio-${stem}`;
 
   return (
@@ -243,14 +244,15 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
               key={pic.kind}
               alt={stage === "concept" ? "The concept picture" : "The 2D sheet"}
               src={pic.kind === "strip" ? flatUrl(stem, pic.rel, t) : pic.kind === "source" ? flatUrl(stem, "source", t) : `${rootUrl(pic.rel)}?t=${flowVersion}`}
-              className="max-h-full max-w-full rounded-[14px] bg-white object-contain shadow-[var(--glass-shadow)]"
+              // On the background itself, no white box and shadow around it (it read as boxed).
+              className="max-h-full max-w-full rounded-[10px] object-contain"
             />
           )}
         </div>
         <div className="pointer-events-none absolute inset-x-3 top-3 flex items-start justify-between gap-2">
           {/* #flat-status: every flatSay line, not clickable. */}
-          <p role="status" aria-live="polite" className={cn("m-0 min-w-0 text-[0.85rem] leading-snug text-ink-3", status && "glass-panel rounded-[12px] px-3 py-2")}>
-            {status}
+          <p role="status" aria-live="polite" className={cn("m-0 min-w-0 text-[0.85rem] leading-snug text-ink-3", line && "glass-panel rounded-[12px] px-3 py-2")}>
+            {line}
           </p>
           <FlatHear stem={stem} bound={hear} />
         </div>
@@ -258,7 +260,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
           <AudioPanel
             id={panelId}
             stem={stem}
-            who={audioWho("2d", subject)}
+            who={audioWho(sheet.parts.length ? "2d" : "3d", subject)}
             fields={fields}
             onFields={setFields}
             speak={speakState(flags)}
@@ -277,12 +279,13 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
 
       <div className="flex justify-center px-3 pb-3">
         <Card size="hud" className={cn(PANEL, "w-full max-w-[56rem] flex-row flex-wrap items-center gap-1.5 p-1.5")}>
-          <div role="group" aria-label="2D mode" className="flex flex-wrap items-center gap-0.5">
+          {/* The modes are a pick-one tray; Audio opens a panel, so it is a toggle chip beside the tray, not a sixth mode. */}
+          <div role="group" aria-label="2D mode" className={TRAY}>
             {FLAT_MODE_LIST.map((m) => (
               <ModeButton key={m} mode={m} on={flatMode === m} onPick={setFlatMode} />
             ))}
-            <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-hair" />
-            <Button
+          </div>
+          <Button
               ref={toggleRef}
               type="button"
               variant="hud-ghost"
@@ -297,7 +300,6 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
               {/* Phones: the icon only, so the six buttons fit one row. */}
               <span className="max-sm:sr-only">Audio</span>
             </Button>
-          </div>
           <form onSubmit={(e) => void onSubmit(e)} autoComplete="off" className="flex min-w-[min(100%,18rem)] flex-1 items-center gap-1.5">
             <label htmlFor="flat-revise-prompt" className="sr-only">
               {MODE_LABEL[flatMode]}
@@ -309,12 +311,12 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
               placeholder={FLAT_MODES[flatMode]}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              className="h-11 min-w-0 flex-1 rounded-[10px] border-input bg-white px-3 text-[0.9rem] md:text-[0.9rem]"
+              className="hit-44 h-9 min-w-0 flex-1 rounded-[10px] border-input bg-white px-3 text-[0.9rem] md:text-[0.9rem]"
             />
             {flatMode === "motion" ? (
               <label
                 title="A video or frames the motion follows."
-                className="hit-44 inline-flex h-11 max-w-[10rem] shrink-0 cursor-pointer items-center gap-1.5 rounded-[10px] border border-input bg-white px-3 text-[0.85rem] font-medium text-ink-2 focus-within:ring-3 focus-within:ring-ring/50 hover:text-ink"
+                className="hit-44 inline-flex h-9 max-w-[10rem] shrink-0 cursor-pointer items-center gap-1.5 rounded-[10px] border border-input bg-white px-3 text-[0.85rem] font-medium text-ink-2 focus-within:ring-3 focus-within:ring-ring/50 hover:text-ink"
               >
                 <Film size={15} strokeWidth={2.1} aria-hidden="true" className="shrink-0" />
                 <span className="truncate">{clipLabel(clip)}</span>
@@ -327,7 +329,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
                 />
               </label>
             ) : null}
-            <Button type="submit" disabled={!!busyLabel} className="h-11 shrink-0 rounded-[10px] px-4 font-semibold">
+            <Button type="submit" disabled={!!busyLabel} className="hit-44 h-9 shrink-0 rounded-[10px] px-4 font-semibold">
               {busyLabel || "Generate"}
             </Button>
           </form>
@@ -339,7 +341,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
 
 function ModeButton({ mode, on, onPick }: { mode: FlatMode; on: boolean; onPick: (m: FlatMode) => void }) {
   return (
-    <Button type="button" variant="hud-ghost" aria-pressed={on} onClick={() => onPick(mode)} className={cn(TOGGLE, "max-sm:px-2")}>
+    <Button type="button" variant="hud-ghost" aria-pressed={on} onClick={() => onPick(mode)} className={cn(TRAY_ITEM, "max-sm:px-2")}>
       {MODE_LABEL[mode]}
     </Button>
   );

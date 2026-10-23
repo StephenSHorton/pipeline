@@ -64,6 +64,26 @@ export function mergeEntries(list: ActivityEntry[], fresh: ActivityEntry[]): Act
   return [...byId.values()].sort((a, b) => (b.started ?? b.ts) - (a.started ?? a.ts) || b.seq - a.seq).slice(0, KEEP);
 }
 
+/** Identical finished steps in a row (same title, line, state and asset) as one row with a count: three
+ *  "Rigging mlg sheep · Done" rows read as a bug. Running steps are never folded. */
+export function collapseRuns(list: ActivityEntry[]): { e: ActivityEntry; n: number }[] {
+  const out: { e: ActivityEntry; n: number }[] = [];
+  const key = (x: ActivityEntry) => [x.title, x.detail, x.error, x.state, x.stem, x.source].join("\u0000");
+  for (const e of list) {
+    const last = out[out.length - 1];
+    if (last && e.state !== "running" && last.e.state !== "running" && key(last.e) === key(e)) last.n += 1;
+    else out.push({ e, n: 1 });
+  }
+  return out;
+}
+
+/** A detail line in plain English: a capital first letter, and "version t16" as "version 16". */
+export function detailText(s: string | undefined): string {
+  if (!s) return "";
+  const t = s.replace(/\bversion t(\d+)\b/g, "version $1");
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 /** The action going on now: the newest running entry (Claude's own before a job's, when both run). */
 export function currentEntry(list: ActivityEntry[]): ActivityEntry | null {
   const running = list.filter((e) => e.state === "running");

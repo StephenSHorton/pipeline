@@ -1,14 +1,16 @@
 // The Audio panel in 2D (legacy audio cubby, index.html 2016-2051; gaps A4: the old page could not open it in 2D).
-// The fields follow the selected piece; Speak and Sound write the asset row, as they always did.
+// The fields follow the selected piece; Say it and Make the sound write the asset row, as they always did.
+// The two buttons are named after the Say and Sound modes, so "Sound" means one thing on the screen.
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { flatUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { ACTION, PANEL } from "@/screens/viewer/classes";
 import { SPEAKERS, type AudioFields } from "./flat";
 
-export const PANEL = "pointer-events-auto rounded-[14px] [-webkit-backdrop-filter:none] [backdrop-filter:none]";
+export { PANEL };
 export const FIELD =
   "w-full rounded-lg border border-input bg-white px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
@@ -61,7 +63,7 @@ export function AudioPanel(p: AudioPanelProps) {
         />
       </Field>
       <Field label="Speaker">
-        <select value={p.fields.speaker} onChange={(e) => p.onFields({ ...p.fields, speaker: e.target.value })} className={cn(FIELD, "h-11")}>
+        <select value={p.fields.speaker} onChange={(e) => p.onFields({ ...p.fields, speaker: e.target.value })} className={cn(FIELD, "h-8 py-0")}>
           {SPEAKERS.map((s) => (
             <option key={s}>{s}</option>
           ))}
@@ -79,13 +81,13 @@ export function AudioPanel(p: AudioPanelProps) {
       <div className="flex gap-2">
         {/* A disabled button keeps its title readable on a wrapper. */}
         <span title={p.speak.title} className="flex-1">
-          <Button type="button" variant="outline" disabled={p.speak.disabled} title={p.speak.title} onClick={p.onSpeak} className="min-h-11 w-full bg-white">
-            Speak
+          <Button type="button" variant="outline" disabled={p.speak.disabled} title={p.speak.title} onClick={p.onSpeak} className={cn(ACTION, "w-full")}>
+            Say it
           </Button>
         </span>
         <span title={p.sound.title} className="flex-1">
-          <Button type="button" variant="outline" disabled={p.sound.disabled} title={p.sound.title} onClick={p.onSound} className="min-h-11 w-full bg-white">
-            Sound
+          <Button type="button" variant="outline" disabled={p.sound.disabled} title={p.sound.title} onClick={p.onSound} className={cn(ACTION, "w-full")}>
+            Make the sound
           </Button>
         </span>
       </div>
