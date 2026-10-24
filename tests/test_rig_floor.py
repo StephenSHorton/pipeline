@@ -55,7 +55,7 @@ class SheepFloorPass(unittest.TestCase):
         cls.P = rig.accessor(nd, nb, a["POSITION"]).astype(float)
         cls.J = rig.accessor(nd, nb, a["JOINTS_0"]).astype(np.int64)
         cls.W = rig.accessor(nd, nb, a["WEIGHTS_0"]).astype(float)
-        cls.clips = read_clips(nd, nb, {"Idle", "Eating", "Sleep"})
+        cls.clips = read_clips(nd, nb, {"Idle", "Walk", "Eating", "Sleep"})
         cls.H, cls.floor = float(np.ptp(cls.P[:, 1])), float(cls.P[:, 1].min())
         cls.fk = rig_pred.FK(cls.ours)
         names = {j: cls.ours["nodes"][j]["name"] for j in cls.fk.joints}
@@ -86,6 +86,13 @@ class SheepFloorPass(unittest.TestCase):
     def test_standing_clips_are_not_lying(self) -> None:
         self.assertNotIn("lying_frames", self.report["Idle"])
         self.assertNotIn("lying_frames", self.report["Eating"])
+
+    def test_walk_body_rises_and_falls_smoothly(self) -> None:
+        # before: grounded frame by frame from the lowest hoof, the body jumped 0.03 of the height between frames
+        y = self.by["Walk"]["root_t"][:, 1] / self.H
+        self.assertLess(float(np.abs(np.diff(np.r_[y, y[:1]])).max()), 0.015)
+        self.assertGreater(float(np.ptp(y)), 0.01)  # still a walk's rise and fall, not a glide
+        self.assertGreater(min(self.belly("Walk")), 0.2)  # no hoof under the floor lifts it oddly: a standing belly
 
     def test_eating_keeps_the_trunk_standing_and_lowers_the_head(self) -> None:
         # before: the horse's 63 degree neck-base turn folded the sheep's chest down onto its front legs (the belly

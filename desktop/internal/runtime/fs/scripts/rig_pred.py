@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.spatial import cKDTree
+from scipy.ndimage import gaussian_filter1d, maximum_filter1d
 from scipy.spatial.transform import Rotation as R
 
 import rig
@@ -1045,6 +1046,10 @@ LIE = (0.25, 0.5)  # the template trunk's clearance / its rest clearance: lying 
 LIE_SPAN = 0.75  # and the template's height under this share of its rest height (lying), blended over 0.1 below it
 LIE_HOLD = 0.1  # seconds: lying must last about twice this; shorter (a flapping bird dropping through its floor) is not
 
+BOB_SMOOTH = 0.1  # seconds: the sigma the standing body's height is smoothed over (see floor_pass)
+BOB_SHARE = 1 / 12  # of the clip's length, at most
+BOB_FLOAT = 0.005  # of the height: a foot the smoothed body leaves floating up to this is left; past it the body drops
+
 PITCH_MAX = 20.0  # degrees the trunk may tip forward about the hind legs' tops for the head to reach
 
 
@@ -1283,133 +1288,175 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
             lw = np.where(near, lw[None, :], 0.0).max(1)
             if lw.max() < 0.01:
                 lw = None
-        for f in range(len(c["times"])):
-            quats = {j: c["rot"][j][f].astype(float) for j in c["rot"]}
-            trans = {rootn: c["root_t"][f].astype(float)}
-            pos, rot = fk.world(quats, trans)
-            V = _skin(P, J, W, fk, pos, rot)
-            before.append((V[:, 1].min() - floor) / H)
-            if contact[f]:
-                flo_b.append((V[:, 1].min() - floor) / H)
-            if hb is not None and reach["hold"] and hb[f] > 0.01 and not (beak is not None and beak[f]):
-                # the head reaches with the neck, not the chest: the trunk and front legs blend back to rest (identity
-                # local turns) and the neck's base keeps NECK_BASE_KEEP of its turn, before the body is grounded and
-                # the feet planted, so the legs stand under a standing trunk
-                hold, w = reach["hold"], float(hb[f])
-                for j in hold["trunk"]:
-                    quats[j] = R.from_rotvec(R.from_quat(quats[j]).as_rotvec() * (1.0 - w)).as_quat()
-                q_base = R.from_quat(quats[hold["base"]])
-                q_stand = R.from_rotvec(q_base.as_rotvec() * (1.0 - w))
-                q_kept = R.from_rotvec(q_base.as_rotvec() * (1.0 - w * (1.0 - NECK_BASE_KEEP)))
-                quats[hold["base"]] = q_kept.as_quat()
-                for j in hold["off"]:
-                    quats[j] = (q_kept.inv() * q_stand * R.from_quat(quats[j])).as_quat()
+        # the body's height, grounded frame by frame from its lowest point, jumps as the lowest point passes from hoof
+        # to hoof (Stephen: the sheep's Walk bounced rigidly, 0.03 of its height between frames): a standing clip is
+        # floored again with the root's height from the first pass smoothed over BOB_SMOOTH seconds (at most BOB_SHARE
+        # of the clip, so a run keeps its bounce; wrapping round a looping clip) and the legs bent or stretched to it;
+        # where that leaves every foot floating past BOB_FLOAT, a third pass lowers the smoothed height there
+        smooth_bob = lw is None and BOB_SMOOTH > 0 and len(c["times"]) > 4
+        keep_rot = {j: q.copy() for j, q in c["rot"].items()}
+        keep_t = c["root_t"].copy()
+        ys, drop = None, np.zeros(len(c["times"]))
+        for rnd in range(3 if smooth_bob else 1):
+            if rnd == 2:
+                # where the smoothed body left every foot floating (the legs straight), lower it there, smoothly
+                if drop.max() <= BOB_FLOAT * H:
+                    break
+                k = 2 * int(np.ceil(sigma / max(dt_, 1e-6))) + 1
+                ys = ys - gaussian_filter1d(maximum_filter1d(drop, k, mode="wrap" if loop else "nearest"),
+                                            sigma / max(dt_, 1e-6), mode="wrap" if loop else "nearest")
+            if rnd == 1:
+                y = c["root_t"][:, 1].astype(float)
+                tt = np.asarray(c["times"], float)
+                dt_ = float(np.median(np.diff(tt))) if len(tt) > 1 else 1.0
+                q0 = R.from_quat(np.array([keep_rot[j][0] for j in keep_rot]))
+                q1 = R.from_quat(np.array([keep_rot[j][-1] for j in keep_rot]))
+                loop = float(np.degrees((q0.inv() * q1).magnitude().max())) < 5.0 and \
+                    abs(float(keep_t[0, 1] - keep_t[-1, 1])) < 0.01 * H
+                sigma = min(BOB_SMOOTH, BOB_SHARE * float(tt[-1] - tt[0]))  # a quick clip (a run) keeps its bounce
+                ys = gaussian_filter1d(y, sigma / max(dt_, 1e-6), mode="wrap" if loop else "nearest")
+            if rnd >= 1:
+                for j in c["rot"]:
+                    c["rot"][j][:] = keep_rot[j]
+                c["root_t"][:] = keep_t
+                before.clear(); after.clear(); flo_b.clear(); flo_a.clear(); neck_deg.clear()
+                reach_deg.clear(); reach_gap_b.clear(); reach_gap_a.clear(); pitch_deg.clear()
+            for f in range(len(c["times"])):
+                quats = {j: c["rot"][j][f].astype(float) for j in c["rot"]}
+                trans = {rootn: c["root_t"][f].astype(float)}
                 pos, rot = fk.world(quats, trans)
                 V = _skin(P, J, W, fk, pos, rot)
-            want = floor + max(0.0, float(tr["low"][f])) * k_scale
-
-            def ground(V: np.ndarray) -> None:
-                dy = want - float(V[body_v, 1].min())
-                if lw is not None and lw[f] > 0.0:
-                    dt = floor + max(0.0, float(tr["trunk"][f])) * k_scale - float(V[trunk_v, 1].min())
-                    dy += float(lw[f]) * min(0.0, dt - dy)
-                trans[rootn] = trans[rootn] + np.array([0, dy, 0])
-            def legs_ik() -> None:
-                nonlocal quats
-                pos, rot = fk.world(quats, trans)
-                for li, cch in enumerate(legs):
-                    if not foot_v[li].any():
-                        continue
-                    A, B, K = node_of[cch[0]], node_of[cch[1]], node_of[cch[-1]]
-                    Vf = _skin(P[foot_v[li]], J[foot_v[li]], W[foot_v[li]], fk, pos, rot)
-                    fo = foot_own.get(cch[-1])
-                    if fo is not None and not fo[f]:
-                        continue  # a swing frame of a clip with its own contacts: its IK already lifts the foot
-                    clear = 0.0 if fo is not None else max(0.0, float(tr["foot"][cch[-1]][f]))
-                    need = (want + clear * k_scale) - float(Vf[:, 1].min())
-                    # no dead band while lying: a folded hoof hovering about the floor would switch the IK on and off
-                    if abs(need) < (0.002 * H if lw is None or lw[f] <= 0.0 else 1e-6 * H):
-                        continue
-                    qB, qA = _two_bone(pos, rot, A, B, K, pos[K] + np.array([0, need, 0]), lateral)
-                    oldK = rot[K]
-                    quats[B] = (rot[fk.parent[B]].inv() * qB * rot[B]).as_quat()
-                    pA = fk.parent.get(A)
-                    quats[A] = ((rot[pA] if pA in rot else R.identity()).inv() * qA * rot[A]).as_quat()
-                    pos, rot = fk.world(quats, trans)
-                    quats[K] = (rot[fk.parent[K]].inv() * oldK).as_quat()
-                    pos, rot = fk.world(quats, trans)
-            for _ in range(3 if fix else 0):
-                ground(V)
-                legs_ik()
-                pos, rot = fk.world(quats, trans)
-                V = _skin(P, J, W, fk, pos, rot)
-            ground(V)
-            pos, rot = fk.world(quats, trans)
-            V = _skin(P, J, W, fk, pos, rot)
-            if hb is not None and hb[f] > 0.01 and not (beak is not None and beak[f]):
-                target = floor + max(0.0, float(reach["track"]["clips"][c["name"]]["head"][f])) * reach["k"]
-                reach_gap_b.append((float(V[reach["v"], 1].min()) - target) / H)
-                tj = reach["track"]["clips"][c["name"]]["joints"]
-                for ja, jb, na, nb in reach["aims"]:
-                    pos, rot = fk.world(quats, trans)
-                    v = pos[jb] - pos[ja]
-                    u = reach["yaw"].apply(tj[nb][f] - tj[na][f])
-                    if np.linalg.norm(v) < 1e-9 or np.linalg.norm(u) < 1e-9:
-                        continue
-                    swing = R.align_vectors([u], [v])[0]
-                    turn = R.from_rotvec(swing.as_rotvec() * float(hb[f]))
-                    pj = fk.parent.get(ja)
-                    quats[ja] = ((rot[pj] if pj in rot else R.identity()).inv() * turn * rot[ja]).as_quat()
-                pos, rot = fk.world(quats, trans)
-                V = _skin(P, J, W, fk, pos, rot)
-                now = float(V[reach["v"], 1].min())
-                want_h = now + float(hb[f]) * (target - now)
-                if now - want_h > 0.002 * H and reach.get("pitch") and not reach["hold"]:
-                    # the neck alone is too short: tip the trunk forward about the hind legs' tops (the legs keep their
-                    # world turn), then plant the feet again (not with a held trunk: tipping it folds the front knees
-                    # to 27-65 degrees on the sheep; the head stops short instead)
-                    quats, trans, pdeg = trunk_pitch(fk, quats, trans, reach["pitch"], lateral, P[reach["v"]],
-                                                     J[reach["v"]], W[reach["v"]], want_h)
-                    pitch_deg.append(pdeg)
-                    if pdeg > 0:
-                        legs_ik()
-                        pos, rot = fk.world(quats, trans)
-                        V = _skin(P, J, W, fk, pos, rot)
-                        ground(V)
-                        pos, rot = fk.world(quats, trans)
-                        V = _skin(P, J, W, fk, pos, rot)
-                        now = float(V[reach["v"], 1].min())
-                if now - want_h > 0.002 * H:
-                    quats, ang = head_bend(fk, quats, trans, reach["chain"], lateral, P[reach["v"]], J[reach["v"]],
-                                           W[reach["v"]], want_h)
-                    reach_deg.append(ang)
+                before.append((V[:, 1].min() - floor) / H)
+                if contact[f]:
+                    flo_b.append((V[:, 1].min() - floor) / H)
+                if hb is not None and reach["hold"] and hb[f] > 0.01 and not (beak is not None and beak[f]):
+                    # the head reaches with the neck, not the chest: the trunk and front legs blend back to rest (identity
+                    # local turns) and the neck's base keeps NECK_BASE_KEEP of its turn, before the body is grounded and
+                    # the feet planted, so the legs stand under a standing trunk
+                    hold, w = reach["hold"], float(hb[f])
+                    for j in hold["trunk"]:
+                        quats[j] = R.from_rotvec(R.from_quat(quats[j]).as_rotvec() * (1.0 - w)).as_quat()
+                    q_base = R.from_quat(quats[hold["base"]])
+                    q_stand = R.from_rotvec(q_base.as_rotvec() * (1.0 - w))
+                    q_kept = R.from_rotvec(q_base.as_rotvec() * (1.0 - w * (1.0 - NECK_BASE_KEEP)))
+                    quats[hold["base"]] = q_kept.as_quat()
+                    for j in hold["off"]:
+                        quats[j] = (q_kept.inv() * q_stand * R.from_quat(quats[j])).as_quat()
                     pos, rot = fk.world(quats, trans)
                     V = _skin(P, J, W, fk, pos, rot)
-                reach_gap_a.append((float(V[reach["v"], 1].min()) - target) / H)
-            lifted = 0.0
-            if fix and head_v.any() and not (beak is not None and beak[f]) and floor - float(V[head_v, 1].min()) > 0.005 * H:
-                nj = node_of[neck]
-                pn = fk.parent[nj]
-                for ang in np.radians(np.arange(2, 46, 2)):
-                    done = False
-                    for sgn in (1, -1):
-                        q2 = dict(quats)
-                        q2[nj] = (rot[pn].inv() * R.from_rotvec(lateral * sgn * ang) * rot[nj]).as_quat()
-                        p2, r2 = fk.world(q2, trans)
-                        if _skin(P[head_v], J[head_v], W[head_v], fk, p2, r2)[:, 1].min() >= floor - 0.005 * H:
-                            quats, done, lifted = q2, True, float(np.degrees(ang))
-                            break
-                    if done:
-                        break
+                want = floor + max(0.0, float(tr["low"][f])) * k_scale
+
+                def ground(V: np.ndarray, last: bool = False) -> None:
+                    if ys is not None:  # the smoothed height; at the end lowered only where the body floats
+                        if not last:
+                            trans[rootn] = np.array([trans[rootn][0], ys[f], trans[rootn][2]])
+                        else:
+                            fl_ = float(V[body_v, 1].min()) - want
+                            if rnd == 1:
+                                drop[f] = max(0.0, fl_)
+                            trans[rootn] = trans[rootn] + np.array([0, -max(0.0, fl_ - BOB_FLOAT * H), 0])
+                        return
+                    dy = want - float(V[body_v, 1].min())
+                    if lw is not None and lw[f] > 0.0:
+                        dt = floor + max(0.0, float(tr["trunk"][f])) * k_scale - float(V[trunk_v, 1].min())
+                        dy += float(lw[f]) * min(0.0, dt - dy)
+                    trans[rootn] = trans[rootn] + np.array([0, dy, 0])
+                def legs_ik() -> None:
+                    nonlocal quats
+                    pos, rot = fk.world(quats, trans)
+                    for li, cch in enumerate(legs):
+                        if not foot_v[li].any():
+                            continue
+                        A, B, K = node_of[cch[0]], node_of[cch[1]], node_of[cch[-1]]
+                        Vf = _skin(P[foot_v[li]], J[foot_v[li]], W[foot_v[li]], fk, pos, rot)
+                        fo = foot_own.get(cch[-1])
+                        if fo is not None and not fo[f]:
+                            continue  # a swing frame of a clip with its own contacts: its IK already lifts the foot
+                        clear = 0.0 if fo is not None else max(0.0, float(tr["foot"][cch[-1]][f]))
+                        need = (want + clear * k_scale) - float(Vf[:, 1].min())
+                        # no dead band while lying: a folded hoof hovering about the floor would switch the IK on and off
+                        if abs(need) < (0.002 * H if lw is None or lw[f] <= 0.0 else 1e-6 * H):
+                            continue
+                        qB, qA = _two_bone(pos, rot, A, B, K, pos[K] + np.array([0, need, 0]), lateral)
+                        oldK = rot[K]
+                        quats[B] = (rot[fk.parent[B]].inv() * qB * rot[B]).as_quat()
+                        pA = fk.parent.get(A)
+                        quats[A] = ((rot[pA] if pA in rot else R.identity()).inv() * qA * rot[A]).as_quat()
+                        pos, rot = fk.world(quats, trans)
+                        quats[K] = (rot[fk.parent[K]].inv() * oldK).as_quat()
+                        pos, rot = fk.world(quats, trans)
+                for _ in range(3 if fix else 0):
+                    ground(V)
+                    legs_ik()
+                    pos, rot = fk.world(quats, trans)
+                    V = _skin(P, J, W, fk, pos, rot)
+                ground(V, last=True)
                 pos, rot = fk.world(quats, trans)
                 V = _skin(P, J, W, fk, pos, rot)
-            neck_deg.append(lifted)
-            after.append((V[:, 1].min() - floor) / H)
-            if contact[f]:
-                flo_a.append((V[:, 1].min() - floor) / H)
-            for j in c["rot"]:
-                c["rot"][j][f] = np.asarray(quats[j], np.float32)
-            c["root_t"][f] = np.asarray(trans[rootn], np.float32)
+                if hb is not None and hb[f] > 0.01 and not (beak is not None and beak[f]):
+                    target = floor + max(0.0, float(reach["track"]["clips"][c["name"]]["head"][f])) * reach["k"]
+                    reach_gap_b.append((float(V[reach["v"], 1].min()) - target) / H)
+                    tj = reach["track"]["clips"][c["name"]]["joints"]
+                    for ja, jb, na, nb in reach["aims"]:
+                        pos, rot = fk.world(quats, trans)
+                        v = pos[jb] - pos[ja]
+                        u = reach["yaw"].apply(tj[nb][f] - tj[na][f])
+                        if np.linalg.norm(v) < 1e-9 or np.linalg.norm(u) < 1e-9:
+                            continue
+                        swing = R.align_vectors([u], [v])[0]
+                        turn = R.from_rotvec(swing.as_rotvec() * float(hb[f]))
+                        pj = fk.parent.get(ja)
+                        quats[ja] = ((rot[pj] if pj in rot else R.identity()).inv() * turn * rot[ja]).as_quat()
+                    pos, rot = fk.world(quats, trans)
+                    V = _skin(P, J, W, fk, pos, rot)
+                    now = float(V[reach["v"], 1].min())
+                    want_h = now + float(hb[f]) * (target - now)
+                    if now - want_h > 0.002 * H and reach.get("pitch") and not reach["hold"]:
+                        # the neck alone is too short: tip the trunk forward about the hind legs' tops (the legs keep their
+                        # world turn), then plant the feet again (not with a held trunk: tipping it folds the front knees
+                        # to 27-65 degrees on the sheep; the head stops short instead)
+                        quats, trans, pdeg = trunk_pitch(fk, quats, trans, reach["pitch"], lateral, P[reach["v"]],
+                                                         J[reach["v"]], W[reach["v"]], want_h)
+                        pitch_deg.append(pdeg)
+                        if pdeg > 0:
+                            legs_ik()
+                            pos, rot = fk.world(quats, trans)
+                            V = _skin(P, J, W, fk, pos, rot)
+                            ground(V)
+                            pos, rot = fk.world(quats, trans)
+                            V = _skin(P, J, W, fk, pos, rot)
+                            now = float(V[reach["v"], 1].min())
+                    if now - want_h > 0.002 * H:
+                        quats, ang = head_bend(fk, quats, trans, reach["chain"], lateral, P[reach["v"]], J[reach["v"]],
+                                               W[reach["v"]], want_h)
+                        reach_deg.append(ang)
+                        pos, rot = fk.world(quats, trans)
+                        V = _skin(P, J, W, fk, pos, rot)
+                    reach_gap_a.append((float(V[reach["v"], 1].min()) - target) / H)
+                lifted = 0.0
+                if fix and head_v.any() and not (beak is not None and beak[f]) and floor - float(V[head_v, 1].min()) > 0.005 * H:
+                    nj = node_of[neck]
+                    pn = fk.parent[nj]
+                    for ang in np.radians(np.arange(2, 46, 2)):
+                        done = False
+                        for sgn in (1, -1):
+                            q2 = dict(quats)
+                            q2[nj] = (rot[pn].inv() * R.from_rotvec(lateral * sgn * ang) * rot[nj]).as_quat()
+                            p2, r2 = fk.world(q2, trans)
+                            if _skin(P[head_v], J[head_v], W[head_v], fk, p2, r2)[:, 1].min() >= floor - 0.005 * H:
+                                quats, done, lifted = q2, True, float(np.degrees(ang))
+                                break
+                        if done:
+                            break
+                    pos, rot = fk.world(quats, trans)
+                    V = _skin(P, J, W, fk, pos, rot)
+                neck_deg.append(lifted)
+                after.append((V[:, 1].min() - floor) / H)
+                if contact[f]:
+                    flo_a.append((V[:, 1].min() - floor) / H)
+                for j in c["rot"]:
+                    c["rot"][j][f] = np.asarray(quats[j], np.float32)
+                c["root_t"][f] = np.asarray(trans[rootn], np.float32)
         out[c["name"]] = {"low_min_before": round(float(min(before)), 3), "low_min_after": round(float(min(after)), 3),
                           "float_max_before": round(float(max(flo_b)), 3) if flo_b else None,
                           "float_max_after": round(float(max(flo_a)), 3) if flo_a else None,
