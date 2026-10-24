@@ -359,6 +359,10 @@ def main() -> int:
     ap.add_argument("--first-facing", choices=sorted(FACING_OFFSET), default=None,
                     help="which way the subject faces in the first --view when its name does not say "
                          "(camera = front view; right/left = side-on, head toward image right/left; away = back)")
+    ap.add_argument("--front-az", type=float, default=None, metavar="DEG",
+                    help="where the mesh's front faces (camera azimuth, degrees) when the shape step knows it "
+                         "(mv_orient turned the multi-view shape so its canonical view looks from az 0): the anchor "
+                         "is searched around it instead of all the way round")
     ap.add_argument("--first-wins", action="store_true",
                     help="the first --view bakes over the others, which fill only where it did not land "
                          "(a real photo over drawn views); a weak camera fit for it is averaged in as usual")
@@ -432,6 +436,10 @@ def main() -> int:
         ref_sil = pack_sil(alpha_fit)
         stem = Path(view).stem.lower()
         az_hint, el_range = None, None
+        if not reports and args.front_az is not None:
+            # a flat subject's side silhouette fits as well from behind: free, the scarecrow's right view landed at
+            # az 75 and its front texture went on its back (front at 175 where the oriented shape's front is 0)
+            az_hint = (args.front_az + first_off) % 360
         if reports:
             # Hints are offsets from the FRONT camera, found from the anchor's fit and its known offset
             # (its name, or --first-facing for the pipeline's unnamed lifted.png).

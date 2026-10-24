@@ -379,6 +379,13 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual(views, ["right.png", "front.png", "back.png", "left.png"])
         self.assertEqual(args[args.index("--first-facing") + 1], "right")
         self.assertNotIn("--mirror", args)
+        # the turned shape's canonical (right) view looks from az 0, so its front faces 90: the bake's first camera
+        # is searched there (free, a flat subject's side fits as well from behind: the scarecrow's front went on its back)
+        orient = json.loads(self.out("shape.json").read_text())["orient"]
+        if orient.get("turned"):
+            self.assertEqual(args[args.index("--front-az") + 1], "90")
+        else:
+            self.assertNotIn("--front-az", args)
         self.assertIn("remesh: off (opt-in)", proc.stdout)
         self.assertEqual(self.degraded_lines(proc), [])
         # The lods stage lists the finished models only; no game / proxy copies are cut any more.
@@ -477,6 +484,7 @@ class GenerateViewsTests(unittest.TestCase):
         # The drawn views still bake, canonical first.
         args = self.retexture_args()
         self.assertEqual([Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"][0], "right.png")
+        self.assertNotIn("--front-az", args)  # not turned: where its front faces is not known
 
     def test_a_bad_mesh_is_refused(self) -> None:
         txt = self.src / "thing.glb"

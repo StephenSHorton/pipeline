@@ -669,6 +669,15 @@ if [[ $ORC -eq 3 ]]; then
 elif [[ $ORC -ne 0 ]]; then
   degrade shape orient_failed "mv_orient.py exited $ORC; the shape was left as generated"
 fi
+# A turned multi-view shape has its canonical view looking from az 0, so its front faces az 0 (a front-canonical
+# prop) or 90 (a side-on creature, canonical right): the photo bake's first camera is searched around that.
+FRONT_AZ=""
+if [[ $ORC -eq 0 && -f "$OUT/shape.json" ]]; then
+  FRONT_AZ="$("$PYTHON" -c 'import json,sys
+o = json.load(open(sys.argv[1])).get("orient") or {}
+az = {"front": 0, "right": 90, "back": 180, "left": 270}.get(o.get("canonical"))
+print(az if o.get("turned") and az is not None else "")' "$OUT/shape.json" 2>/dev/null || true)"
+fi
 
 # The drawn turnaround can squash a long animal (each view drawn in a square quarter of one sheet): a side-on
 # photo's height/length puts the length back. Only a multi-view shape with the views' photo, turned (orient ran,
@@ -771,6 +780,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
     [[ -f "$v" ]] && VIEW_ARGS+=(--view "$v")
   done
   [[ -n "$PHOTO_VIEW" ]] || VIEW_ARGS+=(--first-facing "$FIRST_FACING")
+  [[ "$USE_MV" -eq 1 && -n "$FRONT_AZ" ]] && VIEW_ARGS+=(--front-az "$FRONT_AZ")
   OPPOSITE=""
   ENDS=0
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac
