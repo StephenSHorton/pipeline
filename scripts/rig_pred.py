@@ -981,8 +981,9 @@ HEAD_SHARE = (0.4, 0.35, 0.25)  # of the bend, from the neck's root toward the h
 # degree Eating turn there folded the sheep's chest down onto its front legs. 0 keeps the body standing and lowers the
 # head with the neck alone (on the sheep its mouth stops 0.38 of its height above the floor); a share keeps that much
 # of the turn, its off-path children (ribcage, shoulders) holding their standing world turn: 0.5 stops at 0.25 with
-# the brisket shifted 0.10 of the height, 1.0 at 0.19 with it shifted 0.19.
-NECK_BASE_KEEP = 0.0
+# the brisket shifted 0.10 of the height, 1.0 at 0.19 with it shifted 0.19. Stephen chose half on the sheep (version 11:
+# the check's Eating p99 1.73, the chest bent 32 degrees to the horse's 73).
+NECK_BASE_KEEP = 0.5
 
 
 def _smooth01(x):

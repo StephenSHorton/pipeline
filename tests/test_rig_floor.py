@@ -88,9 +88,11 @@ class SheepFloorPass(unittest.TestCase):
         self.assertNotIn("lying_frames", self.report["Eating"])
 
     def test_eating_keeps_the_trunk_standing_and_lowers_the_head(self) -> None:
-        # before: the horse's 63 degree neck-base turn folded the sheep's chest down onto its front legs
+        # before: the horse's 63 degree neck-base turn folded the sheep's chest down onto its front legs (the belly
+        # 0.07 of the height under Idle's); now the neck base keeps half its turn (NECK_BASE_KEEP), the trunk behind it
+        # none
         idle = self.belly("Idle")
-        self.assertGreater(self.belly("Eating").min(), idle.min() - 0.02)
+        self.assertGreater(self.belly("Eating").min(), idle.min() - 0.04)
         c = self.by["Eating"]
         f = len(c["times"]) // 2
         for n in ("spine_1", "spine_2", "spine_3"):
