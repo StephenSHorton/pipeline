@@ -76,6 +76,9 @@ class FactoryClient:
     def draw(self, body: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/2d/draw", body)
 
+    def rig(self, stem: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self._call("POST", f"/rig/{quote(stem, safe='')}", body)
+
     def cancel(self, job_id: str) -> dict[str, Any]:
         return self._call("POST", f"/cancel/{quote(job_id, safe='')}")
 

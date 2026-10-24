@@ -4,8 +4,14 @@ Claude makes, measures and fixes assets through an MCP server, `scripts/workbenc
 `http://127.0.0.1:8768/mcp`. It is its own process and a client of the factory on `:8766`:
 
 - **CPU work runs in the workbench:** clay, measuring, mesh edits, the photo bake and the PS1 cut.
-- **Model work goes to the factory as a job:** drawing views, and the shape and paint in `generate`. The
+- **Model work goes to the factory as a job:** drawing views, the shape and paint in `generate`, and `rig`. The
   factory keeps its one job slot, so the "one big model at a time" rule holds.
+
+**Read the [playbook](../scripts/workbench/playbook.md) first.** It holds the process that has worked: one model
+then Stephen's critique, takes instead of sibling assets, numbers before pictures, and the rig review (the rig
+check, then edges past 2x per bone, weight shares and the pivot check, heat maps only for the bones the numbers
+flag). The server sends the playbook's digest as its MCP instructions when Claude connects, and the `playbook` tool
+returns the whole file.
 
 ## Start it
 
@@ -53,7 +59,7 @@ three are mesh-stage files, so the take after a `psx` holds them. Every write fo
 3. **Factory down:** if the factory is not running, the write still goes ahead, because no job can be racing it.
    No take is kept, and the result says so.
 
-`look` and `compare_reference` write their PNGs to a temp folder, because a render is not a change to the asset.
+`look`, `compare_reference` and `rig_review`'s heat sheet write their PNGs to a temp folder, because a render is not a change to the asset.
 Each result gives the PNG's path and also attaches the image. A render's folder is removed by a later call once it is
 ten minutes old.
 
@@ -76,6 +82,9 @@ Paths are relative to the repo root, and nothing outside it is read.
 | `psx` | `stem`, `glb`, `height`, `facing`, `faces?`, `atlas?`, `head_weight?`, `leg_weight?`, `legs?`, `leg_sides?`, `leg_scale?`, `leg_taper?`, `name?` | Runs `psx_lowpoly.py` with its facing check off and publishes like generate.sh's PS1 step: `psx.glb`, `psx/<name>.obj`, `.mtl`, `.png` and `psx.json`, plus the `PSX` entry in `lods.json` after `Photo bake` (built by `scripts/lods.py`, the code `reduce.sh` uses). It replaces the asset's PSX and removes an older `workbench/psx*`. `height` is in .obj units (s&box inches). `legs: "clean"` (creatures) replaces each decimated leg with a straight tapered prism (`leg_sides` 6, `leg_scale` x the measured leg radius, 1; `leg_taper` bottom/top, 0.8) baked from that leg's own texels; use `leg_scale` (the sheep: 1.6) rather than `thicken_legs` before it. A shape with no legs keeps its own and `psx.json`'s `legs` says why. `leg_weight` (default 1, off; the sheep: 2.5) keeps the decimated legs part of the mesh and gives them that many times their share of the triangles, as `head_weight` does the head (each leg scaled about its centre line before the cut and mapped back exactly after it), so the cut does not pinch them; it composes with `head_weight`, not with `legs: "clean"`. |
 | `draw_views` | `stem`, `image`, `prompt`, `intent?` | Factory job (draw model): four turnaround views drawn with the photo as a reference. |
 | `generate` | `image`, `stem?`, `mesh?`, `paint?`, `fill?`, `mirror_ends?`, `delight?`, `quality?`, `psx?`, ... | Factory job: runs `generate.sh`. With `mesh` it uses that GLB as the shape instead of hy3d's. With `paint: false` it unwraps and bakes the photo, so a clay asset loads no model. `fill` defaults to `"photo"` here (`generate.sh --fill photo`): the photo is mirrored onto the far end and a swatch of it fills the rest. `delight: true` (`generate.sh --delight on`, off by default as in `bake_photo`) de-lights the photo before the bake and the fill. Neither is sent for a `draft`. |
+| `rig` | `stem`, `class?`, `plan?`, `reuse_skin?` | Factory job: `POST /rig/<stem>` (`scripts/rig.py`). Give `class` or `plan` when you know it; without one, rig.py asks the planner model. `reuse_skin: true` keeps the skin weights learned before when the mesh and joint names match, even if joints moved, so the job runs on CPU with no skin model. |
+| `rig_review` | `stem`, `clips?`, `threshold?` (2), `heat?`, `keep_images?` | `workbench/rigeyes.py`, which reads the rig the viewer shows (`rig/rigged_allclips.glb`, else `rigged.glb`) and writes nothing into `out/`. It returns the rig check's summary from `rig/inspect.json`. Per clip: each edge's worst stretch (p99, max), how many edges pass `threshold`, and the bones that own them (the top bone of both ends, UV-seam copies welded). Also each bone's weight share; a pivot check per leg (the root joint's xz distance from its leg at the leg line, over the body length, flagged over 0.25); and a plain-words `diagnosis`. `heat` (bone names, or `"flagged"`) adds those bones' heat maps from side, front, q and back, at rest and at each bone's worst frame, as one attached image. Its frames are rendered to a temp folder and deleted unless `keep_images`. |
+| `playbook` | | The whole [playbook](../scripts/workbench/playbook.md). |
 | `job_status`, `cancel`, `pick_take` | `job_id?`, `job_id`, `stem` + `stage` + `take` | Poll or stop the factory's job, or pick a take. |
 
 `lod` picks which model a `stem` means:
