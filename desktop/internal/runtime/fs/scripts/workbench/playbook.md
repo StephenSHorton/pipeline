@@ -97,8 +97,12 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
    - A thigh that owns nothing is not always a bug. When its whole bone sits above the leg line (`pivots` gives
      `upper_above_line`, x height), the territory keeps the wool body off the leg on purpose. The sheep's thighs
      sit 0.12-0.24x height above it. Moving the band's leg weight onto them made every clip worse (Run: 27 edges
-     past 2x to 43). What fixed the seam was a softer gradient: the territory's leg band 0.12 to 0.18 and smoothing
-     6 to 12 (Run 27 to 10, Walk 13 to 5), with the rump's lift against the hips unchanged.
+     past 2x to 43). A softer gradient helped: the territory's leg band 0.12 to 0.18 took Walk from 13 edges past
+     2x to 7 and Kick from 14 to 10, with the rig check and the rump's lift against the hips unchanged.
+   - rig_review counts stretch; the app's Rig check also counts squash (it takes |log| of each edge's length
+     change, over every frame). Judge a weight change by both. On the sheep, smoothing 12 instead of 6 halved
+     rig_review's stretched edges but squashed the body in Sleep and Eating, so the check's Sleep p99 went from
+     2.8x to 3.3x, over its warning. That was rig take t5; t6 went back to 6.
    - Test weight ideas offline first: rig/skinned_raw.glb holds the learned weights, and rig.clean_weights on them
      with the rig's skeleton reproduces the rig's weights exactly, so a setting can be measured in seconds before
      a re-rig.

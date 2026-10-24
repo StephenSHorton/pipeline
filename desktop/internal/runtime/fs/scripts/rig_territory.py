@@ -17,8 +17,8 @@ rump) owned the rump. Played, Walk lifted the rump by half the height and grew t
      workbench's leg finder reads it; measured on the sheep the upper-leg joints sit 0.1-0.2x height above it,
      inside the wool, so the joints are only the fallback) the leg's weight fades out over LEG_BAND x height
      (smoothstep). A thigh whose bone lies wholly above the line owns nothing, by design: on the sheep moving the
-     band's leg weight onto the thigh made every clip stretch more (Run 27 edges past 2x to 43); a softer band fixed
-     the seam. Near the line (from LEG_BELOW x height under it), points far (in xz) from that leg's own column lose
+     band's leg weight onto the thigh made every clip stretch more (Run 27 edges past 2x to 43); a softer band (LEG_BAND)
+     helped the seam. Near the line (from LEG_BELOW x height under it), points far (in xz) from that leg's own column lose
      it too (a belly between the legs), from LEG_REACH[0] to LEG_REACH[1] x height. Below the line a leg keeps only
      points nearer its own column than any other leg's (legs don't grab each other).
    - neck (with the head): points behind the neck's root joint along the body's forward axis lose it over
@@ -38,15 +38,16 @@ import re
 import numpy as np
 
 LEG_BAND = 0.18  # x height: leg weight fades out over this band above the leg line (0.06 creased the rump in Walk;
-# with the hind pivot over the leg, 0.18 and 12 smoothing took the sheep's Run from 27 edges past 2x to 10 and Walk
-# from 13 to 5, the rump's lift against the hips unchanged)
+# with the hind pivot over the leg, 0.18 took the sheep's Walk from 13 edges past 2x to 7 and Kick from 14 to 10, the
+# rig check's p99 and the rump's lift against the hips unchanged)
 LEG_BELOW = 0.12  # x height: the band below the line where points far from a leg's column lose it (a belly)
 LEG_REACH = (0.08, 0.16)  # x height, xz from the leg's column at the line: kept nearer, stripped farther (near the line)
 NECK_BAND = 0.06  # x height behind the neck root joint
 TAIL_BAND = 0.05
 TAIL_REACH = 0.10  # x height from the tail bones
-SMOOTH_ITERS = 12  # sheep: 6 was best of 0-12 with the hind pivot mid-body; re-measured with it over the leg, 12
-# (18 traded Sleep for Run)
+SMOOTH_ITERS = 6  # measured on the sheep: 0, 3, 6, 9, 12; 6 lowered every clip's stretch p99 below the unlimited rig.
+# Re-measured with the hind pivot over the leg: 12 halved the edges stretched past 2x but squashed the body in Sleep
+# and Eating (the rig check's Sleep p99 2.8x to 3.3x, over its warning)
 SMOOTH_ALPHA = 0.5
 WELD_TOL = 0.002  # x height: corners this close are one point for smoothing
 LEG_NAME = re.compile(r"leg|foot|toe|hoof|paw|ankle|knee|thigh|shin|calf|humerus|scapula|pelvis", re.I)
