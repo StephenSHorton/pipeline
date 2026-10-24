@@ -781,6 +781,9 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   done
   [[ -n "$PHOTO_VIEW" ]] || VIEW_ARGS+=(--first-facing "$FIRST_FACING")
   [[ "$USE_MV" -eq 1 && -n "$FRONT_AZ" ]] && VIEW_ARGS+=(--front-az "$FRONT_AZ")
+  # Drawn views never agree exactly, so averaged they showed as patches (the pig): one view per triangle, colours
+  # evened out, seams levelled, the paint under what no view sees (scripts/seam_bake.py).
+  [[ "$USE_MV" -eq 1 ]] && VIEW_ARGS+=(--select)
   OPPOSITE=""
   ENDS=0
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac

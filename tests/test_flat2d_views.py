@@ -516,7 +516,8 @@ class PromptTests(unittest.TestCase):
         self.assertTrue(p.startswith("A PS1 style chicken. Character turnaround sheet in a 2 by 2 grid"))
         for text in ("View 1 (top left): front", "View 2 (top right): the creature turned to face RIGHT",
                      "View 3 (bottom left): back", "View 4 (bottom right): the creature turned to face LEFT",
-                     "#FF00FF", "Exactly four views", "wings folded"):
+                     "#FF00FF", "Exactly four views", "wings folded", "strict profile, only the near eye",
+                     "every view lit the same"):
             self.assertIn(text, p)
         self.assertNotIn("baseline", p.lower())
         self.assertNotIn("same ground", p.lower())

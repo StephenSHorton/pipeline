@@ -31,6 +31,7 @@ from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import delight as _delight  # noqa: E402
+import seam_bake  # noqa: E402
 
 
 def look_at(eye, target, up=np.array([0.0, 1.0, 0.0], dtype=np.float32)):
@@ -104,8 +105,8 @@ def iou(a, b):
     return float(inter) / float(union + 1e-8)
 
 
-def sample_surface(mesh, n):
-    pts, fid = trimesh.sample.sample_surface(mesh, n)
+def sample_surface(mesh, n, with_fid: bool = False):
+    pts, fid = trimesh.sample.sample_surface(mesh, n, seed=0) if with_fid else trimesh.sample.sample_surface(mesh, n)
     faces = mesh.faces[fid]
     tri = mesh.vertices[faces]
     v0 = tri[:, 1] - tri[:, 0]
@@ -124,16 +125,31 @@ def sample_surface(mesh, n):
     bary = np.stack([u, v, w], axis=1)
     nrm = np.cross(v0, v1)
     nrm /= np.linalg.norm(nrm, axis=1, keepdims=True) + 1e-8
+    if with_fid:
+        return pts.astype(np.float32), faces, bary.astype(np.float32), nrm.astype(np.float32), fid
     return pts.astype(np.float32), faces, bary.astype(np.float32), nrm.astype(np.float32)
 
 
-def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None, el_range=None):
+def aspect(mask) -> float:
+    """A silhouette box's width over height."""
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return 1.0
+    return float(xs.max() - xs.min() + 1) / float(ys.max() - ys.min() + 1)
+
+
+def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None, el_range=None, ref_aspect=None,
+               spread=50):
+    """(score, az, el, radius). Silhouettes are compared cropped and stretched square, so a camera turned away
+    from a side view (the body foreshortened) can score almost as well; ref_aspect (the photo silhouette's
+    width / height) scales the score by how well the box shapes agree, which tells those apart."""
     sh = sw = 256
     best = (-1.0, 40.0, 15.0, radius)
     if az_hint is None:
         azs = list(range(0, 360, 20))
     else:
-        azs = [((az_hint + d) % 360) for d in range(-50, 51, 10)]
+        step = 10 if spread > 20 else 5
+        azs = [((az_hint + d) % 360) for d in range(-spread, spread + 1, step)]
     els = el_range if el_range is not None else [-10, 5, 18, 32, 48]
     for az in azs:
         for el in els:
@@ -144,10 +160,13 @@ def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None
             if inb.any():
                 sil[py[inb], px[inb]] = 1
             score = iou(pack_sil(sil), ref_sil)
+            if ref_aspect is not None and inb.any():
+                score *= min(aspect(sil), ref_aspect) / max(aspect(sil), ref_aspect)
             if score > best[0]:
                 best = (score, float(az), float(el), radius)
     az0, el0 = best[1], best[2]
-    for az in np.linspace(az0 - 16, az0 + 16, 7):
+    reach = 16 if spread > 20 else 8
+    for az in np.linspace(az0 - reach, az0 + reach, 7):
         for el in np.linspace(el0 - 10, el0 + 10, 5):
             for rad in (radius * 0.85, radius, radius * 1.2):
                 eye = eye_on_sphere(center, rad, az, el)
@@ -157,6 +176,8 @@ def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None
                 if inb.any():
                     sil[py[inb], px[inb]] = 1
                 score = iou(pack_sil(sil), ref_sil)
+                if ref_aspect is not None and inb.any():
+                    score *= min(aspect(sil), ref_aspect) / max(aspect(sil), ref_aspect)
                 if score > best[0]:
                     best = (score, float(az), float(el), float(rad))
     return best
@@ -253,6 +274,21 @@ def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weig
             np.add.at(accum, (y, x, 2), col[:, 2] * w)
             np.add.at(weight, (y, x), w)
     return len(winners)
+
+
+def splat_colours(uv_pts, col, accum, weight):
+    """Splat ready colours (one per surface sample, full weight) into the atlas accumulators (retexture --select)."""
+    th, tw = weight.shape
+    tx = (np.clip(uv_pts[:, 0], 0, 1) * (tw - 1)).astype(np.int32)
+    ty = (np.clip(1.0 - uv_pts[:, 1], 0, 1) * (th - 1)).astype(np.int32)
+    for ox in range(-2, 3):
+        for oy in range(-2, 3):
+            w = float(np.exp(-0.35 * (ox * ox + oy * oy)))
+            x = np.clip(tx + ox, 0, tw - 1)
+            y = np.clip(ty + oy, 0, th - 1)
+            for ch in range(3):
+                np.add.at(accum, (y, x, ch), col[:, ch] * w)
+            np.add.at(weight, (y, x), w)
 
 
 def blend(base, accum, weight, keep):
@@ -371,6 +407,11 @@ def main() -> int:
                          "bare, 0 or absent: off): its shade comes up to the lit level instead of baking in as a "
                          "dark patch, and shade too deep to lift splats with less weight (fill.py covers it). The "
                          "fit and bake mask use the untouched alpha, so the cameras do not change")
+    ap.add_argument("--select", action="store_true",
+                    help="photogrammetry bake (scripts/seam_bake.py): each triangle takes the one view that sees it "
+                         "best, seams placed where the views agree, every view's colour evened out to the others "
+                         "and the seams levelled; the base texture (the paint) takes what no view sees well, "
+                         "colour-matched to the views. Off: every view averaged in wherever it lands")
     args = ap.parse_args()
     # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
     # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
@@ -411,7 +452,7 @@ def main() -> int:
     radius0 = diag * 1.45
 
     print(f"retexture: sampling {args.samples} surface points")
-    pts, faces, bary, nrm = sample_surface(mesh, args.samples)
+    pts, faces, bary, nrm, fid = sample_surface(mesh, args.samples, with_fid=True)
     uv_pts = (
         bary[:, 0:1] * uvs[faces[:, 0]]
         + bary[:, 1:2] * uvs[faces[:, 1]]
@@ -425,6 +466,9 @@ def main() -> int:
     accum_t = np.zeros_like(albedo)
     weight_t = np.zeros((th, tw), dtype=np.float32)
     reports = []
+    observed = []  # --select: what each view saw, baked together after the loop
+    base_col = seam_bake.sample_atlas(albedo, uv_pts) if args.select else None
+    tol = 0.02 * diag
 
     for i, (view, off) in enumerate(zip(views, offsets)):
         rgb, alpha_fit, alpha_bake, trust = load_photo(view, args.delight, with_trust=True)
@@ -453,7 +497,12 @@ def main() -> int:
                 az_hint = (front_az + off) % 360
         if "top" in stem:
             el_range = [60, 72, 82, 88]
-        score, az, el, rad = fit_camera(pts, center, radius0, ref_sil, az_hint=az_hint, el_range=el_range)
+        # --select (drawn turnaround views on a shape the shape step oriented): every view's angle is known up to
+        # a few degrees, so the search stays near it and the box shape counts (a 40 degree turn fit 0.87 before)
+        tight = args.select and args.front_az is not None and az_hint is not None
+        score, az, el, rad = fit_camera(pts, center, radius0, ref_sil, az_hint=az_hint, el_range=el_range,
+                                        ref_aspect=aspect(alpha_fit) if args.select else None,
+                                        spread=15 if tight else 50)
         print(f"retexture: {Path(view).name}  IoU={score:.3f}  az={az:.1f} el={el:.1f} r={rad:.3f}")
         reports.append({"view": view, "iou": score, "az": az, "el": el, "radius": rad})
         on_top = i == top
@@ -467,6 +516,34 @@ def main() -> int:
             reports[-1]["on_top"] = on_top
 
         eye = eye_on_sphere(center, rad, az, el)
+        if args.select:
+            def look(eye_, rgb_, fit_, bake_, trust_, name_, boost):
+                vp = perspective(np.deg2rad(40.0), 1.0, 0.05, 40.0) @ look_at(eye_, center)
+                px, py, depth, inb = register(pts, vp, fit_)
+                seen, ndotv = seam_bake.observe(pts, nrm, px, py, depth, inb, eye_, bake_, tol)
+                if os.environ.get("RETEXTURE_ALIGN", "1") != "0":
+                    # nudge the picture onto the mesh: the paint (which sits on the mesh exactly) as this camera
+                    # sees it is the target, so a drawn ear lands on the mesh's ear, not on the neck behind it
+                    front = inb & (ndotv > 0)
+                    zb_seen, _ = seam_bake.observe(pts, nrm, px, py, depth, front, eye_, np.ones_like(bake_), tol)
+                    ren, rmask = seam_bake.render_base(px, py, zb_seen, base_col, bake_.shape)
+                    dy, dx = seam_bake.align(ren, rmask, rgb_, fit_)
+                    print(f"retexture: aligned {name_} {seam_bake.align.report}")
+                    cy, cx = np.clip(py, 0, ph - 1), np.clip(px, 0, pw - 1)
+                    px = np.clip(np.round(px + dx[cy, cx]), 0, pw - 1).astype(np.int32)
+                    py = np.clip(np.round(py + dy[cy, cx]), 0, ph - 1).astype(np.int32)
+                    seen = zb_seen & (ndotv > seam_bake.ANGLE_MIN) & bake_[py, px]
+                conf = seam_bake.confidence(ndotv, px, py, bake_, seam_bake.fit_quality(score), trust_)
+                col = rgb_[np.clip(py, 0, ph - 1), np.clip(px, 0, pw - 1)].astype(np.float64)
+                print(f"retexture: {int(seen.sum())} samples seen from {name_}")
+                observed.append({"name": name_, "seen": seen, "conf": conf, "colour": col, "boost": boost,
+                                 "anchor": boost >= 1.0})
+            look(eye, rgb, alpha_fit, alpha_bake, trust, Path(view).name, 3.0 if on_top else 1.0)
+            if args.mirror:
+                meye = eye_on_sphere(center, rad, mirror_az(az, off, args.mirror_ends), el)
+                look(meye, rgb[:, ::-1].copy(), alpha_fit[:, ::-1].copy(), alpha_bake[:, ::-1].copy(),
+                     None if trust is None else trust[:, ::-1].copy(), Path(view).name + " (mirrored)", 0.6)
+            continue
         acc, wgt = (accum_t, weight_t) if on_top else (accum, weight)
         splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, acc, wgt, Path(view).name, trust)
         if args.mirror:
@@ -481,7 +558,29 @@ def main() -> int:
                   None if trust is None else trust[:, ::-1].copy())
 
     base = albedo
-    if args.mirror:
+    if args.select:
+        mfaces, nv = seam_bake.merged_faces(np.asarray(mesh.vertices), np.asarray(mesh.faces))
+        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv)
+        print(f"retexture: select {json.dumps(res['report'])}")
+        if os.environ.get("RETEXTURE_LABELS"):  # debug: paint each face its label's colour
+            pal = np.array([[230, 60, 60], [60, 200, 60], [60, 90, 230], [230, 200, 40], [170, 170, 170],
+                            [200, 60, 200], [60, 200, 200]], np.float32)
+            res["colour"] = pal[np.minimum(res["label"][fid], len(pal) - 1)]
+        splat_colours(uv_pts, res["colour"], accum, weight)
+        # texels between samples (an atlas finer than the samples): the colour around them, not the paint
+        # underneath, which showed as dark specks
+        thin = weight < 4.0 * args.keep
+        acc_b = np.stack([ndimage.gaussian_filter(accum[:, :, ch], 2.0) for ch in range(3)], axis=2)
+        wgt_b = ndimage.gaussian_filter(weight, 2.0)
+        near = thin & (wgt_b > 1e-3)
+        accum[near] += acc_b[near] / wgt_b[near, None] * (4.0 * args.keep - weight[near, None])
+        weight[near] = 4.0 * args.keep
+        base = res["base"]
+        # every face has a source now (the paint where no view sees it): the whole atlas counts as covered
+        weight_m[:] = 0.0
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).with_suffix(".select.json").write_text(json.dumps(res["report"], indent=2) + "\n")
+    elif args.mirror:
         # Mirrored texels only where the real photo did not land; the real view wins everywhere it reached.
         base, _ = blend(albedo, accum_m, weight_m, args.keep)
     out, hit = blend(base, accum, weight, args.keep)
