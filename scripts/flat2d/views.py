@@ -42,6 +42,10 @@ THIN_ROW = 0.035
 COLOUR_DE = 18.0
 SIDE_IOU = 0.6
 PIECE_SHARE = 0.15  # a second blob this big next to the largest is a second subject
+# ...unless it sits within this share of the cell's height of the rest: one subject's parts that the cut-out split
+# (the tractor's drawbar was taken for a line, cutting its back and side views in two, and the sheet was thrown out
+# for one view: the bake covered 8.6% of the atlas). Two subjects stand further apart than that
+PIECE_GAP = 0.02
 LINE_FILL = 0.8  # a row this full of non-ground ...
 LINE_THIN = 0.015  # ... and at most this thick (share of the side) is a drawn line, not the subject
 CLOUDY_TOL = 45  # flat2d.optional.CLEAN_TOL
@@ -167,6 +171,15 @@ def blobs(mask: np.ndarray) -> list[int]:
     return sorted((int(s) for s in sizes), reverse=True)
 
 
+def _close_gaps(mask: np.ndarray, gap: int) -> np.ndarray:
+    """The mask with gaps up to `gap` pixels bridged (grown by half the gap and shrunk back), for counting subjects."""
+    from scipy import ndimage
+
+    r = max(1, (gap + 1) // 2)
+    st = ndimage.generate_binary_structure(2, 1)
+    return ndimage.binary_erosion(ndimage.binary_dilation(mask, st, iterations=r), st, iterations=r, border_value=0)
+
+
 def body_height(mask: np.ndarray, thin: float) -> int:
     """Rows from the first to the last row with more than `thin` subject pixels: the height without thin wires
     at the ends. The plain box height when no row is that full."""
@@ -264,7 +277,7 @@ def check_panels(image: Image.Image, key: dict, kind: str | None, layout: str = 
     for pid in PANELS:
         mask = masks[pid]
         area = float(mask.mean())
-        sizes = blobs(mask)
+        sizes = blobs(_close_gaps(mask, max(2, round(PIECE_GAP * nominal))))
         areas[pid] = round(area, 4)
         if area < AREA_MIN:
             flaws.append(f"empty:{pid}")

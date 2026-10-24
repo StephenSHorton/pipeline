@@ -137,6 +137,16 @@ class CheckTests(unittest.TestCase):
         r = views.check_panels(im, ground_key(im), None, "grid", vision=NO_VISION)
         self.assertIn("pieces:front", r["flaws"])
 
+    def test_one_subject_cut_by_a_thin_gap_is_not_two(self) -> None:
+        # the tractor: its drawbar taken for a line cut the back and side views in two across a 9 px gap
+        im = optional._stub_sheet(7, 1152, 1152)
+        r0 = views.check_panels(im, ground_key(im), None, "grid", vision=NO_VISION)
+        x0, y0, x1, y1 = r0["views"][0]["bbox"]
+        mid = (y0 + y1) // 2
+        ImageDraw.Draw(im).rectangle((0, mid, 575, mid + 8), fill=im.getpixel((3, 3)))
+        r = views.check_panels(im, ground_key(im), None, "grid", vision=NO_VISION)
+        self.assertNotIn("pieces:front", r["flaws"])
+
     def test_thresholds_are_the_plan(self) -> None:
         self.assertEqual((views.AREA_MIN, views.HEIGHT_SPREAD, views.COLOUR_DE, views.SIDE_IOU),
                          (0.02, 0.06, 18.0, 0.6))
