@@ -50,6 +50,7 @@ import flow
 from flow import FLAT_WRITES, autosave
 from flow import handle as handle_flow
 from export_asset import handle as handle_export
+import projects
 from factory_env import (
     NO_PICTURE,
     PSX_KEYS,
@@ -606,6 +607,12 @@ class Factory:
     def list_assets(self) -> dict[str, Any]:
         out = self.root / "out"
         assets: list[dict[str, Any]] = []
+        # One membership pass for the whole list, not a manifest read per asset. A bad manifest never hides the Library.
+        try:
+            owner = projects.membership(self.root)
+        except (projects.ProjectError, OSError) as e:
+            print(f"assets: could not read projects: {e}", file=sys.stderr)
+            owner = {}
         if out.is_dir():
             for d in sorted(out.iterdir()):
                 if not d.is_dir() or d.name.startswith("."):
@@ -648,6 +655,7 @@ class Factory:
                         "output": (read_intent(d) or {}).get("output"),
                         "input": _asset_shot(d, ("input.png", "input.jpg")),
                         "preview": preview,
+                        "project": owner.get(d.name),
                         "mtime": int(d.stat().st_mtime),
                     }
                 )
@@ -724,6 +732,11 @@ class Factory:
         with self._lock:
             if self._job and self._job.get("stem") == stem:
                 self._job["stem"] = dest_slug
+        # The folder already moved: a projects failure is logged, never turned into a failed rename.
+        try:
+            projects.rename_stem(self.root, stem, dest_slug)
+        except (projects.ProjectError, OSError) as e:
+            print(f"rename: could not move {stem}'s project membership: {e}", file=sys.stderr)
         return {"ok": True, "stem": dest_slug, "from": stem, "renamed": True, "path": f"out/{dest_slug}"}
 
     def delete_asset(self, stem: str) -> dict[str, Any]:
@@ -735,6 +748,10 @@ class Factory:
         if not d.is_dir():
             return {"ok": False, "error": "not found", "stem": stem}
         shutil.rmtree(d)
+        try:
+            projects.drop_stem(self.root, stem)
+        except (projects.ProjectError, OSError) as e:
+            print(f"delete: could not drop {stem} from its project: {e}", file=sys.stderr)
         return {"ok": True, "deleted": True, "stem": stem, "path": f"out/{stem}"}
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -1121,6 +1138,7 @@ class Factory:
             self._job = dict(spec)
         threading.Thread(target=drawjob.run, args=(self, spec, payload), kwargs={"write_intent": write_intent},
                          daemon=False).start()
+        projects.file_made(self.root, stem, body)  # accepted: the new asset joins its project (or none)
         return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "kind": kind,
                 "status_url": f"/status/{job_id}"}
 
@@ -1564,6 +1582,10 @@ def _dispatch(
     if flow is not None:
         return flow
 
+    grouped = projects.handle(factory.root, method, parts, body)
+    if grouped is not None:
+        return grouped
+
     if method == "POST" and len(parts) == 2 and parts[0] == "export":
         try:
             export_stem = check_stem(parts[1])
@@ -1625,6 +1647,13 @@ def _dispatch(
                     "GET /flow/<stem>",
                     "POST /flow/<stem>/snapshot",
                     "POST /flow/<stem>/pick",
+                    "GET /projects",
+                    "POST /projects",
+                    "GET /projects/<id>",
+                    "PATCH /projects/<id>",
+                    "DELETE /projects/<id>",
+                    "POST /projects/<id>/assets",
+                    "DELETE /projects/<id>/assets/<stem>",
                     "GET /export/<stem>",
                     "POST /export/<stem>",
                 ],

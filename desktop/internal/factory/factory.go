@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/StephenSHorton/pipeline/desktop/internal/paths"
 )
@@ -71,7 +72,8 @@ func (s *Service) ListAssets() []Asset {
 	}
 	var out []Asset
 	for _, e := range ents {
-		if !e.IsDir() {
+		// out/.projects (and any other dot folder) is factory bookkeeping, not an asset.
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		stem := e.Name()

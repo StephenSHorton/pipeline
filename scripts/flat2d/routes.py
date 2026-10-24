@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+import projects
 from factory_env import check_stem, stem_dir
 
 from flat2d.atlas import pack_request
@@ -169,7 +170,9 @@ def handle(root: Path, method: str, path: str, body: bytes) -> tuple[int, bytes,
             if not isinstance(raw, str) or not raw:
                 return _json({"ok": False, "error": "empty image"}, 400)
             data = base64.b64decode(raw, validate=False)
-            return _json(save_source(root, stem, data), 201)
+            saved = save_source(root, stem, data)
+            projects.file_made(root, stem, payload)  # the dropped picture is a new asset's first file
+            return _json(saved, 201)
         if action == "split":
             return _json(split_source(root, stem, payload.get("prompt") or payload.get("names") or ""))
         if action == "save":

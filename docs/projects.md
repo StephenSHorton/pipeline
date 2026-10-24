@@ -26,11 +26,11 @@ out/.projects/<slug>/
 ```
 
 - The dot keeps the folder out of the stem list, and `out/` is already gitignored.
-- An asset can be in more than one project. Leaving a project does not delete the parts cut from it.
+- An asset is in one project or none ("Unsorted"): adding it to a project takes it out of any other. Membership may name a stem whose folder a job has not made yet, so writes never prune; listings show only stems whose `out/<stem>/` exists. Leaving a project does not delete the parts cut from it.
 - `from.take` is the flow pick the part was cut from, so the library can show a part as stale when its source asset moves on (the same rule `flow.py` uses between stages).
 - When an asset **uses** a library part, its own take records `uses: [{project, part}]`, so changing the library part marks that asset stale too.
 
-`scripts/projects.py` has this much now, with tests: create, style, membership, copying a Split crop into the library, and `styled_prompt`.
+`scripts/projects.py` has this much now, with tests: create, style, membership (one project per asset, following asset renames and deletes), copying a Split crop into the library, and `styled_prompt`.
 
 ## Identifying parts
 
@@ -61,15 +61,14 @@ Cheapest first:
 
 ## App
 
-- Home gets a project picker. Assets made while a project is open join it.
-- The gallery can filter by project.
-- On the 2D Pieces step and (later) the 3D parts view, each part gets **Add to project**. The project page shows the library as a grid with the asset each part came from and uses.
-- Routes, once the `/flow` routes in PR #14 land so they don't fight over `factory_http.py`: `GET /projects`, `POST /projects`, `GET /projects/<id>`, `POST /projects/<id>/assets`, `POST /projects/<id>/parts`.
+- **Shipped (grouping only):** the Library switches between All, each project and Unsorted (`?view=library&project=<id>`, `_unsorted` for Unsorted). Make with a project open (`?view=make&project=<id>`) files new assets into it: its first request (`POST /2d/draw` or `/2d/drop`) carries `project` (an id, or null for none) and the factory files the stem once that request is accepted (`projects.file_made`), so a make that never ran leaves no claim behind. The 3D/Rig viewer's asset card shows the project with a Move control.
+- **Later:** style, palette and parts in the app. On the 2D Pieces step and (later) the 3D parts view, each part gets **Add to project**. The project page shows the library as a grid with the asset each part came from and uses.
+- Routes now: `GET /projects`, `POST /projects` (`{name, assets?}`; a repeat name gets `-2`), `GET`/`PATCH`/`DELETE /projects/<id>` (rename changes the name, never the id; delete leaves the assets Unsorted), `POST /projects/<id>/assets` (`{stem}`, a move), `DELETE /projects/<id>/assets/<stem>`. `GET /assets` rows carry `project`. Later: `POST /projects/<id>/parts`.
 
 ## Order of work
 
-1. **Data and library** (this PR): `scripts/projects.py` and tests. No routes, no UI.
-2. **Routes and the project picker**, after PR #14 merges. Style line wired into `still_prompt`.
+1. **Data and library** (done): `scripts/projects.py` and tests.
+2. **Routes and the project picker** (done, grouping only). Style line into `still_prompt` still to wire.
 3. **Add to project** on 2D Pieces, and the library page.
 4. **2D matching** with DINOv2 embeddings.
 5. **3D parts by lifting SAM masks**, then a side-by-side with PartField / P3-SAM.

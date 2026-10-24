@@ -282,6 +282,26 @@ class FactoryAutosaveTest(unittest.TestCase):
             self.assertEqual(stages["flat"]["takes"][0]["from"], {"concept": "t1"})
             self.assertFalse(stages["flat"]["unsaved"])
 
+    def test_a_dropped_picture_joins_its_project(self) -> None:
+        import base64
+        import io
+
+        import factory_http
+        import projects
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (16, 16), (255, 0, 255)).save(buf, format="PNG")
+        data = base64.b64encode(buf.getvalue()).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            factory = factory_http.Factory(root)
+            projects.create(root, "Farm")
+            body = json.dumps({"stem": "hen", "data": data, "project": "farm"}).encode("utf-8")
+            status, _, _ = factory_http.dispatch(factory, "POST", "/2d/drop", {}, body)
+            self.assertEqual(status, 201)
+            self.assertEqual(projects.membership(root), {"hen": "farm"})
+
 
 if __name__ == "__main__":
     unittest.main()
