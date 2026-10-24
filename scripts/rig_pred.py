@@ -60,6 +60,7 @@ PATHS = {
         "neck_lift": "spine_5",
     },
 }
+ANCHOR_CLAMP = (0.25, 4.0)  # lay_runs: a run between two predicted anchors is laid to reach them
 LYING = {"Sleep", "Death", "lay_to_idle"}
 
 
@@ -301,6 +302,8 @@ def target_lines(p: Pred, lab: dict, mesh, floor: float) -> dict:
             line.append(ext)
         out["body" if kind == "head" else "tail"] = {"line": np.array(line), "pred": [p.names[k] for k in ks],
                                                        "surface_ext": ext is not None}
+        if kind == "head" and d["joints"][0] in ks:  # where the predicted head chain (its neck) leaves the body
+            out["body"]["neck_index"] = ks.index(d["joints"][0])
     legs = [c for c in lab["chains"] if c["label"] == "leg"]
     if legs:
         low = p.P[p.P[:, 1] <= floor + 0.04 * H]
@@ -319,8 +322,11 @@ def target_lines(p: Pred, lab: dict, mesh, floor: float) -> dict:
                 xz = near[:, [0, 2]].mean(0) if len(near) >= 3 else tip[[0, 2]]
                 ext = np.array([xz[0], floor, xz[1]])
                 line.append(ext)
+            par = int(p.par[c["joints"][0]])
             out["legs"].append({"line": np.array(line), "pred": [p.names[k] for k in c["joints"]], "tip_gap_H": round(gap / H, 3),
-                                "floor_ext": ext is not None})
+                                "floor_ext": ext is not None,
+                                # the joint the leg hangs from (a pelvis, a shoulder): where the trunk carries it
+                                **({"attach": p.jp[par]} if par >= 0 else {})})
     return out
 
 
@@ -418,6 +424,107 @@ def place_pivots(P: dict, P0: dict, children: dict, spec: dict, laid: dict[str, 
     return out
 
 
+def over_legs(P0: dict, joint: str, spec: dict, plegs: list[dict], root: np.ndarray, hind: bool = True,
+              tV: np.ndarray | None = None, tF: np.ndarray | None = None) -> np.ndarray | None:
+    """Where a trunk joint goes on a four-legged rig: over the predicted hind (or front) legs as the template has it
+    over its own (the template joint minus the mean of its two hind/front leg chain roots, added to the mean of the
+    two hindmost/foremost predicted leg roots; template frame, +Z forward), on the predicted root's centre line. A
+    target outside the mesh is pulled toward the predicted root until it is inside. None without four legs on each."""
+    legs = [c for c in spec.get("legs") or [] if c and c[0] in P0]
+    if joint not in P0 or len(legs) != 4 or len(plegs) != 4:
+        return None
+    sign = 1.0 if hind else -1.0
+    pair_t = sorted(legs, key=lambda c: sign * P0[c[0]][2])[:2]
+    pair_p = sorted(plegs, key=lambda q: sign * q["line"][0][2])[:2]
+    off = P0[joint] - np.mean([P0[c[0]] for c in pair_t], 0)
+    new = np.mean([q["line"][0] for q in pair_p], 0) + off
+    new[0] = root[0]
+    if tV is not None and tF is not None:
+        ts = np.linspace(0.0, 1.0, 11)
+        pts = new[None] + ts[:, None] * (root - new)[None]
+        inside = np.where(np.abs(rig_fit.winding_number(tV, tF, pts, chunk=4000)) > 0.5)[0]
+        if len(inside):
+            new = pts[inside[0]]
+    return new
+
+
+def hips_target(P0: dict, spec: dict, plegs: list[dict], root: np.ndarray, tV: np.ndarray | None = None,
+                tF: np.ndarray | None = None) -> np.ndarray | None:
+    """The hips over the hind legs (over_legs). The predicted root sits mid-body: the sheep's hips landed 0.36 of
+    its length ahead of the hind thighs (the horse's sit 0.08 ahead), the rump behind them one rigid block owning 45%
+    of the weight."""
+    return over_legs(P0, "hips", spec, plegs, root, True, tV, tF)
+
+
+def shoulder_joint(spec: dict, children: dict) -> str | None:
+    """The body joint the front legs hang from (the horse's spine_4, through front_scapula): the first leg chain's
+    root (PATHS lists the front legs first), walked up to the body path."""
+    parent = {k: p for p, ks in children.items() for k in ks}
+    body = set(spec.get("body") or [])
+    legs = spec.get("legs") or []
+    if len(legs) != 4:
+        return None
+    n = legs[0][0]
+    while n is not None and n not in body:
+        n = parent.get(n)
+    return n if n != "hips" else None
+
+
+def trunk_anchors(spec: dict, children: dict, lines_t: dict, root: np.ndarray) -> dict[str, np.ndarray]:
+    """Where the predicted skeleton puts the trunk's joints, template joint -> point (template frame, +Z forward):
+    the hips where the two hindmost predicted legs hang, the shoulder joint where the two foremost hang, and the
+    neck root (the plan's neck_lift) where the predicted head chain leaves the body, all on the root's centre line.
+    Laid by arc length from a mid-body root with the horse's proportions, the sheep's hips sat 0.36 of its length
+    ahead of the hind thighs and, laid from the hips, its neck root sat mid-chest (Eating's head went through the
+    floor and the floor pass bent the neck 20 deg back up)."""
+    plegs = lines_t.get("legs") or []
+    out: dict[str, np.ndarray] = {}
+    if len(plegs) != 4 or len(spec.get("legs") or []) != 4 or not all("attach" in q for q in plegs):
+        return out
+    by_z = sorted(plegs, key=lambda q: q["attach"][2])
+    for joint, pair in (("hips", by_z[:2]), (shoulder_joint(spec, children), by_z[2:])):
+        if joint:
+            at = np.mean([q["attach"] for q in pair], 0)
+            at[0] = root[0]
+            out[joint] = at
+    body = lines_t.get("body") or {}
+    neck = spec.get("neck_lift")
+    if neck and body.get("neck_index") is not None:
+        at = np.asarray(body["line"][body["neck_index"]], float).copy()
+        at[0] = root[0]
+        out[neck] = at
+    return out
+
+
+def lay_runs(P: dict, children: dict, chain: list[str], line: np.ndarray, anchors: list[tuple[str, np.ndarray]]) -> dict:
+    """lay() in runs: the chain from one anchor joint to the next along the line between their points, the last run
+    on to the line's end. The neck and head after each anchor are put back to the template's shape before their run
+    (the run before swung and scaled them with its last bone)."""
+    line = np.asarray(line, float)
+    runs, start, p0 = [], chain[0], line[0]
+    for joint, pt in [*anchors, (None, None)]:
+        i0 = chain.index(start)
+        if joint is None:
+            seg, sub = np.array([p0, *[x for x in line[1:] if x[2] > p0[2]]]), chain[i0:]
+        else:
+            seg = np.array([p0, *[x for x in line[1:] if p0[2] < x[2] < pt[2]], pt])
+            sub = chain[i0:chain.index(joint) + 1]
+        if len(sub) >= 2 and len(seg) >= 2:
+            rel = {d: P[d] - P[sub[-1]] for d in rig_fit._descendants(children, sub[-1])} if joint else {}
+            # a run ending on an anchor reaches it (the sheep's shoulder-to-neck bone is 1.8x the horse's); the
+            # open run to the head tip keeps the usual clamp
+            runs.append(lay(P, children, sub, seg, clamp=ANCHOR_CLAMP if joint else LEN_CLAMP))
+            for d, off in rel.items():
+                P[d] = P[sub[-1]] + off
+        if joint is not None:
+            start, p0 = joint, pt
+    if not runs:
+        return lay(P, children, chain, line)
+    return {"length_ratio": runs[0]["length_ratio"], "length_ratios": [r["length_ratio"] for r in runs],
+            "length_clamped": any(r["length_clamped"] for r in runs), "max_turn_deg": max(r["max_turn_deg"] for r in runs),
+            "tip_residual": runs[-1]["tip_residual"], "anchors": [j for j, _ in anchors]}
+
+
 def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarray, tV: np.ndarray, tF: np.ndarray,
              H_t: float, plan: dict | None = None) -> dict:
     """Template joints (name -> template-frame position, changed in place) onto the predicted lines (template frame).
@@ -426,6 +533,29 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
     rep = {"paths": [], "unsupported": []}
     P0 = {n: p.copy() for n, p in P.items()}  # the template's own proportions, for place_pivots
     root_t = (lines_t.get("body") or lines_t.get("tail") or {}).get("line")
+    lines_t = dict(lines_t)
+    anchors = trunk_anchors(spec, children, lines_t, root_t[0]) if root_t is not None else {}
+    hips_at = anchors.pop("hips", None)
+    if hips_at is None and root_t is not None:  # no attach joints on the predicted legs: the template's offset
+        hips_at = hips_target(P0, spec, lines_t.get("legs", []), root_t[0], tV, tF)
+    runs: list[tuple[str, np.ndarray]] = []
+    if hips_at is not None:
+        # lay the body from the hips forward and the tail from them back: the predicted lines start at the root
+        rep["hips_over_legs"] = {"from_root": round(float(np.linalg.norm(hips_at - root_t[0])), 4)}
+        z = hips_at[2]
+        runs = sorted(((j, a) for j, a in anchors.items() if j in spec["body"] and a[2] > z),
+                      key=lambda ja: spec["body"].index(ja[0]))
+        runs = [ja for k, ja in enumerate(runs) if all(ja[1][2] > o[1][2] for o in runs[:k])]  # front to back only
+        if runs:
+            rep["trunk_anchors"] = {j: np.round(a, 4).tolist() for j, a in runs}
+        for kind, ahead in (("body", True), ("tail", False)):
+            q = lines_t.get(kind)
+            if q is None:
+                continue
+            pts = [x for x in q["line"] if (x[2] > z) == ahead]
+            # no predicted line on that side of the hips: as if there were no predicted chain (a tail: unsupported)
+            lines_t[kind] = {**q, "line": np.array([hips_at, *pts])} if pts else None
+        root_t = np.array([hips_at])
     if root_t is not None and "hips" in P:
         delta = root_t[0] - P["hips"]
         for n in P:
@@ -444,7 +574,10 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
             continue
         before = {n: P[n].copy() for n in P}
         s0 = rig_fit.outside_score(P, chain, tV, tF, tree, H_t)
-        r = lay(P, children, chain, tgt["line"])
+        if kind == "body" and runs:
+            r = lay_runs(P, children, chain, tgt["line"], runs)
+        else:
+            r = lay(P, children, chain, tgt["line"])
         s1 = rig_fit.outside_score(P, chain, tV, tF, tree, H_t)
         kept = s1 <= s0 + 0.01
         if not kept:

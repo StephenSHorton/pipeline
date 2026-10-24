@@ -634,7 +634,9 @@ def posed_template(template: dict, out: Path, mesh_points: np.ndarray, surface: 
             H_t = float(np.ptp(tV[:, 1]))
             if pred_lines:
                 import rig_pred
-                lt = {k: ({**v, "line": to_t(v["line"], s, off)} if k != "legs" else [{**q, "line": to_t(q["line"], s, off)} for q in v])
+                lt = {k: ({**v, "line": to_t(v["line"], s, off)} if k != "legs" else
+                          [{**q, "line": to_t(q["line"], s, off), **({"attach": to_t(q["attach"][None], s, off)[0]} if "attach" in q else {})}
+                           for q in v])
                       for k, v in pred_lines.items()}
                 reg_p = rig_pred.register(cls, Pt, children, lt, mesh_t, tV, mesh_faces, H_t, plan=plan)
                 fitinfo["pred_register"] = reg_p
@@ -1640,7 +1642,8 @@ def main(argv: list[str] | None = None) -> int:
                 return None
             lines = rig_pred.target_lines(pr_, lab, mesh_tm, float(mesh_points[:, 1].min()))
             pred_ctx["lines"] = {k: ({kk: vv for kk, vv in v.items() if kk != "line"} if k != "legs" else
-                                     [{kk: vv for kk, vv in q.items() if kk != "line"} for q in v]) for k, v in lines.items()}
+                                     [{kk: vv for kk, vv in q.items() if kk not in ("line", "attach")} for q in v])
+                                 for k, v in lines.items()}
             pred_ctx["used"] = True
             return lines
 

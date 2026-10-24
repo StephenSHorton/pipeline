@@ -477,6 +477,51 @@ class PredTests(unittest.TestCase):
         self.assertGreater(rep[0]["pulled_in"], 0)
         self.assertLess(P["pelvis_r"][1], float(V[:, 1].max()))
 
+    def test_the_hips_go_over_the_hind_legs(self) -> None:
+        P0 = {"hips": np.array([0, 0.8, -0.5]), "fl": np.array([0.2, 0.6, 0.55]), "fr": np.array([-0.2, 0.6, 0.55]),
+              "bl": np.array([0.2, 0.6, -0.55]), "br": np.array([-0.2, 0.6, -0.55])}
+        spec = {"legs": [["fl"], ["fr"], ["bl"], ["br"]]}
+        # predicted legs of a longer body, its root mid-body
+        plegs = [{"line": np.array([[x, 0.6, z], [x, 0.0, z]])} for x in (0.2, -0.2) for z in (0.6, -0.7)]
+        root = np.array([0.01, 0.75, 0.0])
+        at = rig_pred.hips_target(P0, spec, plegs, root)
+        np.testing.assert_allclose(at, [0.01, 0.8, -0.65], atol=1e-9)  # 0.05 ahead of the hind roots, as on P0
+        _, _, _, V, F = self.quadruped()  # a box 0.7 tall from y 0.3: y 1.2 pokes out of the back
+        P0["hips"] = np.array([0, 1.2, -0.5])
+        at = rig_pred.hips_target(P0, spec, plegs, root, V, F)
+        self.assertLess(at[1], float(V[:, 1].max()))
+        self.assertGreater(at[1], root[1])  # pulled toward the root only as far as the mesh needs
+        self.assertIsNone(rig_pred.hips_target(P0, {"legs": [["fl"], ["fr"]]}, plegs[:2], root))  # a bird
+
+    def test_the_trunk_joints_go_where_the_predicted_legs_and_neck_hang(self) -> None:
+        spec = {"body": ["hips", "spine_1", "spine_2", "neck", "head"], "neck_lift": "neck",
+                "legs": [["humerus_l"], ["humerus_r"], ["thigh_l"], ["thigh_r"]]}
+        children = {"hips": ["spine_1", "pelvis_l", "pelvis_r"], "spine_1": ["spine_2"], "spine_2": ["neck", "scapula_l", "scapula_r"],
+                    "neck": ["head"], "scapula_l": ["humerus_l"], "scapula_r": ["humerus_r"], "pelvis_l": ["thigh_l"], "pelvis_r": ["thigh_r"]}
+        self.assertEqual(rig_pred.shoulder_joint(spec, children), "spine_2")
+        line = np.array([[0, 1.0, -0.2], [0, 1.0, 0.3], [0, 1.1, 0.6], [0, 1.3, 0.9], [0, 1.5, 1.3], [0, 1.7, 1.6]])
+        legs = [{"line": np.array([[x, 0.6, z], [x, 0, z]]), "attach": np.array([x / 2, 1.0, z + 0.1])}
+                for x in (0.2, -0.2) for z in (0.2, -0.7)]
+        lines_t = {"body": {"line": line, "neck_index": 2}, "legs": legs}
+        an = rig_pred.trunk_anchors(spec, children, lines_t, line[0])
+        np.testing.assert_allclose(an["hips"], [0, 1.0, -0.6])  # the hind legs' attach, on the centre line
+        np.testing.assert_allclose(an["spine_2"], [0, 1.0, 0.3])  # the front legs'
+        np.testing.assert_allclose(an["neck"], line[2])  # where the head chain leaves the body
+        P = {"hips": np.array([0, 1.0, -0.6]), "spine_1": np.array([0, 1.0, -0.3]), "spine_2": np.array([0, 1.0, 0.0]),
+             "neck": np.array([0, 1.5, 0.9]), "head": np.array([0, 1.8, 1.6])}
+        for side, x in (("l", 0.2), ("r", -0.2)):
+            P[f"scapula_{side}"], P[f"humerus_{side}"] = np.array([x, 1.0, 0.1]), np.array([x, 0.6, 0.2])
+            P[f"pelvis_{side}"], P[f"thigh_{side}"] = np.array([x, 1.0, -0.9]), np.array([x, 0.6, -1.0])
+        r = rig_pred.lay_runs(P, children, spec["body"], np.r_[[an["hips"]], line],
+                              [("spine_2", an["spine_2"]), ("neck", an["neck"])])
+        np.testing.assert_allclose(P["spine_2"], an["spine_2"], atol=1e-6)
+        np.testing.assert_allclose(P["neck"], an["neck"], atol=1e-6)
+        np.testing.assert_allclose(P["head"], line[-1], atol=1e-6)
+        self.assertEqual(r["anchors"], ["spine_2", "neck"])
+        self.assertEqual(len(r["length_ratios"]), 3)
+        lines_t["legs"] = [{k: v for k, v in q.items() if k != "attach"} for q in legs]
+        self.assertEqual(rig_pred.trunk_anchors(spec, children, lines_t, line[0]), {})  # no attach: the template's way
+
     def test_a_leg_hung_straight_off_the_trunk_has_no_pivot(self) -> None:
         P0, P, children, V, F = self.quadruped()
         spec = {"body": ["hips", "spine_1", "spine_2", "pelvis_r"], "tail": ["hips", "tail_1"]}  # a bird's leg off the hips
