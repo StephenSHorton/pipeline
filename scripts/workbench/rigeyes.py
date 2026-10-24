@@ -219,14 +219,20 @@ def pivots(r: Rig, ch: dict | None, limit: float = PIVOT_MAX) -> dict:
         source = "halfway up to the lowest leg root (no leg band in the mesh)"
     fwd = np.asarray(ch["forward"], float)
     length = max(float(np.ptp(r.P @ fwd)), 1e-9)
+    height = max(float(np.ptp(r.P[:, 1])), 1e-9)
     legs = []
     for lg in ch["legs"]:
         root = lg["root"]
         col = rig_territory._column(lg, r.parents, r.jpos, line)
         d = float(np.linalg.norm((r.jpos[root] - col)[[0, 2]])) / length
         upper = [k for k in lg["bones"] if r.parents[k] == root]
+        # how far the thigh's lower end (its child joint) sits above the leg line, x height: above it, the whole
+        # thigh is where the territory fades legs out
+        knee = [k for k in lg["bones"] if upper and r.parents[k] == upper[0]]
+        above = (float(r.jpos[knee[0], 1]) - line) / height if knee else None
         legs.append({"root": r.names[root], "upper": r.names[upper[0]] if upper else None, "part": lg["part"],
-                     "attach": r.names[lg["attach"]], "off_leg": round(d, 3), "ok": d <= limit})
+                     "attach": r.names[lg["attach"]], "off_leg": round(d, 3), "ok": d <= limit,
+                     "upper_above_line": None if above is None else round(above, 3)})
     return {"leg_line": round(float(line), 4), "leg_line_from": source, "body_length": round(length, 4),
             "measure": f"xz distance from the leg's root joint to its leg at the leg line, / body length; over {limit} "
                        "is flagged", "legs": legs}
@@ -246,6 +252,11 @@ def check_summary(folder: Path, glb: Path) -> dict | None:
                       for c, v in (s.get("motion") or {}).items()},
             "foot_slide": slide, "problems": [q.get("label") for q in s.get("problems") or []],
             "stale": glb.stat().st_mtime > p.stat().st_mtime + 1}
+
+
+def _buried(lg: dict) -> bool:
+    """The leg's thigh lies wholly above the leg line, where the territory fades legs out: it owns nothing by design."""
+    return lg.get("upper_above_line") is not None and lg["upper_above_line"] > 0
 
 
 def diagnose(st: dict, sh: dict[str, float], pv: dict, ch: dict | None, threshold: float) -> tuple[list[str], list[str]]:
@@ -277,6 +288,10 @@ def diagnose(st: dict, sh: dict[str, float], pv: dict, ch: dict | None, threshol
         if off:
             why += f": check the {off[0]['part']}' pivot ({off[0]['root']} is {off[0]['off_leg']:.2f} of a body " \
                    "length from its leg)"
+        elif empty and all(_buried(lg) for lg in empty):
+            why += f": the lower leg meets the body here ({', '.join(lg['upper'] for lg in empty)} lie above the leg " \
+                   "line and own nothing by design). Soften the seam (the territory's leg_band, smoothing), don't move " \
+                   "weight onto the thigh: on the sheep that made every clip worse"
         elif empty:
             why += f": {', '.join(lg['upper'] for lg in empty)} own nothing, so the lower leg meets the body at this " \
                    "seam; look at the heat of both sides of it"
@@ -291,8 +306,14 @@ def diagnose(st: dict, sh: dict[str, float], pv: dict, ch: dict | None, threshol
                          "the weights")
             if lg["upper"] and lg["upper"] not in flagged:
                 flagged.append(lg["upper"])
-    if nothing:
-        notes.append(f"{', '.join(lg['upper'] for lg in nothing)} own almost nothing (under {100 * OWNS_NOTHING:g}% "
+    buried = [lg for lg in nothing if _buried(lg)]
+    if buried:
+        notes.append(f"{', '.join(lg['upper'] for lg in buried)} own almost nothing because the whole bone sits above the "
+                     f"leg line (its lower joint {min(lg['upper_above_line'] for lg in buried):.2f}x height up or more, "
+                     "where the territory fades legs out): expected, not a weights bug")
+    loose = [lg for lg in nothing if not _buried(lg)]
+    if loose:
+        notes.append(f"{', '.join(lg['upper'] for lg in loose)} own almost nothing (under {100 * OWNS_NOTHING:g}% "
                      "of the weight each): the leg's top bends with whatever owns it instead")
         flagged += [lg["upper"] for lg in nothing if lg["upper"] not in flagged]
     if not notes:

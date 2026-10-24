@@ -18,7 +18,7 @@ Rig, after every rig or weights/joint change:
 a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears, foot slide and problems.
 b. Read the per-bone numbers (no pictures): edges past 2x per clip and the bones that own them, weight shares, and the pivot check (a leg's root joint over its own leg; over 0.25 of a body length is wrong).
 c. Only for the flagged bones, rig_review heat "flagged" (side/front/q/back, rest and worst frame; temp images).
-d. Diagnose before editing. A weights problem is a bone owning the wrong region, bleed across legs, or a thigh that owns nothing: fix it with POST /rig/<stem>/weights. A joint problem is a pivot in the wrong place: fix the joint, then rig with reuse_skin true. The sheep's mid-body hind pivot was a joint problem that weight edits barely moved.
+d. Diagnose before editing. A weights problem is a bone owning the wrong region or bleed across legs: fix it with POST /rig/<stem>/weights. A thigh above the leg line owns nothing by design; a stretched seam there needs a softer band, not thigh weight. A joint problem is a pivot in the wrong place: fix the joint, then rig with reuse_skin true. The sheep's mid-body hind pivot was a joint problem that weight edits barely moved.
 e. Show before and after in the app's Compare view (Rig tab), not as image files. The activity feed already shows Stephen each call (Follow Claude), so take no status pictures.
 <!-- /digest -->
 
@@ -92,8 +92,16 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
    one image. The frames go to a temp folder that is deleted afterwards (`keep_images` keeps them). Nothing is
    written into out/.
 5. **Diagnose before editing.** Decide whether it is weights or joints:
-   - Weights: a bone owns the wrong region, weight bleeds from one leg onto another, or a thigh owns nothing.
-     Fix it with a weights edit (the app's Weights panel, or POST /rig/<stem>/weights), which saves a rig take.
+   - Weights: a bone owns the wrong region, or weight bleeds from one leg onto another. Fix it with a weights edit
+     (the app's Weights panel, or POST /rig/<stem>/weights), which saves a rig take.
+   - A thigh that owns nothing is not always a bug. When its whole bone sits above the leg line (`pivots` gives
+     `upper_above_line`, x height), the territory keeps the wool body off the leg on purpose. The sheep's thighs
+     sit 0.12-0.24x height above it. Moving the band's leg weight onto them made every clip worse (Run: 27 edges
+     past 2x to 43). What fixed the seam was a softer gradient: the territory's leg band 0.12 to 0.18 and smoothing
+     6 to 12 (Run 27 to 10, Walk 13 to 5), with the rump's lift against the hips unchanged.
+   - Test weight ideas offline first: rig/skinned_raw.glb holds the learned weights, and rig.clean_weights on them
+     with the rig's skeleton reproduces the rig's weights exactly, so a setting can be measured in seconds before
+     a re-rig.
    - Joints: a pivot is in the wrong place. Fix where the joint goes (on the predicted-skeleton path that is
      rig_pred.place_pivots), then `rig` with `reuse_skin: true`.
    - The sheep: its hind pivot sat 0.39 of a body length from the leg, so Walk swung the leg about a point mid-body.

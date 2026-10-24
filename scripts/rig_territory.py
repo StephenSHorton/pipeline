@@ -16,9 +16,11 @@ rump) owned the rump. Played, Walk lifted the rump by half the height and grew t
    - legs: above the leg line (the mesh's leg band top: the lowest horizontal section that is body-wide, as the
      workbench's leg finder reads it; measured on the sheep the upper-leg joints sit 0.1-0.2x height above it,
      inside the wool, so the joints are only the fallback) the leg's weight fades out over LEG_BAND x height
-     (smoothstep). Near the line, points far (in xz) from that leg's own column lose it too (a belly between the
-     legs), from LEG_REACH[0] to LEG_REACH[1] x height. Below the line a leg keeps only points nearer its own
-     column than any other leg's (legs don't grab each other).
+     (smoothstep). A thigh whose bone lies wholly above the line owns nothing, by design: on the sheep moving the
+     band's leg weight onto the thigh made every clip stretch more (Run 27 edges past 2x to 43); a softer band fixed
+     the seam. Near the line (from LEG_BELOW x height under it), points far (in xz) from that leg's own column lose
+     it too (a belly between the legs), from LEG_REACH[0] to LEG_REACH[1] x height. Below the line a leg keeps only
+     points nearer its own column than any other leg's (legs don't grab each other).
    - neck (with the head): points behind the neck's root joint along the body's forward axis lose it over
      NECK_BAND x height (the chest stays with the chest).
    - tail: points in front of the tail's root joint lose it over TAIL_BAND, and points farther than TAIL_REACH x
@@ -35,12 +37,16 @@ import re
 
 import numpy as np
 
-LEG_BAND = 0.12  # x height: leg weight fades out over this band above the leg line (0.06 creased the rump in Walk)
+LEG_BAND = 0.18  # x height: leg weight fades out over this band above the leg line (0.06 creased the rump in Walk;
+# with the hind pivot over the leg, 0.18 and 12 smoothing took the sheep's Run from 27 edges past 2x to 10 and Walk
+# from 13 to 5, the rump's lift against the hips unchanged)
+LEG_BELOW = 0.12  # x height: the band below the line where points far from a leg's column lose it (a belly)
 LEG_REACH = (0.08, 0.16)  # x height, xz from the leg's column at the line: kept nearer, stripped farther (near the line)
 NECK_BAND = 0.06  # x height behind the neck root joint
 TAIL_BAND = 0.05
 TAIL_REACH = 0.10  # x height from the tail bones
-SMOOTH_ITERS = 6  # measured on the sheep: 0, 3, 6, 9, 12; 6 lowered every clip's stretch p99 below the unlimited rig
+SMOOTH_ITERS = 12  # sheep: 6 was best of 0-12 with the hind pivot mid-body; re-measured with it over the leg, 12
+# (18 traded Sleep for Run)
 SMOOTH_ALPHA = 0.5
 WELD_TOL = 0.002  # x height: corners this close are one point for smoothing
 LEG_NAME = re.compile(r"leg|foot|toe|hoof|paw|ankle|knee|thigh|shin|calf|humerus|scapula|pelvis", re.I)
@@ -197,7 +203,8 @@ def _column(lg: dict, parents: list[int], jpos: np.ndarray, line: float) -> np.n
 
 
 def removal(P: np.ndarray, chains: dict, parents: list[int], jpos: np.ndarray, H: float, leg_line: float,
-            leg_band: float = LEG_BAND, leg_reach: tuple[float, float] = LEG_REACH, neck_band: float = NECK_BAND,
+            leg_band: float = LEG_BAND, leg_reach: tuple[float, float] = LEG_REACH, leg_below: float = LEG_BELOW,
+            neck_band: float = NECK_BAND,
             tail_band: float = TAIL_BAND, tail_reach: float = TAIL_REACH) -> list[tuple[str, list[int], np.ndarray]]:
     """Per chain (label, bones, removal 0..1 per point). Legs also carry the 'not mine' rule below the line."""
     P = np.asarray(P, float)
@@ -219,7 +226,7 @@ def removal(P: np.ndarray, chains: dict, parents: list[int], jpos: np.ndarray, H
                 d = np.minimum(d, _seg_dist(P, c, jpos[top]))
             dl.append(d)
         owner = np.argmin(np.stack(dl, 1), 1)
-    near_line = smoothstep((P[:, 1] - (leg_line - leg_band * H)) / max(leg_band * H, 1e-9))
+    near_line = smoothstep((P[:, 1] - (leg_line - leg_below * H)) / max(leg_below * H, 1e-9))
     for li, (lg, c) in enumerate(zip(chains["legs"], cols)):
         up = smoothstep((P[:, 1] - leg_line) / max(leg_band * H, 1e-9))
         dxz = np.linalg.norm((P - c)[:, [0, 2]], axis=1)
@@ -331,7 +338,7 @@ def territory(P: np.ndarray, F: np.ndarray | None, J: np.ndarray, W: np.ndarray,
     """Limit each chain's weights to its territory, smooth, limit again. P (n,3) rest positions, F (m,3) faces or
     None (no smoothing), J/W top-k joint indices / weights, names/parents/jpos per joint (parents[k] = -1 for a
     root). leg_top: the leg line (absolute y; default read from the mesh, else the joints). neck_root: the plan's
-    neck_lift joint name, if any. bands: leg_band, leg_reach, neck_band, tail_band, tail_reach (x height).
+    neck_lift joint name, if any. bands: leg_band, leg_reach, leg_below, neck_band, tail_band, tail_reach (x height).
     Returns top-4 J, W and what was done."""
     P = np.asarray(P, float)
     jpos = np.asarray(jpos, float)

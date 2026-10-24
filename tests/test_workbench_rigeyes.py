@@ -174,6 +174,29 @@ class Pivot(Creature):
         self.assertLess(good["clips"]["Walk"]["over"], bad["clips"]["Walk"]["over"])
 
 
+class Diagnosis(unittest.TestCase):
+    """A thigh above the leg line owns nothing by design: the diagnosis says so instead of asking for its weight."""
+
+    def legs(self, above: float) -> dict:
+        return {"legs": [{"root": "pelvis", "upper": "thigh", "part": "hind legs", "attach": "hips", "off_leg": 0.1,
+                          "ok": True, "upper_above_line": above}]}
+
+    def stretch(self) -> dict:
+        return {"Walk": {"over": 12, "bones": {"hips": 9, "shin": 4}}}
+
+    def test_thigh_above_the_line_is_by_design(self) -> None:
+        ch = {"part": {"thigh": "hind legs", "shin": "hind legs", "pelvis": "hind legs"}}
+        notes, _ = rigeyes.diagnose(self.stretch(), {"hips": 50.0}, self.legs(0.13), ch, 2.0)
+        self.assertTrue(any("by design" in n and "don't move weight onto the thigh" in n for n in notes), notes)
+        self.assertTrue(any("expected, not a weights bug" in n for n in notes), notes)
+
+    def test_thigh_below_the_line_owning_nothing_is_a_finding(self) -> None:
+        ch = {"part": {"thigh": "hind legs", "shin": "hind legs", "pelvis": "hind legs"}}
+        notes, flagged = rigeyes.diagnose(self.stretch(), {"hips": 50.0}, self.legs(-0.05), ch, 2.0)
+        self.assertTrue(any("bends with whatever owns it" in n for n in notes), notes)
+        self.assertIn("thigh", flagged)
+
+
 class Heat(Creature):
     def setUp(self) -> None:
         super().setUp()
