@@ -541,6 +541,45 @@ class PredTests(unittest.TestCase):
         lines_t["legs"] = [{k: v for k, v in q.items() if k != "attach"} for q in legs]
         self.assertEqual(rig_pred.trunk_anchors(spec, children, lines_t, line[0]), {})  # no attach: the template's way
 
+    def test_a_missing_fourth_leg_is_mirrored_from_its_partner(self) -> None:
+        # the pig: three predicted legs, the hind left missing (a stub labelled other)
+        legs = [{"line": np.array([[x, 0.6, z], [x, 0, z]]), "attach": np.array([0, 0.9, 0.0]), "pred": ["b"]}
+                for x, z in ((0.2, 0.3), (-0.2, 0.3), (-0.2, -0.5))]
+        done, mirrored = rig_pred.complete_legs(legs, 0.0)
+        self.assertTrue(mirrored)
+        self.assertEqual(len(done), 4)
+        np.testing.assert_allclose(done[3]["line"], [[0.2, 0.6, -0.5], [0.2, 0, -0.5]])
+        self.assertTrue(done[3]["mirrored"])
+        self.assertEqual(rig_pred.complete_legs(legs[:2], 0.0), (legs[:2], False))  # a bird's two: as they are
+        self.assertEqual(rig_pred.complete_legs(done, 0.0)[1], False)
+
+    def test_legs_hung_from_one_joint_place_the_trunk_by_their_tops(self) -> None:
+        # the pig's prediction hangs all four legs from its mid-body root: the hips go over the hind legs' tops
+        spec = {"body": ["hips", "spine_1", "spine_2"], "legs": [["humerus_l"], ["humerus_r"], ["thigh_l"], ["thigh_r"]]}
+        children = {"hips": ["spine_1", "pelvis_l", "pelvis_r"], "spine_1": ["spine_2"], "spine_2": ["scapula_l", "scapula_r"],
+                    "scapula_l": ["humerus_l"], "scapula_r": ["humerus_r"], "pelvis_l": ["thigh_l"], "pelvis_r": ["thigh_r"]}
+        legs = [{"line": np.array([[x, 0.6, z], [x, 0, z]]), "attach": np.array([0, 0.9, -0.05])}
+                for x in (0.2, -0.2) for z in (0.25, -0.4)]
+        an = rig_pred.trunk_anchors(spec, children, {"legs": legs}, np.array([0.01, 0.9, -0.05]))
+        np.testing.assert_allclose(an["hips"], [0.01, 0.9, -0.4])
+        np.testing.assert_allclose(an["spine_2"], [0.01, 0.9, 0.25])
+
+    def test_an_ear_labelled_head_becomes_a_line_to_the_snout(self) -> None:
+        import trimesh
+        from types import SimpleNamespace
+        mesh = trimesh.creation.box(extents=(0.4, 0.5, 1.2))
+        mesh.apply_translation((0, 0.5, 0))
+        mesh.vertices[mesh.vertices[:, 2] > 0.5] *= (0.0, 1.0, 1.0)  # a centred ridge at the front: the snout
+        jp = {0: np.array([0, 0.7, 0]), 1: np.array([0.0, 0.7, 0.4]), 2: np.array([-0.15, 0.75, 0.42])}
+        p = SimpleNamespace(H=0.5, root=[jp[0]], jp=jp, names={0: "root", 1: "b1", 2: "b2"}, P=np.asarray(mesh.vertices),
+                            par={0: -1, 1: 0, 2: 1}, path_to=lambda k: [0, 1, 2][: k + 1])
+        lab = {"forward": [0.0, 0.0, 1.0], "chains": [{"label": "head", "joints": [1, 2]}]}
+        body = rig_pred.target_lines(p, lab, mesh, 0.25)["body"]
+        self.assertTrue(body["head_from_ear"])
+        self.assertAlmostEqual(float(body["line"][-2][0]), 0.0)  # the base on the centre line
+        self.assertAlmostEqual(float(body["line"][-1][2]), 0.6)  # the tip at the snout
+        self.assertEqual(body["neck_index"], 1)
+
     @staticmethod
     def spine() -> tuple[list[str], dict, dict]:
         chain = ["hips", "s1", "s2", "s3", "neck", "n1", "head"]

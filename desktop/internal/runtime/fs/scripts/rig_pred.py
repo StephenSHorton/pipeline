@@ -299,11 +299,29 @@ def target_lines(p: Pred, lab: dict, mesh, floor: float) -> dict:
             continue
         ks = p.path_to(d["joints"][-1])
         line = [p.jp[k] for k in ks]
-        ext = _surface_ext(mesh, line[-1], line[-1] - line[-2], H) if len(line) > 1 else None
+        rebuilt = False
+        if kind == "head" and len(line) > 1:
+            # a "head" chain whose last bone runs more sideways than forward is an ear (the pig's prediction had no
+            # head chain, only its two ears, one labelled head: the neck and head were laid along it, the head joint
+            # 0.19 off to the side): its base goes onto the centre line and the line runs on to the snout, the
+            # frontmost point near the centre line
+            fwd = np.asarray(lab.get("forward") or [0.0, 0.0, 1.0], float)
+            lat = np.cross([0.0, 1.0, 0.0], fwd)
+            lat /= max(np.linalg.norm(lat), 1e-12)
+            seg = line[-1] - line[-2]
+            if abs(float(seg @ lat)) > abs(float(seg @ fwd)):
+                base = line[-2] - float((line[-2] - root) @ lat) * lat
+                V = np.asarray(mesh.vertices)
+                mid = np.abs((V - root) @ lat) < 0.08 * H
+                if mid.any():
+                    line = [*line[:-2], base, V[mid][int(np.argmax((V[mid] - root) @ fwd))]]
+                    rebuilt = True
+        ext = None if rebuilt else (_surface_ext(mesh, line[-1], line[-1] - line[-2], H) if len(line) > 1 else None)
         if ext is not None:
             line.append(ext)
         out["body" if kind == "head" else "tail"] = {"line": np.array(line), "pred": [p.names[k] for k in ks],
-                                                       "surface_ext": ext is not None}
+                                                       "surface_ext": ext is not None,
+                                                       **({"head_from_ear": True} if rebuilt else {})}
         if kind == "head" and d["joints"][0] in ks:  # where the predicted head chain (its neck) leaves the body
             out["body"]["neck_index"] = ks.index(d["joints"][0])
     legs = [c for c in lab["chains"] if c["label"] == "leg"]
@@ -483,10 +501,15 @@ def trunk_anchors(spec: dict, children: dict, lines_t: dict, root: np.ndarray) -
     out: dict[str, np.ndarray] = {}
     if len(plegs) != 4 or len(spec.get("legs") or []) != 4 or not all("attach" in q for q in plegs):
         return out
-    by_z = sorted(plegs, key=lambda q: q["attach"][2])
+    # a prediction that hangs every leg from one joint (the pig's: all four from its mid-body root) says nothing
+    # about where the hips and shoulders go by its attach joints: there, the legs' own tops place them along the body
+    star = float(np.ptp([q["attach"][2] for q in plegs])) < 1e-6
+    by_z = sorted(plegs, key=lambda q: (q["line"][0] if star else q["attach"])[2])
     for joint, pair in (("hips", by_z[:2]), (shoulder_joint(spec, children), by_z[2:])):
         if joint:
             at = np.mean([q["attach"] for q in pair], 0)
+            if star:
+                at[2] = float(np.mean([q["line"][0][2] for q in pair]))
             at[0] = root[0]
             out[joint] = at
     body = lines_t.get("body") or {}
@@ -563,6 +586,29 @@ def lay_runs(P: dict, children: dict, chain: list[str], line: np.ndarray, anchor
             "tip_residual": runs[-1]["tip_residual"], "anchors": [j for j, _, _ in kept]}
 
 
+def complete_legs(plegs: list[dict], cx: float) -> tuple[list[dict], bool]:
+    """Three predicted legs on a four-legged plan: the fourth, mirrored across the body's middle (x = cx) from the
+    lone leg at its end. The pig's prediction found three, its hind left a stub labelled other; matched by side, the
+    hind-left chain stayed where the template put it, mid-belly and 0.21 of the height off the floor, so the skin gave
+    it nothing and the hips dragged that leg through every clip, and trunk_anchors (which needs four) left the hips
+    mid-body. The pair is the two legs nearest each other along the body on opposite sides; the lone one's twin is
+    missing. Any other count is left as it is."""
+    if len(plegs) != 3:
+        return plegs, False
+    top = [q["line"][0] for q in plegs]  # the leg's own top: its attach joint can sit on the centre line
+    pairs = [(abs(top[i][2] - top[j][2]), i, j) for i in range(3) for j in range(i + 1, 3)
+             if np.sign(top[i][0] - cx) != np.sign(top[j][0] - cx)]
+    if not pairs:
+        return plegs, False
+    _, i, j = min(pairs)
+    lone = plegs[3 - i - j]
+    twin = {**lone, "line": lone["line"].copy(), "pred": [], "mirrored": True}
+    twin["line"][:, 0] = 2.0 * cx - twin["line"][:, 0]
+    if "attach" in lone:
+        twin["attach"] = np.array([2.0 * cx - lone["attach"][0], lone["attach"][1], lone["attach"][2]])
+    return [*plegs, twin], True
+
+
 def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarray, tV: np.ndarray, tF: np.ndarray,
              H_t: float, plan: dict | None = None) -> dict:
     """Template joints (name -> template-frame position, changed in place) onto the predicted lines (template frame).
@@ -572,6 +618,8 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
     P0 = {n: p.copy() for n, p in P.items()}  # the template's own proportions, for place_pivots
     root_t = (lines_t.get("body") or lines_t.get("tail") or {}).get("line")
     lines_t = dict(lines_t)
+    if len(spec.get("legs") or []) == 4:
+        lines_t["legs"], rep["leg_mirrored"] = complete_legs(lines_t.get("legs") or [], float(np.median(mesh_t[:, 0])))
     anchors = trunk_anchors(spec, children, lines_t, root_t[0]) if root_t is not None else {}
     hips_at = anchors.pop("hips", None)
     if hips_at is None and root_t is not None:  # no attach joints on the predicted legs: the template's offset
@@ -625,17 +673,21 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
     tlegs = [c for c in spec["legs"] if all(n in P for n in c)]
     plegs = lines_t.get("legs", [])
     cx = float(np.median(mesh_t[:, 0]))
-    used = set()
     laid: dict[str, float] = {}  # leg chain root -> the length scale it was laid at
-    for c in tlegs:
-        side = np.sign(P[c[0]][0] - cx)
-        cand = [i for i, q in enumerate(plegs) if i not in used and np.sign(q["line"][0][0] - cx) == side]
-        if not cand:
+    # each side's predicted legs go to that side's template legs nearest along the body first (not in chain order:
+    # with one predicted leg on a side the first chain took it, even if it was the other end's)
+    match: dict[int, int] = {}
+    pairs = sorted((abs(q["line"][0][2] - P[c[0]][2]), ci, i) for ci, c in enumerate(tlegs) for i, q in enumerate(plegs)
+                   if np.sign(q["line"][0][0] - cx) == np.sign(P[c[0]][0] - cx))
+    for _, ci, i in pairs:
+        if ci not in match and i not in match.values():
+            match[ci] = i
+    lines: dict[int, dict] = {ci: plegs[i] for ci, i in match.items()}
+    for ci, c in enumerate(tlegs):
+        if ci not in lines:
             rep["paths"].append({"kind": "leg", "chain": c[0], "skipped": "no predicted leg on that side"})
             continue
-        i = min(cand, key=lambda i: abs(plegs[i]["line"][0][2] - P[c[0]][2]))
-        used.add(i)
-        q = plegs[i]
+        q = lines[ci]
         _shift_subtree(P, children, c[0], q["line"][0] - P[c[0]])
         # the key joint sits above the floor as much as the template's does: lift the floor point by that
         line = q["line"].copy()
@@ -645,7 +697,7 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
             line[-1, 1] = key_y
         r = lay(P, children, c, line, keep_tail_rigid=True, clamp=LEG_CLAMP)
         rep["paths"].append({"kind": "leg", "chain": c[0], "pred": q["pred"], **r, "pred_tip_gap_H": q["tip_gap_H"],
-                             "floor_ext": q["floor_ext"]})
+                             "floor_ext": q["floor_ext"], **({"mirrored": True} if q.get("mirrored") else {})})
         laid[c[0]] = float(np.clip(r["length_ratio"], *LEG_CLAMP))
     rep["pivots"] = place_pivots(P, P0, children, spec, laid, tV, tF, H_t)
     # chains with no predicted counterpart: folded onto the body sides (rig_fit's wings), unsupported
