@@ -131,15 +131,23 @@ export interface HudSizes {
   bottom: number;
 }
 
+export interface Insets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
 export interface PaneLayout {
-  inset: { top: number; right: number; bottom: number; left: number };
+  /** The room the HUD leaves, from the viewer's edges. */
+  inset: Insets;
   stacked: boolean;
 }
 
 /**
- * Where the two panes go: a framed window in the room the HUD leaves, so each model is centred where nothing covers it.
- * Wide, that is between the columns and under the view card (side by side, or stacked when the halves would be too
- * thin); on phones, between the left column and the bottom stack, one pane above the other.
+ * The room the HUD leaves while comparing, where each model is centred so nothing covers it. Wide, that is between
+ * the columns and under the view card (side by side, or stacked when the halves would be too thin); on phones,
+ * between the left column and the bottom stack, one pane above the other.
  */
 export function paneLayout(h: HudSizes): PaneLayout {
   const gap = (n: number) => (n > 0 ? EDGE + n + AIR : EDGE);
@@ -154,3 +162,35 @@ export function paneLayout(h: HudSizes): PaneLayout {
   if (h.width - left - right < MIN_CLEAR) left = EDGE;
   return { inset: { top: gap(h.top), right, bottom: EDGE, left }, stacked: (h.width - left - right) / 2 < MIN_HALF };
 }
+
+/** Each pane's own share of the room, from its edges, and the box both models are framed to. */
+export interface PaneClears {
+  /** The left pane, or the top one when stacked. */
+  first: Insets;
+  second: Insets;
+  /** The smaller pane's room: both sides share one zoom, so both models fit. */
+  frame: { width: number; height: number };
+}
+
+/** A pane keeps at least this much of itself clear, however wide the HUD is. */
+const MIN_ROOM = 120;
+
+/**
+ * The panes fill the viewer, split down the middle (or across it, stacked); the HUD floats over them as it does over
+ * one model. Each pane's clear room is the part of the HUD's room (paneLayout) inside it.
+ */
+export function paneClears(width: number, height: number, layout: PaneLayout): PaneClears {
+  const { inset: n, stacked } = layout;
+  const half = (stacked ? height : width) / 2;
+  const cap = (v: number) => Math.max(0, Math.min(v, half - MIN_ROOM));
+  const first = stacked ? { top: cap(n.top), right: n.right, bottom: 0, left: n.left } : { top: n.top, right: 0, bottom: n.bottom, left: cap(n.left) };
+  const second = stacked ? { top: 0, right: n.right, bottom: cap(n.bottom), left: n.left } : { top: n.top, right: cap(n.right), bottom: n.bottom, left: 0 };
+  const [pw, ph] = stacked ? [width, half] : [half, height];
+  const room = (c: Insets) => ({ width: Math.max(1, pw - c.left - c.right), height: Math.max(1, ph - c.top - c.bottom) });
+  const a = room(first);
+  const b = room(second);
+  return { first, second, frame: { width: Math.min(a.width, b.width), height: Math.min(a.height, b.height) } };
+}
+
+/** How far a pane's clear room's centre sits from the pane's centre, in px (+x right, +y down). */
+export const roomShift = (c: Insets) => ({ x: (c.left - c.right) / 2, y: (c.top - c.bottom) / 2 });

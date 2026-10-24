@@ -11,12 +11,12 @@ import { cn } from "@/lib/utils";
 import { CompareHeat, skeletonNames } from "@/screens/asset/rig/compareHeat";
 import { useWeights, weightsSession } from "@/screens/asset/rig/weightsApi";
 import { fileOf, isPixelFile } from "@/viewer/candidates";
-import { Diorama } from "@/viewer/Diorama";
+import { Diorama, type Room } from "@/viewer/Diorama";
 import { loadFirstGlb } from "@/viewer/loadGlb";
 import type { PixelLook } from "@/viewer/pixelLook";
 import { prepareModel, type PreparedModel } from "@/viewer/prepareModel";
 import { PANEL } from "./classes";
-import { missingBone, takeModelFiles } from "./compare";
+import { missingBone, takeModelFiles, type Insets } from "./compare";
 import { usePanels } from "./panels/store";
 import type { ViewerStage } from "./panels/panels";
 
@@ -37,6 +37,9 @@ export interface CompareSideProps {
   pixel: PixelLook;
   /** The panes are one above the other (phones, thin room): the label goes by the line across the middle. */
   stacked: boolean;
+  /** Where the model goes in this pane, and the pane's room the HUD leaves (compare.ts paneClears). */
+  room?: Room;
+  clear: Insets;
 }
 
 type Left = { state: "loading" } | { state: "ready"; model: PreparedModel; clips: AnimationClip[] } | { state: "error"; message: string };
@@ -82,8 +85,8 @@ export function CompareSide(p: CompareSideProps) {
 
   return (
     <>
-      <Diorama follower model={model} clips={clips} clip={p.clip} playing={p.playing} clay={p.clay} wire={p.wire} spin={p.spin} pixel={p.pixel} />
-      <SideLabel side="left" text={p.label} notes={[status, heatNote, clipNote]} stacked={p.stacked} />
+      <Diorama follower model={model} clips={clips} clip={p.clip} playing={p.playing} clay={p.clay} wire={p.wire} spin={p.spin} pixel={p.pixel} room={p.room} />
+      <SideLabel side="left" text={p.label} notes={[status, heatNote, clipNote]} stacked={p.stacked} clear={p.clear} />
     </>
   );
 }
@@ -130,15 +133,23 @@ function useLeftHeat(stem: string, stage: ViewerStage, model: PreparedModel | nu
 }
 
 /** A side's name, at the divider: the left's top right, the right's top left (stacked: either side of the line across
- * the middle). Notes under it: loading, a missing bone or clip. Never takes the pointer. */
-export function SideLabel({ side, text, notes = [], stacked }: { side: "left" | "right"; text: string; notes?: string[]; stacked: boolean }) {
+ * the middle), inside the pane's room clear of the HUD. Notes under it: loading, a missing bone or clip. Never takes
+ * the pointer. */
+export function SideLabel({ side, text, notes = [], stacked, clear }: { side: "left" | "right"; text: string; notes?: string[]; stacked: boolean; clear: Insets }) {
   const lines = notes.filter(Boolean);
+  const at = (k: keyof Insets) => clear[k] + 12;
+  const place =
+    side === "left"
+      ? stacked
+        ? { right: at("right"), bottom: at("bottom") }
+        : { top: at("top"), right: at("right") }
+      : stacked
+        ? { top: at("top"), right: at("right") }
+        : { top: at("top"), left: at("left") };
   return (
     <div
-      className={cn(
-        "pointer-events-none absolute z-[1] flex max-w-[calc(100%-24px)] flex-col gap-1",
-        side === "left" ? (stacked ? "right-3 bottom-3 items-end" : "top-3 right-3 items-end") : stacked ? "top-3 right-3 items-end" : "top-3 left-3 items-start",
-      )}
+      style={place}
+      className={cn("pointer-events-none absolute z-[1] flex max-w-[calc(100%-24px)] flex-col gap-1", side === "right" && !stacked ? "items-start" : "items-end")}
     >
       <Card size="hud" role="note" className={cn(PANEL, "pointer-events-none px-2.5 py-1 font-semibold text-ink tabular-nums")}>
         {text}

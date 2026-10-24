@@ -1,7 +1,7 @@
 // Compare's rules: which version goes on the left, the side labels, the left file, and bones matched by name.
 import { describe, expect, it } from "vitest";
 import type { FlowEntry, FlowTake } from "@/lib/flow";
-import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, paneLayout, shiftLeft, sideLabels, takeModelFiles, useCompare, versionNo } from "./compare";
+import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, paneClears, paneLayout, roomShift, shiftLeft, sideLabels, takeModelFiles, useCompare, versionNo } from "./compare";
 
 const take = (id: string, files: string[] = []): FlowTake => ({ id, made: 0, files });
 const rig = (e: Partial<FlowEntry> = {}): FlowEntry => ({
@@ -130,3 +130,30 @@ describe("where the panes go", () => {
     expect(paneLayout(phone(500)).inset.top).toBe(288);
   });
 });
+
+describe("pane clears", () => {
+  const layout = (stacked: boolean) => ({ inset: { top: 60, right: 362, bottom: 12, left: 360 }, stacked });
+
+  it("gives each half of a side-by-side split its share of the HUD's room", () => {
+    const c = paneClears(1440, 900, layout(false));
+    expect(c.first).toEqual({ top: 60, right: 0, bottom: 12, left: 360 });
+    expect(c.second).toEqual({ top: 60, right: 362, bottom: 12, left: 0 });
+    expect(c.frame).toEqual({ width: 358, height: 828 });
+    expect(roomShift(c.first)).toEqual({ x: 180, y: 24 });
+    expect(roomShift(c.second)).toEqual({ x: -181, y: 24 });
+  });
+
+  it("splits top and bottom when stacked", () => {
+    const c = paneClears(1024, 800, layout(true));
+    expect(c.first).toEqual({ top: 60, right: 362, bottom: 0, left: 360 });
+    expect(c.second).toEqual({ top: 0, right: 362, bottom: 12, left: 360 });
+    expect(c.frame).toEqual({ width: 302, height: 340 });
+  });
+
+  it("keeps some of a pane clear when the HUD is wider than it", () => {
+    const c = paneClears(600, 800, layout(false));
+    expect(c.first.left).toBe(180);
+    expect(c.second.right).toBe(180);
+  });
+});
+

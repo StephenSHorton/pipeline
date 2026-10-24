@@ -22,7 +22,7 @@ import { outRelFile, resetViewerTools, setViewerLoader, setViewerModel, useViewe
 import { useAssetDocs } from "@/viewer/useAssetDocs";
 import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
-import { compareTakes, comparing, leftTake, paneLayout, sideLabels, useCompare, type PaneLayout } from "./compare";
+import { compareTakes, comparing, leftTake, paneClears, paneLayout, roomShift, sideLabels, useCompare, type Insets, type PaneClears } from "./compare";
 import { CompareSide, SideLabel } from "./CompareSide";
 import { Hud } from "./Hud";
 import type { ViewerStage } from "./panels/panels";
@@ -244,15 +244,12 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
 
   return (
     // The clay fills the stage; the versions panel rides in the HUD's left column, so nothing sits under the ground.
-    // Comparing, the two dioramas share a framed window in the room the HUD leaves: left and right, stacked on phones
-    // and when the room is thin. A drag around the window still turns. The right one keeps its place in the tree, so
-    // turning Compare on or off never remounts it (the model stays; the camera keeps its orbit, the zoom re-frames).
+    // Comparing, the two dioramas split the stage: left and right, stacked on phones and when the room is thin. The HUD
+    // floats over both, and each model is centred in its pane's room the HUD leaves (Diorama's room). The right one
+    // keeps its place in the tree, so turning Compare on or off never remounts it (the model stays; the camera keeps
+    // its orbit, the zoom re-frames).
     <div ref={root} className="absolute inset-0 overflow-hidden">
-      {left ? <OrbitSurface tool={null} /> : null}
-      <div
-        className={cn("absolute inset-0 flex", left && "overflow-hidden rounded-[14px] border border-hair", left && panes?.stacked && "flex-col")}
-        style={left && panes ? panes.inset : undefined}
-      >
+      <div className={cn("absolute inset-0 flex", left && panes?.stacked && "flex-col")}>
         {left ? (
           // Its own surface without the panel tool: a drag turns both sides, a brush only paints the right.
           <div className={cn("relative min-h-0 min-w-0 flex-1 border-hair", panes?.stacked ? "border-b" : "border-r")}>
@@ -271,15 +268,27 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
                 spin={spin}
                 pixel={pixel}
                 stacked={!!panes?.stacked}
+                room={panes ? { shift: roomShift(panes.first), frame: panes.frame } : undefined}
+                clear={panes?.first ?? NO_INSETS}
               />
             </OrbitSurface>
           </div>
         ) : null}
         <div className="relative min-h-0 min-w-0 flex-1">
           <OrbitSurface tool={tool}>
-            <Diorama model={model} clips={clips} clip={clip} playing={playing} clay={clay} wire={wire} spin={spin} pixel={pixel} />
+            <Diorama
+              model={model}
+              clips={clips}
+              clip={clip}
+              playing={playing}
+              clay={clay}
+              wire={wire}
+              spin={spin}
+              pixel={pixel}
+              room={left && panes ? { shift: roomShift(panes.second), frame: panes.frame } : undefined}
+            />
           </OrbitSurface>
-          {left ? <SideLabel side="right" text={labels.right} stacked={!!panes?.stacked} /> : null}
+          {left ? <SideLabel side="right" text={labels.right} stacked={!!panes?.stacked} clear={panes?.second ?? NO_INSETS} /> : null}
         </div>
       </div>
       <div className="pointer-events-none absolute inset-0">
@@ -316,13 +325,15 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
   );
 }
 
+const NO_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
+
 /**
- * The panes' room while comparing, measured from the HUD's columns (data-hud-col in ./Hud.tsx): their sizes are
+ * Each pane's room while comparing, measured from the HUD's columns (data-hud-col in ./Hud.tsx): their sizes are
  * enough, since each is anchored to its edge. Re-measured when one changes (a panel opens, the clips arrive).
  */
-function usePaneLayout(root: RefObject<HTMLDivElement | null>, on: boolean): PaneLayout | null {
+function usePaneLayout(root: RefObject<HTMLDivElement | null>, on: boolean): (PaneClears & { stacked: boolean }) | null {
   const narrow = useNarrow();
-  const [layout, setLayout] = useState<PaneLayout | null>(null);
+  const [layout, setLayout] = useState<(PaneClears & { stacked: boolean }) | null>(null);
   useLayoutEffect(() => {
     const el = root.current;
     if (!on || !el) return setLayout(null);
@@ -332,7 +343,7 @@ function usePaneLayout(root: RefObject<HTMLDivElement | null>, on: boolean): Pan
       const right = col("right");
       // The right column under the view card: the camera stack and the dock (the view card is the top inset).
       const under = right ? [...right.children].filter((c) => !c.matches("[data-hud-col=top]")) : [];
-      const next = paneLayout({
+      const room = paneLayout({
         width: el.clientWidth,
         height: el.clientHeight,
         narrow,
@@ -341,6 +352,7 @@ function usePaneLayout(root: RefObject<HTMLDivElement | null>, on: boolean): Pan
         top: size(col("top")).height,
         bottom: size(col("bottom")).height,
       });
+      const next = { ...paneClears(el.clientWidth, el.clientHeight, room), stacked: room.stacked };
       setLayout((was) => (JSON.stringify(was) === JSON.stringify(next) ? was : next));
     };
     measure();

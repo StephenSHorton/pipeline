@@ -7,6 +7,9 @@
 // Compare draws a second diorama, the follower (an earlier version, screens/viewer/CompareSide.tsx). Its camera rig
 // reads the same look store, so orbit, zoom and pan move both; it never frames the store, never registers with the
 // tool API or the clip player, and takes its spin angle and clip time from the current side.
+//
+// Comparing, each pane fills half the viewer under the HUD, and `room` centres its model where no card covers it: the
+// camera's view offset moves the picture by `shift` px, and the current side frames the model to `frame`, not the canvas.
 import { useFrame, useThree } from "@react-three/fiber";
 import { ClayCameraRig, ClayGround, Lights, PostFX, RoundCyl, SceneCanvas, applyLook, lookDefaults, setViewHome, useLook } from "mokei/clay";
 import { useEffect, useLayoutEffect, useRef } from "react";
@@ -36,6 +39,13 @@ export interface DioramaProps {
   pixel: PixelLook;
   /** Compare's left side: follows the current diorama (see the top of this file). */
   follower?: boolean;
+  /** Comparing: where in this pane the model goes (see the top of this file). */
+  room?: Room;
+}
+
+export interface Room {
+  shift: { x: number; y: number };
+  frame: { width: number; height: number };
 }
 
 export function Diorama(props: DioramaProps) {
@@ -46,6 +56,7 @@ export function Diorama(props: DioramaProps) {
       <NoPointerEvents />
       {props.follower ? null : <ToolBridge />}
       <ClayCameraRig home={{ x: 0, z: 0 }} />
+      <ViewShift x={props.room?.shift.x ?? 0} y={props.room?.shift.y ?? 0} />
       <Lights />
       <Stage {...props} />
       {props.follower ? null : <ToolOverlays />}
@@ -65,7 +76,19 @@ function NoPointerEvents() {
   return null;
 }
 
-function Stage({ model, clips, clip, playing, clay, wire, spin, follower }: DioramaProps) {
+/** Move the picture by (x, y) px, +y down: the projection's window moves the other way (three's setViewOffset). */
+function ViewShift({ x, y }: { x: number; y: number }) {
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  useLayoutEffect(() => {
+    if (x || y) camera.setViewOffset(size.width, size.height, -x, -y, size.width, size.height);
+    else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+  }, [camera, size.width, size.height, x, y]);
+  return null;
+}
+
+function Stage({ model, clips, clip, playing, clay, wire, spin, follower, room }: DioramaProps) {
   const turn = useRef<Group>(null);
   const height = model?.height ?? 4;
   const padR = Math.max(4.2, (model?.footprint ?? 3) * 1.25 + 0.6);
@@ -94,25 +117,28 @@ function Stage({ model, clips, clip, playing, clay, wire, spin, follower }: Dior
       </group>
       <RoundCyl radius={padR} height={PAD_H} fillet={0.18} material="base" position={[0, -PAD_H / 2, 0]} cast={false} segments={64} />
       <group ref={turn}>{model ? <primitive object={model.root} /> : null}</group>
-      {model && !follower ? <Framer model={model} /> : null}
+      {model && !follower ? <Framer model={model} frame={room?.frame} /> : null}
       {model && clips.length ? <Animator model={model} clips={clips} clip={clip} playing={playing} follower={follower} /> : null}
     </group>
   );
 }
 
-/** Frame the model: ortho zoom is px per world unit; zoomReferenceWidth = canvas width makes cameraZoom exactly that. */
-function Framer({ model }: { model: PreparedModel }) {
+/** Frame the model: ortho zoom is px per world unit; zoomReferenceWidth = canvas width makes cameraZoom exactly that.
+ * Comparing, it fits `frame` (the pane's clear room) instead of the whole canvas. */
+function Framer({ model, frame }: { model: PreparedModel; frame?: { width: number; height: number } }) {
   const size = useThree((s) => s.size);
   const first = useRef(true);
+  const fw = frame?.width ?? size.width;
+  const fh = frame?.height ?? size.height;
   useLayoutEffect(() => {
     if (!size.width || !size.height) return;
-    const zoom = Math.min(size.width, size.height) / (2 * model.radius * 1.12);
+    const zoom = Math.min(fw, fh) / (2 * model.radius * 1.12);
     const home = { cameraZoom: zoom, cameraAzimuth: HOME.azimuth, cameraElevation: HOME.elevation };
     setViewHome(home);
     const camera = first.current ? { ...home, panX: 0, panZ: 0 } : { cameraZoom: zoom }; // a resize keeps the orbit
     first.current = false;
     applyLook({ ...camera, zoomReferenceWidth: size.width, zoomMin: zoom * 0.35, zoomMax: zoom * 5 });
-  }, [model, size.width, size.height]);
+  }, [model, size.width, size.height, fw, fh]);
   return null;
 }
 
