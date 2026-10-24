@@ -1,6 +1,6 @@
 """rig_pred.floor_pass on the sheep (out/mlg-sheep, when it is there): a lying clip rests its trunk on the floor, not
-on its folded hooves, and Eating lowers the head with the neck while the trunk stands (Stephen: "I was thinking it
-would just move the head down to eat")."""
+on its folded hooves, Walk's body rises and falls smoothly, and Eating brings the head to the floor with a straight
+trunk tipped over spread front legs (Stephen: "I was thinking it would just move the head down to eat")."""
 from __future__ import annotations
 
 import json
@@ -94,24 +94,42 @@ class SheepFloorPass(unittest.TestCase):
         self.assertGreater(float(np.ptp(y)), 0.01)  # still a walk's rise and fall, not a glide
         self.assertGreater(min(self.belly("Walk")), 0.2)  # no hoof under the floor lifts it oddly: a standing belly
 
-    def test_eating_keeps_the_trunk_standing_and_lowers_the_head(self) -> None:
-        # before: the horse's 63 degree neck-base turn folded the sheep's chest down onto its front legs (the belly
-        # 0.07 of the height under Idle's); now the neck base keeps half its turn (NECK_BASE_KEEP), the trunk behind it
-        # none
-        idle = self.belly("Idle")
-        self.assertGreater(self.belly("Eating").min(), idle.min() - 0.04)
+    def test_eating_lowers_the_head_to_the_floor_on_spread_front_legs(self) -> None:
+        # before: the horse's 63 degree neck-base turn folded the sheep's chest down onto its front legs; then, held
+        # standing, its short neck stopped 0.25 of the height up (Stephen: "it does need to be able to move the head
+        # down to the floor"). Now the trunk stays straight (spine_1..3 at rest), tips about the hind legs' roots, and
+        # the front legs spread and bend under it while the hind legs stand
         c = self.by["Eating"]
         f = len(c["times"]) // 2
         for n in ("spine_1", "spine_2", "spine_3"):
             self.assertLess(np.degrees(R.from_quat(c["rot"][self.node[n]][f]).magnitude()), 1.0, n)
         reach = self.report["Eating"]["head_reach"]
-        self.assertEqual(reach["pitch_max_deg"], 0.0)
-        self.assertGreater(reach["bend_max_deg"], 0.0)
+        self.assertGreater(reach["pitch_max_deg"], 5.0)
+        self.assertLess(reach["gap_max_after"], 0.03)
         head = np.isin(np.array(self.fk.joints)[self.J[np.arange(len(self.J)), self.W.argmax(1)]],
                        [self.node[n] for n in self.node if n.startswith("head") or n in ("spine_5", "spine_6")])
-        self.assertLess(self.pose("Eating", f)[head, 1].min(), self.pose("Idle", 0)[head, 1].min() - 0.1 * self.H)
-        self.assertGreater(self.pose("Eating", f)[head, 1].min(), self.floor - 0.005 * self.H)
+        low = np.array([(self.pose("Eating", k)[head, 1].min() - self.floor) / self.H for k in range(0, len(c["times"]), 4)])
+        self.assertLess(low.min(), 0.02)  # the mouth at the floor (the horse lifts its head a little as it chews)
+        self.assertGreater(low.min(), -0.005)
 
+        def joints(name: str, fr: int) -> dict:
+            cc = self.by[name]
+            pos, _ = self.fk.world({j: cc["rot"][j][fr].astype(float) for j in cc["rot"]},
+                                   {cc["root"]: cc["root_t"][fr].astype(float)})
+            return pos
+
+        def knee(p: dict, a: str, b: str, k: str) -> float:
+            u, v = p[self.node[a]] - p[self.node[b]], p[self.node[k]] - p[self.node[b]]
+            return float(np.degrees(np.arccos(np.clip(u @ v / np.linalg.norm(u) / np.linalg.norm(v), -1, 1))))
+        pe, pi = joints("Eating", f), joints("Idle", 0)
+        for s_ in "lr":
+            hind = ("back_leg_upper_" + s_, "back_leg_lower_" + s_, "back_leg_ankle_" + s_)
+            self.assertGreater(knee(pe, *hind), knee(pi, *hind) - 10.0)  # the hind legs stand (they crouched to 141)
+            front = ("front_humerus_" + s_, "front_leg_upper_" + s_, "front_leg_lower_" + s_)
+            self.assertGreater(knee(pe, *front), 100.0)  # bent, not folded under (86 without the spread)
+            # spread: the front foot further out from the middle than standing
+            foot = self.node["front_leg_foot_" + s_]
+            self.assertGreater(abs(float(pe[foot] @ np.array([1.0, 0, 0]))), abs(float(pi[foot] @ np.array([1.0, 0, 0]))) + 0.01 * self.H)
 
 if __name__ == "__main__":
     unittest.main()

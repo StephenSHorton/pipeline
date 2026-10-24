@@ -1050,6 +1050,14 @@ BOB_SMOOTH = 0.1  # seconds: the sigma the standing body's height is smoothed ov
 BOB_SHARE = 1 / 12  # of the clip's length, at most
 BOB_FLOAT = 0.005  # of the height: a foot the smoothed body leaves floating up to this is left; past it the body drops
 
+# A held trunk whose neck is too short still tips forward about its hind legs' roots so the head reaches, its front legs
+# spreading and bending under it (Stephen chose that for the sheep, whose neck starts 0.72 of its height up and reaches
+# 0.34): each front foot steps out up to SPREAD_MAX of the height (SPREAD_FWD of the step forward) to keep its leg's
+# length, the knee bending for the rest. On the sheep (version 13) 0.06 bends the front knees to 113 degrees with the
+# mouth at the floor; none folds them to 86, 0.1 splays them wide (33 edges past 2x to 23).
+SPREAD_MAX = 0.06
+SPREAD_FWD = 0.3
+
 PITCH_MAX = 20.0  # degrees the trunk may tip forward about the hind legs' tops for the head to reach
 
 
@@ -1142,7 +1150,8 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
        to the head) is bent down about the lateral axis (head_bend: the bend shared along the chain, at most
        HEAD_BEND_MAX degrees) until the head's lowest point has the template head's clearance, scaled; blended in and
        out with the template's clearance (a short neck on the horse's clip otherwise stops in the air); with a plan
-       neck_from the trunk is held standing first (NECK_BASE_KEEP) and is not tipped, so a short neck stops short;
+       neck_from the trunk is held standing first (NECK_BASE_KEEP), and a neck still too short tips it about the hind
+       legs' roots, the front legs spreading and bending under it (SPREAD_MAX);
     3. a head that still goes through the floor is lifted at the neck (about the lateral axis, up to 45 degrees).
     plan: the body plan whose leg / neck_lift paths to use (PATHS[cls] without one). prefer_track: a clip that carries
     its own contacts (c['track']['contact'], rig_clips) plants each foot on its own stance frames (clearance 0 there)
@@ -1225,6 +1234,7 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                     run.append(k)
                 if fk.parent.get(k) == node_of[nf]:
                     hold["trunk"] += run
+                    hold.setdefault("front", []).append(legs.index(cc))
         if reach_v.any() and htrack.get("rest"):
             yaw = float(np.arctan2(-lateral[2], lateral[0]))
             reach = {"chain": [node_of[n] for n in chain], "v": reach_v, "track": htrack, "k": H / max(htrack["H"], 1e-9),
@@ -1232,6 +1242,7 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                      "hold": hold}
             if body_names and legs and node_of.get(body_names[0]) is not None:
                 fwd = fk.rest[node_of[hname]] - fk.rest[node_of[body_names[0]]]
+                reach["fwd"] = np.array([fwd[0], 0.0, fwd[2]]) / max(float(np.hypot(fwd[0], fwd[2])), 1e-9)
                 tops = sorted(legs, key=lambda cc: float(fk.rest[node_of[cc[0]]] @ fwd))
                 keep = []
                 for cc in legs:  # each leg's root: up from its first joint to the child of a body joint
@@ -1241,7 +1252,10 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                     keep.append(k)
                 if fk.parent.get(node_of[body_names[0]]) == rootn:
                     reach["pitch"] = {"hips": node_of[body_names[0]], "root": rootn, "keep": sorted(set(keep)),
-                                      "pivot": [node_of[cc[0]] for cc in tops[:2]]}
+                                      "pivot": [node_of[cc[0]] for cc in tops[:2]],
+                                      # the hind legs' roots (they keep their world turn: tipped about them, they stay
+                                      # put, where about the legs' first joints the hind feet sank and the knees bent)
+                                      "roots": sorted({keep[legs.index(cc)] for cc in tops[:2]})}
     out = {}
     for c in clips:
         tr = track["clips"].get(c["name"])
@@ -1345,6 +1359,7 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                     pos, rot = fk.world(quats, trans)
                     V = _skin(P, J, W, fk, pos, rot)
                 want = floor + max(0.0, float(tr["low"][f])) * k_scale
+                spread, spread_w = None, 0.0
 
                 def ground(V: np.ndarray, last: bool = False) -> None:
                     if ys is not None:  # the smoothed height; at the end lowered only where the body floats
@@ -1377,7 +1392,24 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                         # no dead band while lying: a folded hoof hovering about the floor would switch the IK on and off
                         if abs(need) < (0.002 * H if lw is None or lw[f] <= 0.0 else 1e-6 * H):
                             continue
-                        qB, qA = _two_bone(pos, rot, A, B, K, pos[K] + np.array([0, need, 0]), lateral)
+                        tgt = pos[K] + np.array([0, need, 0])
+                        if spread is not None and li in spread:
+                            # a front leg under the tipped, held trunk: step the foot out (and a little forward) so the
+                            # leg keeps its length from hip to foot instead of folding at the knee
+                            d0, side = spread[li]
+                            v = float(pos[A][1] - tgt[1])
+                            hv = np.array([tgt[0] - pos[A][0], 0.0, tgt[2] - pos[A][2]])
+                            h = float(np.linalg.norm(hv))
+                            want_h_ = np.sqrt(max(d0 * d0 - v * v, 0.0))
+                            step = float(np.clip(want_h_ - h, 0.0, SPREAD_MAX * H * spread_w))
+                            if step > 0:
+                                dirn = (1.0 - SPREAD_FWD) * side + SPREAD_FWD * reach["fwd"]
+                                dirn = dirn / np.linalg.norm(dirn)
+                                # the step that grows the horizontal reach from h to h + step along dirn
+                                b_ = float(hv @ dirn)
+                                t_ = -b_ + np.sqrt(max(b_ * b_ + (h + step) ** 2 - h * h, 0.0))
+                                tgt = tgt + dirn * t_
+                        qB, qA = _two_bone(pos, rot, A, B, K, tgt, lateral)
                         oldK = rot[K]
                         quats[B] = (rot[fk.parent[B]].inv() * qB * rot[B]).as_quat()
                         pA = fk.parent.get(A)
@@ -1411,10 +1443,35 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                     V = _skin(P, J, W, fk, pos, rot)
                     now = float(V[reach["v"], 1].min())
                     want_h = now + float(hb[f]) * (target - now)
+                    if now - want_h > 0.002 * H and reach.get("pitch") and reach["hold"] and SPREAD_MAX > 0 \
+                            and reach["hold"].get("front"):
+                        # a held trunk whose neck is too short (the sheep's: its neck starts 0.72 of its height up and
+                        # reaches 0.34): tip it forward about the hind legs' tops and spread the front legs (Stephen
+                        # chose spread and bent front legs) so the shoulders come down without folding the knees
+                        pos, rot = fk.world(quats, trans)
+                        spread = {}
+                        for li in reach["hold"]["front"]:
+                            cch = legs[li]
+                            A, K = node_of[cch[0]], node_of[cch[-1]]
+                            sd = float((pos[K] - pos[A]) @ lateral)
+                            spread[li] = (float(np.linalg.norm(pos[K] - pos[A])), lateral * (1.0 if sd >= 0 else -1.0))
+                        spread_w = float(hb[f])
+                        quats, trans, pdeg = trunk_pitch(fk, quats, trans, {**reach["pitch"], "pivot": reach["pitch"]["roots"]},
+                                                         lateral, P[reach["v"]], J[reach["v"]], W[reach["v"]], want_h)
+                        pitch_deg.append(pdeg)
+                        if pdeg > 0:
+                            for _ in range(3):
+                                legs_ik()
+                                pos, rot = fk.world(quats, trans)
+                                V = _skin(P, J, W, fk, pos, rot)
+                                ground(V)
+                            ground(V, last=True)
+                            pos, rot = fk.world(quats, trans)
+                            V = _skin(P, J, W, fk, pos, rot)
+                            now = float(V[reach["v"], 1].min())
                     if now - want_h > 0.002 * H and reach.get("pitch") and not reach["hold"]:
                         # the neck alone is too short: tip the trunk forward about the hind legs' tops (the legs keep their
-                        # world turn), then plant the feet again (not with a held trunk: tipping it folds the front knees
-                        # to 27-65 degrees on the sheep; the head stops short instead)
+                        # world turn), then plant the feet again (a held trunk tips above, with its front legs spread)
                         quats, trans, pdeg = trunk_pitch(fk, quats, trans, reach["pitch"], lateral, P[reach["v"]],
                                                          J[reach["v"]], W[reach["v"]], want_h)
                         pitch_deg.append(pdeg)
