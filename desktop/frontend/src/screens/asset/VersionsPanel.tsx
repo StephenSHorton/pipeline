@@ -52,16 +52,17 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
     output: intent?.output,
     stacking,
   });
-  // The current version may sit below the grid's fold (16 versions, 12 shown): scroll the grid, only the grid, to it.
-  const grid = useRef<HTMLDivElement>(null);
+  // The current version may sit below the body's fold (many versions, or a short column): scroll the body, only the
+  // body, to it.
+  const body = useRef<HTMLDivElement>(null);
   const current = items.find((it) => it.type === "take" && it.pressed);
   const currentId = current && current.type === "take" ? current.id : "";
   useEffect(() => {
-    const g = grid.current;
-    const tile = g?.querySelector<HTMLElement>("[aria-pressed=true]");
-    if (!g || !tile) return;
-    const top = tile.offsetTop - g.offsetTop;
-    if (top < g.scrollTop || top + tile.offsetHeight > g.scrollTop + g.clientHeight) g.scrollTop = top + tile.offsetHeight - g.clientHeight;
+    const b = body.current;
+    const tile = b?.querySelector<HTMLElement>("[aria-pressed=true]");
+    if (!b || !tile) return;
+    const top = tile.getBoundingClientRect().top - b.getBoundingClientRect().top + b.scrollTop;
+    if (top < b.scrollTop || top + tile.offsetHeight > b.scrollTop + b.clientHeight) b.scrollTop = top + tile.offsetHeight - b.clientHeight;
   }, [currentId, open, stem]);
 
   // Comparing: the version on the left, which a click changes.
@@ -135,14 +136,18 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
         {summary ? <span className="text-[length:calc(12px*var(--fs))] text-ink-3 tabular-nums">{summary}</span> : null}
         <ChevronDown aria-hidden="true" size={15} strokeWidth={2.2} className={cn("ml-auto shrink-0 text-ink-3 transition-transform", !open && "-rotate-90")} />
       </button>
-      {/* overflow-y-auto: in the viewer's left column the panel may shrink (AssetScreen), and its body scrolls then. */}
-      <div id={bodyId} className={cn("min-h-0 flex-col gap-1.5 overflow-y-auto [scrollbar-width:thin]", open ? "flex" : "hidden")}>
+      {/* The one scroller: the grid never scrolls on its own (two scrollbars, one inside the other). Capped, and in the
+          viewer's left column the panel may shrink further (AssetScreen). */}
+      <div
+        ref={body}
+        id={bodyId}
+        className={cn("max-h-[min(20rem,45vh)] min-h-0 flex-col gap-1.5 overflow-y-auto [scrollbar-width:thin]", open ? "flex" : "hidden")}
+      >
         {g.takes.length ? (
           <div
-            ref={grid}
             role="group"
             aria-label="Versions"
-            className="grid min-h-12 max-h-[min(11.5rem,30vh)] grid-cols-4 gap-1 overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
+            className="grid shrink-0 grid-cols-4 gap-1"
           >
             {g.takes.map((it) => (
               <Take key={it.id} item={it} stage={stage} disabled={pending && !compare} compare={compare} left={it.id === leftId} onPick={pick} />
