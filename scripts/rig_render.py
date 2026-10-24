@@ -574,6 +574,18 @@ def contact_sheet(pngs: list, rows: int, cols: int, captions: list | None = None
     return S
 
 
+THUMB = "thumb.png"
+
+
+def sheet_thumb(sheet: Path | str, cols: list, out: Path | str) -> Path:
+    """The version thumbnail: the sheet's Rest cell at three-quarters (or its last column), caption strip cut off."""
+    with Image.open(sheet) as S:
+        tile = S.size[0] // len(cols)
+        c = cols.index("q") if "q" in cols else len(cols) - 1
+        S.crop((c * tile, CAP, (c + 1) * tile, CAP + tile)).save(out)
+    return Path(out)
+
+
 # ---------------------------------------------------------------- the job
 
 DEFAULT_JOB = {"views": ["side", "xside", "front", "top", "q"], "modes": ["texture", "sticks"], "frames": "auto",
@@ -680,6 +692,7 @@ def render(asset, job: dict | None = None) -> dict:
             caps.append(f"{f['clip']} {f['frac']:.2f} {v}")
     sheet = out / "contact_sheet.png"
     contact_sheet(cells, len(rows), len(sv), caps, sheet, tile=int(job["sheet_tile"]))
+    sheet_thumb(sheet, sv, out / THUMB)
 
     result = {"asset": str(A), "glbs": [str(g) for g in glbs], "out": str(out), "H": round(H, 6), "camera": cam,
               "floor_rows": {v: round(floor_row(cam, v), 3) for v in views if v in EDGE_ON}, "view_right": VIEW_RIGHT,

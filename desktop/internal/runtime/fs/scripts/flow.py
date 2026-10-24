@@ -86,8 +86,10 @@ FILES: dict[str, tuple[str, ...]] = {
         "workbench/**/*",
     ),
     # rig/template/* is a template built for this model (rig.glb, clips.glb, its reports); of rig/preview/ only the
-    # contact sheet and frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be rendered again.
-    "rig": ("rigged.glb", "rig/*", "rig/template/*", "rig/preview/contact_sheet.png", "rig/preview/frames.json"),
+    # contact sheet, its thumbnail and frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be
+    # rendered again.
+    "rig": ("rigged.glb", "rig/*", "rig/template/*", "rig/preview/contact_sheet.png", "rig/preview/thumb.png",
+            "rig/preview/frames.json"),
     "stack": ("stack/*",),
     "export": ("export/**/*",),
 }

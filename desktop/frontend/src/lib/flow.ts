@@ -35,6 +35,7 @@ export const TAKE_SHOTS: Partial<Record<Stage, RegExp[]>> = {
   concept: [/^flat\/source\.png$/, /^lifted\.png$/, /^input\.(png|jpe?g|webp)$/],
   flat: [/^flat\/sheets\/.+\.png$/, /^flat\/parts\/.+\.png$/, /^flat\/source\.png$/],
   mesh: [/^preview\.png$/],
+  rig: [/^rig\/preview\/thumb\.png$/],
   stack: [/^stack\/preview\.png$/],
   export: [/^export\/stack\/preview\.png$/, /^export\/concept\.(png|jpe?g|webp)$/],
 };

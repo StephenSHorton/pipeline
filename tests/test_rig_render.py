@@ -228,6 +228,12 @@ class CPURender(unittest.TestCase):
         self.assertEqual(self.res["sheet_cols"], ["side", "front", "q"])
         self.assertEqual(len(self.res["sheet_rows"]), 2)
 
+    def test_thumbnail_is_the_rest_cell_at_three_quarters(self):
+        sheet = Image.open(self.res["sheet"]).convert("RGB")
+        thumb = Image.open(self.out / rr.THUMB).convert("RGB")
+        self.assertEqual(thumb.size, (120, 120))
+        self.assertEqual(thumb.tobytes(), sheet.crop((240, rr.CAP, 360, rr.CAP + 120)).tobytes())
+
     def test_contact_sheet_function(self):
         a = self.out / "Rest_0.00_side_texture.png"
         im = rr.contact_sheet([a, None, a, "-", a], rows=2, cols=3, captions=["x", "", "y", "", "z"], tile=50)
