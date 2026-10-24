@@ -72,6 +72,20 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
   grey too.
 - **Clay** (clay_set, clay_mesh) is for shapes a photo can't give depth to (the hay bale). Then generate with
   `mesh` and `paint: false`, which loads no model.
+- **From words (the MLG list, 2026-10-24).** Draw, then generate `quality: "textured"` (fill photo), then `psx`.
+  Hunyuan's paint shows wherever no view lands (the top of a back, inside a tray) and on this key it comes out
+  maroon: the pig's back got a dark red stripe until fill photo covered it. Grey metal drawn on magenta takes a
+  magenta cast that the despill's hue cone misses (a pig's real pink sits in the same range, so no hue rule can
+  tell them apart): for a grey or white prop, generate with the drawn `mesh` and `paint: false`, then if the cast
+  still bakes in, bake_photo views where pixels leaning both red and blue over green are pulled to grey (wood,
+  which leans orange, is untouched). A round subject (a watermelon) has no orientation the four views keep:
+  model it as clay and bake one lengthwise view with `mirror`; take a warm magenta bounce out of a green subject by
+  pulling red under green in that view first. `delight` washed the melon's dark green to lime.
+- **Read the drawn sheet before building.** The image model ignores some asks (a mailbox flag "lowered" came back
+  raised) and draws one-sided details on both sides (the flag in both side views). Fix what that leaves on the mesh
+  (the flag's back baked grey: paint its texels red) rather than redrawing for it.
+- **A complex vehicle needs more than 1,200 triangles:** at 1,200 the tractor lost its exhaust and its wheels went
+  jagged; `faces: 1800` (1,622 after crumbs) kept both. Say so when a model goes over the budget.
 
 ## Rig
 
@@ -120,6 +134,13 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
      hang, the shoulder where its front legs hang, the neck root where its head chain starts. Against t6: hips 45%
      to 25% of the weight, the check's Sleep 2.7x to 2.6x, Run 25 edges past 2x to 16, Sleep 18 to 9, Death 11
      to 4; Walk 7 to 10 and the check's Eating p99 2.20 to 2.29 were slightly worse.
+   - The pig: the predicted skeleton found three legs (the hind left a stub labelled "other"), hung all four from
+     its mid-body root and called an ear its head. The hind-left chain stayed mid-belly and owned nothing (the
+     hips, 23% of the weight, dragged that leg: Run 55 edges past 2x), and the head was laid along the ear.
+     rig_pred now mirrors a missing fourth leg, places the trunk by the legs' own tops when they share one joint,
+     and runs an ear-shaped head chain on to the snout: Run 55 to 16, Eating 46 to 1, Sleep 49 to 14. Read the
+     joint positions (rig_preview from the command line: the MCP server keeps rig_pred imported) when one leg's
+     weights are near zero.
    - Prefer what the mesh or the predicted skeleton says over the template's proportions: a horse template on a
      sheep is a poor body-plan match (the check says 1.8x), and its offsets carry the horse's long neck and legs.
    - The sheep: its hind pivot sat 0.39 of a body length from the leg, so Walk swung the leg about a point mid-body.
