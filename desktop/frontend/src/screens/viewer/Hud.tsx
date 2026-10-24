@@ -32,7 +32,6 @@ export interface HudProps {
   docs: AssetDocs | null;
   load: LoadState;
   lods: Lod[];
-  hasRig: boolean;
   onPickLod: (id: string) => void;
   clips: string[];
   clip: string | null;
@@ -102,7 +101,8 @@ export function Hud(p: HudProps) {
           </Card>
         </div>
         <div className="flex max-w-full flex-wrap items-end justify-center gap-2">
-          <ModelPicker lods={p.lods} hasRig={p.hasRig} current={info?.lod ?? ""} onPick={p.onPickLod} className={yields ? "max-sm:hidden" : undefined} />
+          {/* 3D only: Rig always shows the rigged model (Stephen: the Rigged / Photo bake / PSX tabs made no sense there). */}
+          {p.panel.stage === "mesh" ? <ModelPicker lods={p.lods} current={info?.lod ?? ""} onPick={p.onPickLod} className={yields ? "max-sm:hidden" : undefined} /> : null}
           {p.clips.length ? <ClipPicker {...p} /> : null}
         </div>
       </div>
@@ -127,7 +127,7 @@ function AssetCard({ stem, docs, info, onRenamed, className }: HudProps & { info
       <TitleInput stem={stem} onRenamed={onRenamed} />
       <div className="flex flex-wrap items-center gap-1.5">
         {kind ? <Badge variant="info" size="hud-sm">{kind}</Badge> : null}
-        {/* The rigged model is already named by the selected Rigged tab. */}
+        {/* The rigged model is already named by the Rig tab. */}
         {info && info.lod !== RIGGED && info.tag.toLowerCase() !== kind?.toLowerCase() ? <Badge variant="slate" size="hud-sm">{info.tag}</Badge> : null}
       </div>
       {typeof faces === "number" || info ? (
@@ -317,12 +317,12 @@ function CamBtn({ label, onClick, children }: { label: string; onClick: () => vo
 
 /* ------------------------------------------------------------------ model + clip pickers (bottom) */
 
-function ModelPicker({ lods, hasRig, current, onPick, className }: { lods: Lod[]; hasRig: boolean; current: string; onPick: (id: string) => void; className?: string }) {
-  const items = [...(hasRig ? [{ id: RIGGED, label: "Rigged", title: "The rigged model, with its clips." }] : []), ...lods.map((l) => ({
+function ModelPicker({ lods, current, onPick, className }: { lods: Lod[]; current: string; onPick: (id: string) => void; className?: string }) {
+  const items = lods.map((l) => ({
     id: l.id,
     label: l.label || l.id,
     title: `Show ${l.label || l.id} (${l.file}${typeof l.faces === "number" ? `, ${l.faces.toLocaleString()} faces` : ""}).`,
-  }))];
+  }));
   if (items.length < 2) return null;
   return (
     <Card size="hud" className={cn(PANEL, "max-w-full p-1", className)}>

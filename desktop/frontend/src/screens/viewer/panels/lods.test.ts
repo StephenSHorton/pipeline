@@ -5,7 +5,7 @@ import { PANEL_TITLES } from "./panels";
 describe("Detail levels copy (legacy index.html 2131, 2136, 4969-4972, 5255)", () => {
   it("keeps the title and hint word for word", () => {
     expect(PANEL_TITLES.lods).toBe("Detail levels");
-    expect(LODS_HINT).toBe("Show another finished model. Photo bake is the textured model; PSX is the PS1 low-poly; Rigged has the clips.");
+    expect(LODS_HINT).toBe("Show another finished model. Photo bake is the textured model; PSX is the PS1 low-poly.");
     expect(LODS_HINT).not.toMatch(/Hero|Game|Lookdev|Proxy/);
   });
 
@@ -23,15 +23,14 @@ describe("Detail levels copy (legacy index.html 2131, 2136, 4969-4972, 5255)", (
     expect(lodTitle({ id: "psx-clean", label: "", file: "psx_clean.glb" })).toBe("Show the psx-clean model (psx_clean.glb).");
   });
 
-  it("lists every LOD in lods.json order, even one, with Rigged first only when there is a rig", () => {
+  it("lists every LOD in lods.json order, even one (the rigged model is the Rig tab's, not listed)", () => {
     const lods = [
       { id: "photo", file: "textured_photo.glb", label: "Photo bake" },
       { id: "psx", file: "psx.glb", label: "PSX", faces: 1184 },
     ];
-    expect(lodButtons(lods.slice(0, 1), false)).toEqual([{ id: "photo", label: "Photo bake", title: "Show the Photo bake model (textured_photo.glb)." }]);
-    expect(lodButtons(lods, true).map((b) => b.id)).toEqual(["rigged", "photo", "psx"]);
-    expect(lodButtons(lods, true)[0]).toEqual({ id: "rigged", label: "Rigged", title: "The rigged model, with its clips." });
-    expect(lodButtons([], false)).toEqual([]);
+    expect(lodButtons(lods.slice(0, 1))).toEqual([{ id: "photo", label: "Photo bake", title: "Show the Photo bake model (textured_photo.glb)." }]);
+    expect(lodButtons(lods).map((b) => b.id)).toEqual(["photo", "psx"]);
+    expect(lodButtons([])).toEqual([]);
   });
 
   it("presses the LOD on screen, and none for a file the list does not have", () => {
@@ -40,7 +39,6 @@ describe("Detail levels copy (legacy index.html 2131, 2136, 4969-4972, 5255)", (
         { id: "photo", file: "textured_photo.glb", label: "Photo bake" },
         { id: "psx", file: "psx.glb", label: "PSX" },
       ],
-      false,
     );
     expect(pressedLod(buttons, "psx")).toBe("psx");
     expect(pressedLod(buttons, "rigged")).toBeNull();

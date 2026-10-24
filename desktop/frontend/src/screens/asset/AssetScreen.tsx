@@ -71,6 +71,7 @@ function StageBody({ versions, ...props }: StageProps & { lod?: string; versions
     case "mesh":
     case "rig":
       // The stage props too, so the viewer's panels can tell 3D from Rig and read the flow.
-      return <ViewerScreen key={props.stem} {...props} lod={props.stage === "rig" ? (props.lod ?? "rigged") : props.lod} versions={versions} />;
+      // Rig always shows the rigged model; 3D shows a finished model, never the rigged one (Rig is its own tab).
+      return <ViewerScreen key={props.stem} {...props} lod={props.stage === "rig" ? "rigged" : props.lod === "rigged" ? undefined : props.lod} versions={versions} />;
   }
 }

@@ -1,13 +1,12 @@
 // The Detail levels panel's pure logic and copy (legacy lods cubby, index.html 2129-2142; lodLabel 4969-4972; the
 // list in load() 5249-5262; fillTurnaround 4274-4296). The panel only lists and switches the LODs lods.json already
 // has: nothing here builds one (that is generate's lods stage, scripts/lods.py). The list is the finished models only
-// (viewableLods: Photo bake, PSX, the app's own saves, plus Rigged), not detail levels: Stephen asked for no hero /
+// (viewableLods: Photo bake, PSX, the app's own saves; the rigged model is the Rig tab's), not detail levels: Stephen asked for no hero /
 // lookdev / game / proxy versions. LodsPanel.tsx lays these out. No React, no fetch.
 import type { Lod } from "@/lib/api";
-import { RIGGED } from "@/viewer/candidates";
 
 /** The cubby's hint: what each finished model is (legacy named Hero and Game, which are no longer offered). */
-export const LODS_HINT = "Show another finished model. Photo bake is the textured model; PSX is the PS1 low-poly; Rigged has the clips.";
+export const LODS_HINT = "Show another finished model. Photo bake is the textured model; PSX is the PS1 low-poly.";
 
 /** The LOD list's aria-label (legacy had a bare div). "Model", as the HUD's old tabs: the region is "Detail levels". */
 export const LODS_LIST_LABEL = "Model";
@@ -70,27 +69,15 @@ export function turnaroundFigures(doc: ViewsDoc | null | undefined, input = "inp
     .map((v) => ({ id: v.id, file: v.file, caption: v.label || v.id, shape: v.role === "shape" }));
 }
 
-/** The Rigged button, kept from the new UI's model tabs (legacy's list had none; see lodButtons). */
-export const RIGGED_LABEL = "Rigged";
-export const RIGGED_TITLE = "The rigged model, with its clips.";
-
 export interface LodButton {
   id: string;
   label: string;
   title: string;
 }
 
-/**
- * The list's buttons: one per LOD in lods.json order, even a single one (legacy had no minimum). Rigged comes
- * first when the asset has a rig: legacy went back to the rigged model on every stage change (preferLod "rigged",
- * index.html 3305-3307), but here the pick is the URL's ?lod=, which a stage change keeps, so without it a LOD
- * picked on Rig would leave no way back to the rigged model and its clips.
- */
-export function lodButtons(lods: Lod[], hasRig: boolean): LodButton[] {
-  return [
-    ...(hasRig ? [{ id: RIGGED, label: RIGGED_LABEL, title: RIGGED_TITLE }] : []),
-    ...lods.map((l) => ({ id: l.id, label: lodLabel(l), title: lodTitle(l) })),
-  ];
+/** The list's buttons: one per LOD in lods.json order, even a single one (legacy had no minimum). */
+export function lodButtons(lods: Lod[]): LodButton[] {
+  return lods.map((l) => ({ id: l.id, label: lodLabel(l), title: lodTitle(l) }));
 }
 
 /**

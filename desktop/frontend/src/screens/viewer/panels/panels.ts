@@ -34,7 +34,7 @@ interface PanelDef {
 export const PANELS: PanelDef[] = [
   { id: "cleanup", side: "left", stages: ["mesh", "rig"] },
   { id: "paint", side: "left", stages: ["mesh", "rig"] },
-  { id: "lods", side: "left", stages: ["mesh", "rig"] },
+  { id: "lods", side: "left", stages: ["mesh"] },  // its model list switches away from the rigged model: 3D only
   { id: "rig", side: "right", stages: ["rig"] },
   // How much of the mesh each bone moves, painted by hand (screens/asset/rig/WeightsPanel.tsx). New, not legacy.
   { id: "weights", side: "right", stages: ["rig"] },

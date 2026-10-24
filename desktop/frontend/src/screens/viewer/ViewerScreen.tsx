@@ -298,7 +298,6 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
           docs={docs}
           load={load}
           lods={lods}
-          hasRig={!!docs?.hasRig}
           onPickLod={pickLod}
           clips={view.clips}
           clip={clip}

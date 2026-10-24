@@ -1,5 +1,5 @@
 // The Detail levels panel (legacy lods cubby, index.html 2129-2142; the list 5249-5262; fillTurnaround 4274-4296):
-// the hint, Rigged (when there is a rig) and one button per LOD in lods.json order, then the turnaround figures. It
+// the hint and one button per LOD in lods.json order, then the turnaround figures. It
 // is the same pick as the HUD's bottom model tabs, so it uses the same segmented tray (vertical). The clips stay in
 // the HUD's clip picker. Layout only: copy and rules are in lods.ts, the views.json read in lodsApi.ts.
 import { useEffect, useRef, useState } from "react";
@@ -15,7 +15,7 @@ export function LodsPanel(p: ViewerPanelProps) {
   // The last LOD shown stays pressed while the next loads (legacy set aria-pressed only after a load).
   const shown = useRef("");
   if (p.load.state === "ready") shown.current = p.load.info.lod;
-  const buttons = lodButtons(p.lods, !!p.docs?.hasRig);
+  const buttons = lodButtons(p.lods);
   const pressed = pressedLod(buttons, shown.current);
 
   // The turnaround is re-read with the docs (a job on this asset, a version pick), while the panel is open. The

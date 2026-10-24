@@ -28,9 +28,9 @@ describe("copy", () => {
 });
 
 describe("panelsFor", () => {
-  it("left rail in legacy order on 3D and Rig; the Rig check only on Rig", () => {
+  it("left rail in legacy order on 3D and Rig (Detail levels 3D only); the Rig check only on Rig", () => {
     expect(panelsFor("mesh", "left")).toEqual(["cleanup", "paint", "lods"]);
-    expect(panelsFor("rig", "left")).toEqual(["cleanup", "paint", "lods"]);
+    expect(panelsFor("rig", "left")).toEqual(["cleanup", "paint"]);
     expect(panelsFor("mesh", "right")).toEqual([]);
     expect(panelsFor("rig", "right")).toEqual(["rig", "weights"]);
   });
