@@ -522,6 +522,35 @@ class PredTests(unittest.TestCase):
         lines_t["legs"] = [{k: v for k, v in q.items() if k != "attach"} for q in legs]
         self.assertEqual(rig_pred.trunk_anchors(spec, children, lines_t, line[0]), {})  # no attach: the template's way
 
+    @staticmethod
+    def spine() -> tuple[list[str], dict, dict]:
+        chain = ["hips", "s1", "s2", "s3", "neck", "n1", "head"]
+        children = {a: [b] for a, b in zip(chain, chain[1:])}
+        P = {n: np.array([0, 1.0, -0.6 + 0.3 * k]) for k, n in enumerate(chain)}
+        return chain, children, P
+
+    def test_runs_split_by_place_on_the_line_not_by_depth(self) -> None:
+        # a neck that rises and leans back past its root: by z its points would fall in the shoulder run
+        chain, children, P = self.spine()
+        line = np.array([[0, 1, -0.6], [0, 1, 0.3], [0, 1.1, 0.6], [0, 1.5, 0.5], [0, 1.9, 0.55], [0, 1.95, 0.9]])
+        r = rig_pred.lay_runs(P, children, chain, line, [("s3", line[1]), ("neck", line[2])])
+        np.testing.assert_allclose(P["neck"], line[2], atol=1e-6)
+        neck = line[2:]
+        segs = list(zip(neck[:-1], neck[1:]))
+        self.assertLess(float(rig_pred.cd_j2b(P["head"][None], segs)[0]), 0.02)  # on the predicted neck
+        self.assertGreater(P["head"][1], 1.8)
+        self.assertGreater(P["n1"][1], 1.3)  # on the rising neck, not on a chord from the root to the tip
+        self.assertEqual(r["anchors"], ["s3", "neck"])
+
+    def test_an_anchor_that_doesnt_advance_drops_the_rest(self) -> None:
+        chain, children, P = self.spine()
+        line = np.array([[0, 1, -0.6], [0, 1, -0.3], [0, 1, 0.0], [0, 1, 0.3], [0, 1.3, 0.6], [0, 1.6, 0.9]])
+        # the shoulder sits on the hips: it and the neck after it are dropped, the chain is laid in one run
+        self.assertEqual(rig_pred.ordered_anchors(line, [("s3", line[0]), ("neck", line[1])]), [])
+        r = rig_pred.lay_runs(P, children, chain, line, [("s3", line[0]), ("neck", line[1])])
+        self.assertNotIn("anchors", r)
+        np.testing.assert_allclose(P["head"], line[-1], atol=1e-6)
+
     def test_a_leg_hung_straight_off_the_trunk_has_no_pivot(self) -> None:
         P0, P, children, V, F = self.quadruped()
         spec = {"body": ["hips", "spine_1", "spine_2", "pelvis_r"], "tail": ["hips", "tail_1"]}  # a bird's leg off the hips

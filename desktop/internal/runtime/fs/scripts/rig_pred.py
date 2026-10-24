@@ -61,6 +61,7 @@ PATHS = {
     },
 }
 ANCHOR_CLAMP = (0.25, 4.0)  # lay_runs: a run between two predicted anchors is laid to reach them
+ANCHOR_GAP = 0.03  # x the body line's length: an anchor must sit this far past the one before it
 LYING = {"Sleep", "Death", "lay_to_idle"}
 
 
@@ -496,19 +497,55 @@ def trunk_anchors(spec: dict, children: dict, lines_t: dict, root: np.ndarray) -
     return out
 
 
-def lay_runs(P: dict, children: dict, chain: list[str], line: np.ndarray, anchors: list[tuple[str, np.ndarray]]) -> dict:
-    """lay() in runs: the chain from one anchor joint to the next along the line between their points, the last run
-    on to the line's end. The neck and head after each anchor are put back to the template's shape before their run
-    (the run before swung and scaled them with its last bone)."""
+def _arc_of(line: np.ndarray, pt: np.ndarray) -> float:
+    """Arc length along the polyline of its nearest point to pt."""
+    best, at, acc = np.inf, 0.0, 0.0
+    for a, b in zip(line[:-1], line[1:]):
+        ab = b - a
+        L = float(np.linalg.norm(ab))
+        t = float(np.clip((pt - a) @ ab / max(L * L, 1e-12), 0, 1)) if L > 0 else 0.0
+        d = float(np.linalg.norm(a + t * ab - pt))
+        if d < best:
+            best, at = d, acc + t * L
+        acc += L
+    return at
+
+
+def ordered_anchors(line: np.ndarray, anchors: list[tuple[str, np.ndarray]], gap: float = ANCHOR_GAP) -> list[tuple[str, np.ndarray, float]]:
+    """The anchors (in chain order) that advance along the line, each with its arc length: each must sit at least
+    `gap` of the line's length past the one before (the line's start for the first) and short of its end. The first
+    that doesn't ends the list: a neck anchor without its shoulder would squeeze the whole spine into one run."""
     line = np.asarray(line, float)
-    runs, start, p0 = [], chain[0], line[0]
-    for joint, pt in [*anchors, (None, None)]:
+    total = float(np.linalg.norm(np.diff(line, axis=0), axis=1).sum())
+    out, prev = [], 0.0
+    for joint, pt in anchors:
+        a = _arc_of(line, np.asarray(pt, float))
+        if a < prev + gap * total or a > total - gap * total:
+            break
+        out.append((joint, np.asarray(pt, float), a))
+        prev = a
+    return out
+
+
+def _cut(line: np.ndarray, s0: float, s1: float, p0: np.ndarray, p1: np.ndarray | None) -> np.ndarray:
+    """The polyline between arc lengths s0 and s1, starting at p0 and ending at p1 (the line's end when None)."""
+    cum = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(line, axis=0), axis=1))]
+    mid = [x for x, c in zip(line, cum) if s0 < c < s1]
+    return np.array([p0, *mid, *([p1] if p1 is not None else [])])
+
+
+def lay_runs(P: dict, children: dict, chain: list[str], line: np.ndarray, anchors: list[tuple[str, np.ndarray]]) -> dict:
+    """lay() in runs: the chain from one anchor joint to the next along the line between them (split by position
+    along the line, so a neck that rises or leans back stays in its own run), the last run on to the line's end.
+    The joints after each anchor are put back to the template's shape before their run (the run before swung and
+    scaled them with its last bone). Anchors that don't advance along the line are dropped (ordered_anchors)."""
+    line = np.asarray(line, float)
+    kept = [(j, pt, a) for j, pt, a in ordered_anchors(line, anchors) if j in chain]
+    runs, start, p0, s0 = [], chain[0], line[0], 0.0
+    for joint, pt, a in [*kept, (None, None, np.inf)]:
         i0 = chain.index(start)
-        if joint is None:
-            seg, sub = np.array([p0, *[x for x in line[1:] if x[2] > p0[2]]]), chain[i0:]
-        else:
-            seg = np.array([p0, *[x for x in line[1:] if p0[2] < x[2] < pt[2]], pt])
-            sub = chain[i0:chain.index(joint) + 1]
+        sub = chain[i0:] if joint is None else chain[i0:chain.index(joint) + 1]
+        seg = _cut(line, s0, a, p0, pt)
         if len(sub) >= 2 and len(seg) >= 2:
             rel = {d: P[d] - P[sub[-1]] for d in rig_fit._descendants(children, sub[-1])} if joint else {}
             # a run ending on an anchor reaches it (the sheep's shoulder-to-neck bone is 1.8x the horse's); the
@@ -517,12 +554,12 @@ def lay_runs(P: dict, children: dict, chain: list[str], line: np.ndarray, anchor
             for d, off in rel.items():
                 P[d] = P[sub[-1]] + off
         if joint is not None:
-            start, p0 = joint, pt
-    if not runs:
+            start, p0, s0 = joint, pt, a
+    if not kept or not runs:
         return lay(P, children, chain, line)
     return {"length_ratio": runs[0]["length_ratio"], "length_ratios": [r["length_ratio"] for r in runs],
             "length_clamped": any(r["length_clamped"] for r in runs), "max_turn_deg": max(r["max_turn_deg"] for r in runs),
-            "tip_residual": runs[-1]["tip_residual"], "anchors": [j for j, _ in anchors]}
+            "tip_residual": runs[-1]["tip_residual"], "anchors": [j for j, _, _ in kept]}
 
 
 def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarray, tV: np.ndarray, tF: np.ndarray,
@@ -543,17 +580,14 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
         # lay the body from the hips forward and the tail from them back: the predicted lines start at the root
         rep["hips_over_legs"] = {"from_root": round(float(np.linalg.norm(hips_at - root_t[0])), 4)}
         z = hips_at[2]
-        runs = sorted(((j, a) for j, a in anchors.items() if j in spec["body"] and a[2] > z),
-                      key=lambda ja: spec["body"].index(ja[0]))
-        runs = [ja for k, ja in enumerate(runs) if all(ja[1][2] > o[1][2] for o in runs[:k])]  # front to back only
-        if runs:
-            rep["trunk_anchors"] = {j: np.round(a, 4).tolist() for j, a in runs}
+        runs = sorted(((j, a) for j, a in anchors.items() if j in spec["body"]), key=lambda ja: spec["body"].index(ja[0]))
         for kind, ahead in (("body", True), ("tail", False)):
             q = lines_t.get(kind)
             if q is None:
                 continue
-            pts = [x for x in q["line"] if (x[2] > z) == ahead]
-            # no predicted line on that side of the hips: as if there were no predicted chain (a tail: unsupported)
+            pts = [x for x in q["line"] if (x[2] > z) == ahead and np.linalg.norm(x - hips_at) > 1e-6]
+            # no predicted line on that side of the hips (a tail hanging straight down from where the hind legs hang):
+            # as if there were no predicted chain (a tail: unsupported)
             lines_t[kind] = {**q, "line": np.array([hips_at, *pts])} if pts else None
         root_t = np.array([hips_at])
     if root_t is not None and "hips" in P:
@@ -576,6 +610,8 @@ def register(cls: str, P: dict, children: dict, lines_t: dict, mesh_t: np.ndarra
         s0 = rig_fit.outside_score(P, chain, tV, tF, tree, H_t)
         if kind == "body" and runs:
             r = lay_runs(P, children, chain, tgt["line"], runs)
+            if r.get("anchors"):
+                rep["trunk_anchors"] = {j: np.round(a, 4).tolist() for j, a in runs if j in r["anchors"]}
         else:
             r = lay(P, children, chain, tgt["line"])
         s1 = rig_fit.outside_score(P, chain, tV, tF, tree, H_t)
