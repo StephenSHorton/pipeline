@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -466,6 +467,23 @@ class Workbench:
             res["_image"] = str(res["sheet"])
         return {"stem": stem, **res}
 
+    def rig_preview(self, a: dict) -> dict:
+        stem = check_stem(a["stem"])
+        self.folder(stem)
+        argv = [sys.executable, str(Path(__file__).with_name("rig_preview.py")), stem, "--root", str(self.root)]
+        for k in ("class", "plan"):
+            if a.get(k):
+                argv += [f"--{k}", str(a[k])]
+        # its own process: it swaps rig.py's skin step for a stop, which must never touch this server's modules
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=300, cwd=self.root)
+        try:
+            got = json.loads(proc.stdout)
+        except ValueError:
+            raise ToolError("rig_preview failed: " + (proc.stderr or proc.stdout)[-400:]) from None
+        if not got.get("joints"):
+            raise ToolError("rig_preview stopped before the skeleton: " + proc.stderr[-400:])
+        return {"stem": stem, **got}
+
     def playbook(self, a: dict) -> dict:
         return {"playbook": playbook_text()}
 
@@ -825,6 +843,13 @@ class Workbench:
                        "heat": {"type": ["array", "string"], "items": {"type": "string"}, "minItems": 1, "maxItems": 6,
                                 "description": "bone names, or \"flagged\" (the bones the diagnosis names, at most 4)"},
                        "keep_images": {"type": "boolean"}}, ("stem",)), self.rig_review),
+            Tool("rig_preview", "Where a re-rig would put the joints, in seconds and without one (workbench/"
+                 "rig_preview.py: rig.py on a temp copy of the asset, stopped before the skin step; the predicted "
+                 "skeleton only from its cache, so no model loads; out/ is not touched). Gives the posed trunk and leg "
+                 "joints (mesh frame) and register's body report (length ratios, trunk anchors). Use it before a re-rig "
+                 "that moves a body joint: those relearn the skin weights (about 3 minutes, one model at a time).",
+                 _obj({"stem": STEM, "class": {"type": "string"}, "plan": {"type": "string"}}, ("stem",)),
+                 self.rig_preview),
             Tool("playbook", "The pipeline's playbook in full (workbench/playbook.md): the working rules, the mesh "
                  "steps and the rig review that have worked, each with why. Read it before driving the pipeline.",
                  _obj({}), self.playbook),

@@ -277,6 +277,19 @@ class Tools(Creature):
         self.assertTrue(none["isError"])
         self.assertIn("no rig yet", none["content"][0]["text"])
 
+    def test_rig_preview_runs_apart_and_answers(self) -> None:
+        self.asset("sheepish", 0.2)
+        done = mock.Mock(stdout='{"joints": {"hips": [0, 0.5, -0.3]}, "body": null}', stderr="", returncode=0)
+        with mock.patch.object(tools.subprocess, "run", return_value=done) as run:
+            res = self.bench.call("rig_preview", {"stem": "sheepish"})
+        argv = run.call_args[0][0]
+        self.assertTrue(argv[1].endswith("rig_preview.py"))
+        self.assertIn("--root", argv)
+        self.assertEqual(res["joints"]["hips"], [0, 0.5, -0.3])
+        bad = mock.Mock(stdout="", stderr="no cached predicted skeleton", returncode=1)
+        with mock.patch.object(tools.subprocess, "run", return_value=bad), self.assertRaises(tools.ToolError):
+            self.bench.call("rig_preview", {"stem": "sheepish"})
+
     def test_rig_job(self) -> None:
         self.asset("sheepish", LEG_Z)
         out = self.bench.call("rig", {"stem": "sheepish", "class": "quadruped", "reuse_skin": True})

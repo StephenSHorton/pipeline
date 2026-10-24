@@ -18,7 +18,7 @@ Rig, after every rig or weights/joint change:
 a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears, foot slide and problems.
 b. Read the per-bone numbers (no pictures): edges past 2x per clip and the bones that own them, weight shares, and the pivot check (a leg's root joint over its own leg; over 0.25 of a body length is wrong).
 c. Only for the flagged bones, rig_review heat "flagged" (side/front/q/back, rest and worst frame; temp images).
-d. Diagnose before editing. A weights problem is a bone owning the wrong region or bleed across legs: fix it with POST /rig/<stem>/weights. A thigh above the leg line owns nothing by design; a stretched seam there needs a softer band, not thigh weight. A joint problem is a pivot in the wrong place: fix the joint, then rig with reuse_skin true. The sheep's mid-body hind pivot was a joint problem that weight edits barely moved.
+d. Diagnose before editing. A weights problem is a bone owning the wrong region or bleed across legs: fix it with POST /rig/<stem>/weights. A thigh above the leg line owns nothing by design; a stretched seam there needs a softer band, not thigh weight. A joint problem is a joint in the wrong place: fix where it goes, check it with rig_preview (seconds, no model), then rig. Leg pivots keep the skin (reuse_skin true); a moved body joint relearns it (about 3 minutes). The sheep's mid-body hind pivot and hips were joint problems that weight edits barely moved.
 e. Show before and after in the app's Compare view (Rig tab), not as image files. The activity feed already shows Stephen each call (Follow Claude), so take no status pictures.
 <!-- /digest -->
 
@@ -106,8 +106,22 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
    - Test weight ideas offline first: rig/skinned_raw.glb holds the learned weights, and rig.clean_weights on them
      with the rig's skeleton reproduces the rig's weights exactly, so a setting can be measured in seconds before
      a re-rig.
-   - Joints: a pivot is in the wrong place. Fix where the joint goes (on the predicted-skeleton path that is
-     rig_pred.place_pivots), then `rig` with `reuse_skin: true`.
+   - Joints: a joint is in the wrong place. Fix where it goes (on the predicted-skeleton path: rig_pred.register,
+     trunk_anchors, place_pivots), check the new skeleton with `rig_preview` (rig.py on a temp copy, stopped
+     before the skin step: seconds, no model, out/ untouched), then `rig` with `reuse_skin: true`. Moving a leg
+     pivot keeps the learned skin; moving a body joint (hips, spine) relearns it, about 3 minutes on the GPU, and
+     the new weights differ too, so say so when comparing takes.
+   - The sheep's hips: register put them on the predicted root, mid-body, and laid the horse's spine forward by
+     arc length. Hips owned 45% of the weight and the rump was one rigid block. Placing the hips over the hind legs
+     by the horse's own offset fixed the rump (t7) but laid the long horse neck from there, so the neck root sat
+     mid-chest: Eating's head went through the floor and the floor pass bent the neck 20 deg back up (Eating 5
+     edges past 2x to 15-19). A shoulder anchor from the horse's offsets moved spine_4 by 0.008 (t8, a wasted
+     re-rig: preview first). What worked (t9) was the predicted skeleton's own joints: the hips where its hind legs
+     hang, the shoulder where its front legs hang, the neck root where its head chain starts. Against t6: hips 45%
+     to 25% of the weight, the check's Sleep 2.7x to 2.6x, Run 25 edges past 2x to 16, Sleep 18 to 9, Death 11
+     to 4; Walk 7 to 10 and the check's Eating p99 2.20 to 2.29 were slightly worse.
+   - Prefer what the mesh or the predicted skeleton says over the template's proportions: a horse template on a
+     sheep is a poor body-plan match (the check says 1.8x), and its offsets carry the horse's long neck and legs.
    - The sheep: its hind pivot sat 0.39 of a body length from the leg, so Walk swung the leg about a point mid-body.
      Weight edits barely moved the stretch. Putting the pivot back over the leg (0.13) took Walk from 53 edges past
      2x to 13 (rig_review; 106 to 26 before seam copies were welded), and the check's Walk p99 from 2.12 to 1.62.
