@@ -1,7 +1,7 @@
 // Compare's rules: which version goes on the left, the side labels, the left file, and bones matched by name.
 import { describe, expect, it } from "vitest";
 import type { FlowEntry, FlowTake } from "@/lib/flow";
-import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, paneLayout, sideLabels, takeModelFiles, useCompare, versionNo } from "./compare";
+import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, paneLayout, shiftLeft, sideLabels, takeModelFiles, useCompare, versionNo } from "./compare";
 
 const take = (id: string, files: string[] = []): FlowTake => ({ id, made: 0, files });
 const rig = (e: Partial<FlowEntry> = {}): FlowEntry => ({
@@ -34,6 +34,12 @@ describe("the left version", () => {
     expect(compareTakes(one)).toEqual([]);
     expect(compareTakes(rig({ pick: "t1", takes: [take("t1")], unsaved: true })).map((t) => t.id)).toEqual(["t1"]);
     expect(defaultLeftTake(null)).toBeNull();
+  });
+
+  it("shift-clicking a version puts it on the left; the current one just opens compare", () => {
+    expect(shiftLeft(rig(), "t1")).toBe("t1");
+    expect(shiftLeft(rig(), "t3")).toBe("t2");
+    expect(shiftLeft(rig({ pick: "t1", takes: [take("t1")] }), "t1")).toBeNull();
   });
 
   it("keeps a chosen version, but never the current one or one that is gone", () => {

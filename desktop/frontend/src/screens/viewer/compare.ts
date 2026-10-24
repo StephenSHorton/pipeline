@@ -58,6 +58,12 @@ export function leftTake(entry: FlowEntry | null | undefined, chosen: string | n
   return defaultLeftTake(entry);
 }
 
+/** Shift-click on a version: the take to show on the left. Itself when it can be compared, else the default (shift-
+ * clicking the current version just opens compare). null when there is nothing to compare with. */
+export function shiftLeft(entry: FlowEntry | null | undefined, take: string): string | null {
+  return compareTakes(entry).some((t) => t.id === take) ? take : defaultLeftTake(entry);
+}
+
 /** The version number the versions panel shows for a take (1-based), or 0. */
 export const versionNo = (entry: FlowEntry | null | undefined, id: string | null) => (id ? (entry?.takes.findIndex((t) => t.id === id) ?? -1) + 1 : 0);
 

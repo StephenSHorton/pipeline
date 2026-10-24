@@ -6,7 +6,7 @@
 // through ViewerScreen), and at the left edge on the other stages (AssetScreen places it). The heading folds it;
 // it starts folded on phones, where the screen has no room to spare. It is gone when it has nothing to say.
 // While the viewer compares (screens/viewer/compare.ts), a click shows that version on the left instead of picking it:
-// nothing is written.
+// nothing is written. On 3D and Rig, shift-click starts compare with that version on the left.
 import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { navigate } from "@/app/router";
@@ -18,7 +18,7 @@ import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
 import type { NestedIntent } from "@/screens/home/make";
 import { MUTE, PANEL } from "@/screens/viewer/classes";
-import { comparing, currentTake, leftTake, useCompare } from "@/screens/viewer/compare";
+import { comparing, currentTake, leftTake, shiftLeft, useCompare } from "@/screens/viewer/compare";
 import { buildFromConcept, stackFromPicture, useStacking } from "./takes/api";
 import { groupItems, panelHeading, stripItems, versionsSummary, type StripAction, type StripItem } from "./takes/logic";
 import type { StageProps } from "./types";
@@ -73,7 +73,16 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
 
   if (!items.length) return null;
 
-  const pick = async (take: string) => {
+  const pick = async (take: string, shift = false) => {
+    // Shift-click in the viewer (3D, Rig): compare this version with the current one, without picking it.
+    if (shift && (stage === "mesh" || stage === "rig")) {
+      const left = shiftLeft(entry, take);
+      if (!left) return;
+      const c = useCompare.getState();
+      if (!compare) c.start(stem, stage);
+      c.setLeft(left);
+      return;
+    }
     if (compare) {
       // View only: the current version is already on the right.
       if (take !== currentTake(entry)) useCompare.getState().setLeft(take);
@@ -196,9 +205,10 @@ function Take({
   compare: boolean;
   /** It is the one on the left now. */
   left: boolean;
-  onPick: (id: string) => void;
+  onPick: (id: string, shift: boolean) => void;
 }) {
-  const title = !compare ? item.title : item.pressed ? `${item.title} · on the right` : left ? `${item.title} · on the left` : `Show on the left: ${item.title}`;
+  const shiftHint = stage === "mesh" || stage === "rig" ? " · Shift-click to compare" : "";
+  const title = !compare ? `${item.title}${item.pressed ? "" : shiftHint}` : item.pressed ? `${item.title} · on the right` : left ? `${item.title} · on the left` : `Show on the left: ${item.title}`;
   return (
     <button
       type="button"
@@ -208,9 +218,9 @@ function Take({
       title={title}
       // aria-disabled, not disabled: the button just pressed keeps keyboard focus while the pick runs.
       aria-disabled={disabled || undefined}
-      onClick={() => onPick(item.id)}
+      onClick={(e) => onPick(item.id, e.shiftKey)}
       className={cn(
-        "group/take relative flex flex-col items-center gap-0.5 rounded-[9px] border border-transparent p-0.5 outline-none",
+        "group/take relative flex select-none flex-col items-center gap-0.5 rounded-[9px] border border-transparent p-0.5 outline-none",
         "text-[length:calc(11.5px*var(--fs))] font-medium text-ink-3 tabular-nums hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-wait aria-disabled:opacity-60",
         "aria-pressed:border-primary aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:text-primary aria-pressed:shadow-[var(--glass-shadow)]",
         // The left side of a compare: a dashed outline, so it never reads as the picked one.
