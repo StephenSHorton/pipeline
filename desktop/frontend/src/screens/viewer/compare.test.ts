@@ -1,7 +1,7 @@
 // Compare's rules: which version goes on the left, the side labels, the left file, and bones matched by name.
 import { describe, expect, it } from "vitest";
 import type { FlowEntry, FlowTake } from "@/lib/flow";
-import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, paneClears, paneLayout, roomShift, shiftLeft, sideLabels, takeModelFiles, useCompare, versionNo } from "./compare";
+import { boneMap, compareTakes, comparing, currentTake, defaultLeftTake, leftTake, missingBone, motionSource, paneClears, paneLayout, roomShift, shiftLeft, sideLabels, sourceLabel, takeModelFiles, useCompare, versionNo } from "./compare";
 
 const take = (id: string, files: string[] = []): FlowTake => ({ id, made: 0, files });
 const rig = (e: Partial<FlowEntry> = {}): FlowEntry => ({
@@ -77,6 +77,37 @@ describe("the store", () => {
     useCompare.getState().stop();
     expect(comparing(useCompare.getState(), "sheep", "rig")).toBe(false);
     expect(comparing(useCompare.getState(), "", "rig")).toBe(false);
+  });
+
+  it("shows the motion source on the left until a version is chosen", () => {
+    useCompare.getState().startSource("sheep");
+    expect(comparing(useCompare.getState(), "sheep", "rig")).toBe(true);
+    expect(useCompare.getState().source).toBe(true);
+    useCompare.getState().setLeft("t3");
+    expect(useCompare.getState().source).toBe(false);
+    useCompare.getState().startSource("sheep");
+    useCompare.getState().start("sheep", "rig");
+    expect(useCompare.getState().source).toBe(false);
+    useCompare.getState().startSource("sheep");
+    useCompare.getState().stop();
+    expect(useCompare.getState().source).toBe(false);
+  });
+});
+
+describe("the motion source", () => {
+  it("offers rig.json's motion source only as a glb under the asset", () => {
+    const horse = { file: "rig/source/motion.glb", name: "Horse", credit: "Mesh2Motion (CC0)" };
+    expect(motionSource({ motion_source: horse })).toEqual(horse);
+    expect(motionSource({ motion_source: null })).toBeNull();
+    expect(motionSource(null)).toBeNull();
+    expect(motionSource({ motion_source: { file: "../../etc/x.glb" } })).toBeNull();
+    expect(motionSource({ motion_source: { file: "https://x/y.glb" } })).toBeNull();
+    expect(motionSource({ motion_source: { file: "rig/source/motion.png" } })).toBeNull();
+  });
+
+  it("is labelled by its animal, with the credit under it", () => {
+    expect(sourceLabel({ file: "a.glb", name: "Horse", credit: "Mesh2Motion (CC0)" })).toEqual({ label: "Motion source · Horse", note: "Clips from Mesh2Motion (CC0)" });
+    expect(sourceLabel({ file: "a.glb" })).toEqual({ label: "Motion source", note: "" });
   });
 });
 

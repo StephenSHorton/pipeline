@@ -22,7 +22,7 @@ import { outRelFile, resetViewerTools, setViewerLoader, setViewerModel, useViewe
 import { useAssetDocs } from "@/viewer/useAssetDocs";
 import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
-import { compareTakes, comparing, leftTake, paneClears, paneLayout, roomShift, sideLabels, useCompare, type Insets, type PaneClears } from "./compare";
+import { compareTakes, comparing, leftTake, motionSource, paneClears, paneLayout, roomShift, sideLabels, sourceLabel, useCompare, type Insets, type PaneClears } from "./compare";
 import { CompareSide, SideLabel } from "./CompareSide";
 import { Hud } from "./Hud";
 import type { ViewerStage } from "./panels/panels";
@@ -211,11 +211,17 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
   const viewerStage: ViewerStage = stage.stage === "rig" ? "rig" : "mesh";
   const entry = flowEntry(stage.flow, viewerStage);
   const canCompare = compareTakes(entry).length > 0;
-  const compareOn = useCompare((s) => comparing(s, stem, viewerStage)) && canCompare;
+  // Or, in Rig, the motion source on the left: the animated model the clips were retargeted from.
+  const motion = viewerStage === "rig" ? motionSource(docs?.rig) : null;
+  const on = useCompare((s) => comparing(s, stem, viewerStage));
+  const sourceOn = useCompare((s) => s.source) && on && !!motion;
+  const compareOn = on && !sourceOn && canCompare;
   const chosenLeft = useCompare((s) => s.left);
   const leftId = compareOn ? leftTake(entry, chosenLeft) : null;
   const left = leftId ? (entry?.takes.find((t) => t.id === leftId) ?? null) : null;
   const labels = sideLabels(entry, leftId);
+  const srcLabel = motion ? sourceLabel(motion) : null;
+  const split = !!left || sourceOn;
   // Another stage (3D and Rig share this screen) starts single again.
   useEffect(() => {
     const c = useCompare.getState();
@@ -223,11 +229,12 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
   }, [stem, viewerStage]);
   // The panes sit in the room the HUD leaves (./compare.ts paneLayout), so neither model is centred under a card.
   const root = useRef<HTMLDivElement>(null);
-  const panes = usePaneLayout(root, !!left);
+  const panes = usePaneLayout(root, split);
   const onCompare = useCallback(
     (on: boolean) => (on ? useCompare.getState().start(stem, viewerStage) : useCompare.getState().stop()),
     [stem, viewerStage],
   );
+  const onSource = useCallback((on: boolean) => (on ? useCompare.getState().startSource(stem) : useCompare.getState().stop()), [stem]);
 
   const view: ViewerView = { clips: clips.map((c) => c.name), clip, onClip, playing, onPlaying: setPlaying, spin, onSpin: setSpin, clay, onClay: setClay, wire, onWire: setWire };
   const panel: ViewerPanelBase = {
@@ -249,8 +256,8 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
     // keeps its place in the tree, so turning Compare on or off never remounts it (the model stays; the camera keeps
     // its orbit, the zoom re-frames).
     <div ref={root} className="absolute inset-0 overflow-hidden">
-      <div className={cn("absolute inset-0 flex", left && panes?.stacked && "flex-col")}>
-        {left ? (
+      <div className={cn("absolute inset-0 flex", split && panes?.stacked && "flex-col")}>
+        {split ? (
           // Its own surface without the panel tool: a drag turns both sides, a brush only paints the right.
           <div className={cn("relative min-h-0 min-w-0 flex-1 border-hair", panes?.stacked ? "border-b" : "border-r")}>
             <OrbitSurface tool={null}>
@@ -258,7 +265,8 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
                 stem={stem}
                 stage={viewerStage}
                 take={left}
-                label={labels.left}
+                source={sourceOn && motion ? { file: motion.file, note: srcLabel?.note ?? "", bust: docs?.rig?.made } : null}
+                label={sourceOn && srcLabel ? srcLabel.label : labels.left}
                 shown={info ? outRelFile(info.url, stem) : ""}
                 clayColor={clayColor}
                 clip={clip}
@@ -285,10 +293,10 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
               wire={wire}
               spin={spin}
               pixel={pixel}
-              room={left && panes ? { shift: roomShift(panes.second), frame: panes.frame } : undefined}
+              room={split && panes ? { shift: roomShift(panes.second), frame: panes.frame } : undefined}
             />
           </OrbitSurface>
-          {left ? <SideLabel side="right" text={labels.right} stacked={!!panes?.stacked} clear={panes?.second ?? NO_INSETS} /> : null}
+          {split ? <SideLabel side="right" text={labels.right} stacked={!!panes?.stacked} clear={panes?.second ?? NO_INSETS} /> : null}
         </div>
       </div>
       <div className="pointer-events-none absolute inset-0">
@@ -316,6 +324,7 @@ export function ViewerScreen({ lod, versions, ...stage }: StageProps & { lod?: s
           onPixel={(on) => setPixel({ ...pixel, on })}
           on240={() => setPixel(toggle240(pixel))}
           compare={canCompare ? { on: compareOn, onToggle: onCompare } : null}
+          source={motion ? { on: sourceOn, onToggle: onSource, name: motion.name ?? "" } : null}
           onRenamed={(next) => navigate({ name: "asset", stem: next, ...(lod ? { lod } : {}) }, { replace: true })}
           panel={panel}
         />

@@ -13,7 +13,11 @@ interface CompareStore {
   stage: ViewerStage | null;
   /** The take on the left, or null for the default (the version before the current one). */
   left: string | null;
+  /** Rig only: the left side is the motion source (rig.json motion_source, the animated model the clips came from)
+   * instead of an earlier version. Choosing a version puts a version back. */
+  source: boolean;
   start: (stem: string, stage: ViewerStage) => void;
+  startSource: (stem: string) => void;
   stop: () => void;
   setLeft: (take: string) => void;
 }
@@ -22,10 +26,31 @@ export const useCompare = create<CompareStore>((set) => ({
   stem: "",
   stage: null,
   left: null,
-  start: (stem, stage) => set({ stem, stage, left: null }),
-  stop: () => set({ stem: "", stage: null, left: null }),
-  setLeft: (left) => set({ left }),
+  source: false,
+  start: (stem, stage) => set({ stem, stage, left: null, source: false }),
+  startSource: (stem) => set({ stem, stage: "rig", left: null, source: true }),
+  stop: () => set({ stem: "", stage: null, left: null, source: false }),
+  setLeft: (left) => set({ left, source: false }),
 }));
+
+/** rig.json `motion_source` (scripts/rig.py): the animated model the rig's clips were retargeted from. */
+export interface MotionSource {
+  file: string;
+  name?: string;
+  credit?: string | null;
+  clips?: string[];
+}
+
+/** The motion source to offer, or null: only a glb under out/<stem>/ (rig.json is read as data). */
+export function motionSource(rig: { motion_source?: unknown } | null | undefined): MotionSource | null {
+  const m = rig?.motion_source as MotionSource | null | undefined;
+  return m && typeof m.file === "string" && /^[\w./-]+\.glb$/i.test(m.file) && !m.file.includes("..") ? m : null;
+}
+
+/** The left side's label for the motion source ("Motion source · Horse") and its credit note. */
+export function sourceLabel(m: MotionSource): { label: string; note: string } {
+  return { label: m.name ? `Motion source · ${m.name}` : "Motion source", note: m.credit ? `Clips from ${m.credit}` : "" };
+}
 
 /** Whether compare is on for this asset's stage. */
 export const comparing = (s: { stem: string; stage: string | null }, stem: string, stage: string) => !!stem && s.stem === stem && s.stage === stage;

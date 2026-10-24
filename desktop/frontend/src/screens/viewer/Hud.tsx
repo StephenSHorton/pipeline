@@ -51,6 +51,8 @@ export interface HudProps {
   on240: () => void;
   /** Compare (./compare.ts), when the stage has an earlier version to show; null hides the toggle. */
   compare?: { on: boolean; onToggle: (on: boolean) => void } | null;
+  /** Rig: the motion source beside the rig (./compare.ts motionSource), when the rig names one; null hides it. */
+  source?: { on: boolean; onToggle: (on: boolean) => void; name: string } | null;
   onRenamed: (stem: string) => void;
   /** What the rail and dock panels get (ViewerPanelProps minus id, open, onClose). */
   panel: ViewerPanelBase;
@@ -63,7 +65,7 @@ export function Hud(p: HudProps) {
   // Comparing on a phone, the HUD yields room for two panes: no asset card or model picker, and a shorter left
   // column (an open panel scrolls), which an open panel has to itself. The panes keep clear of what is left
   // (data-hud-col, ViewerScreen measures it).
-  const yields = !!p.compare?.on;
+  const yields = !!p.compare?.on || !!p.source?.on;
   const panelOpen = !!openOn(usePanels((s) => s.open), p.panel.stage);
   return (
     <div data-hud className="pointer-events-none absolute inset-0 z-[5] text-ink tracking-[var(--track)]">
@@ -255,6 +257,18 @@ function ViewCard(p: HudProps) {
             title="Show an earlier version beside this one, turning and playing together. Click a version to choose which."
           >
             Compare
+          </Toggle>
+        </>
+      ) : null}
+      {p.source ? (
+        <>
+          {p.compare ? null : <Separator orientation="vertical" className="mx-0.5 h-5 w-px bg-hair" />}
+          <Toggle
+            on={p.source.on}
+            onClick={() => p.source?.onToggle(!p.source.on)}
+            title={`Show the ${p.source.name ? p.source.name.toLowerCase() : "model"} the clips were made from beside the rig, playing the same clip.`}
+          >
+            Motion source
           </Toggle>
         </>
       ) : null}

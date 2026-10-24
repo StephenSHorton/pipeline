@@ -300,6 +300,10 @@ export interface RigDoc {
   clips_failed?: string[];
   source?: string;
   degraded?: DegradedEntry[];
+  /** When the rig was made (seconds). */
+  made?: number;
+  /** The animated model the clips came from (scripts/rig.py motion_source); screens/viewer/compare.ts reads it. */
+  motion_source?: unknown;
   [k: string]: unknown;
 }
 

@@ -1,5 +1,6 @@
 // Compare's left side (./compare.ts): an earlier version of the stage as a follower diorama (src/viewer/Diorama.tsx),
-// loaded read-only from out/<stem>/takes/<stage>/<id>/. One camera, clip, Play/Pause and set of view toggles drive
+// loaded read-only from out/<stem>/takes/<stage>/<id>/, or in the Rig stage the motion source (the animated model the
+// clips came from, rig.json motion_source; Stephen: "see the rig up against it"). One camera, clip, Play/Pause and set of view toggles drive
 // both sides; in the Rig stage, with Weights open, the left shows the picked bone's heat from its own weights
 // (../asset/rig/compareHeat.ts). Brushes, the Rig check and every save act on the right side only.
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -23,7 +24,11 @@ import type { ViewerStage } from "./panels/panels";
 export interface CompareSideProps {
   stem: string;
   stage: ViewerStage;
-  take: FlowTake;
+  /** The earlier version shown; or, for the motion source, `source` instead. */
+  take?: FlowTake | null;
+  /** The motion source: its glb under out/<stem>/, a note under the label (the credit) and a cache bust (rig.json's
+   * made: each rig writes the file again). */
+  source?: { file: string; note: string; bust?: number | string } | null;
   /** "Version 2". */
   label: string;
   /** The right side's file under out/<stem>/ ("" until it has loaded): the left shows the same one when it can. */
@@ -46,24 +51,27 @@ type Left = { state: "loading" } | { state: "ready"; model: PreparedModel; clips
 
 export function CompareSide(p: CompareSideProps) {
   const { stem, stage, take, shown, clayColor } = p;
-  const files = useMemo(() => (shown ? takeModelFiles(stage, take.files, shown) : []), [stage, take, shown]);
+  const files = useMemo(() => (shown && take ? takeModelFiles(stage, take.files, shown) : []), [stage, take, shown]);
+  // A take never changes: no cache bust (takeSrc does the same for the thumbnails). Each rig writes the motion source
+  // again.
+  const src = p.source;
+  const urls = useMemo(
+    () => (src ? [outUrl(stem, src.file, src.bust ?? false)] : take ? files.map((f) => outUrl(stem, `takes/${stage}/${take.id}/${f}`, false)) : []),
+    [src, stem, stage, take, files],
+  );
   const [left, setLeft] = useState<Left>({ state: "loading" });
   const model = left.state === "ready" ? left.model : null;
 
-  // Takes never change: no cache bust (takeSrc does the same for the thumbnails).
-  const key = files.join("|");
+  const key = urls.join("|");
   useEffect(() => {
     if (!shown) return;
-    if (!files.length) {
+    if (!urls.length) {
       setLeft({ state: "error", message: "This version has no model to show." });
       return;
     }
     const ctl = new AbortController();
     setLeft({ state: "loading" });
-    loadFirstGlb(
-      files.map((f) => outUrl(stem, `takes/${stage}/${take.id}/${f}`, false)),
-      ctl.signal,
-    )
+    loadFirstGlb(urls, ctl.signal)
       .then(({ url, gltf }) => {
         if (ctl.signal.aborted) return;
         setLeft({ state: "ready", model: prepareModel(gltf, { clayColor, pixel: isPixelFile(fileOf(url), "") }), clips: gltf.animations });
@@ -73,7 +81,7 @@ export function CompareSide(p: CompareSideProps) {
       });
     return () => ctl.abort();
     // The files by value (key): a flow re-read hands over a new take with the same files, and the model stays.
-  }, [stem, stage, take.id, key, shown, clayColor]);
+  }, [key, shown, clayColor]);
 
   // GPU memory: the left model goes when another version replaces it and when compare closes.
   useEffect(() => () => model?.dispose(), [model]);
@@ -86,7 +94,7 @@ export function CompareSide(p: CompareSideProps) {
   return (
     <>
       <Diorama follower model={model} clips={clips} clip={p.clip} playing={p.playing} clay={p.clay} wire={p.wire} spin={p.spin} pixel={p.pixel} room={p.room} />
-      <SideLabel side="left" text={p.label} notes={[status, heatNote, clipNote]} stacked={p.stacked} clear={p.clear} />
+      <SideLabel side="left" text={p.label} notes={[p.source?.note ?? "", status, heatNote, clipNote]} stacked={p.stacked} clear={p.clear} />
     </>
   );
 }

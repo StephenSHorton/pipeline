@@ -233,6 +233,25 @@ def toy_animal(head_yaw_deg: float) -> np.ndarray:
     return np.vstack([body, legs, neck])
 
 
+class MotionSourceTests(unittest.TestCase):
+    @unittest.skipUnless((rig.M2M / rig.TEMPLATES["quadruped"]["clips"][0]).is_file(), "no Mesh2Motion checkout")
+    def test_the_horse_is_copied_beside_the_rig_with_its_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td) / "rig"
+            work.mkdir()
+            ms = rig.motion_source(rig.TEMPLATES["quadruped"], work)
+            self.assertEqual(ms["file"], "rig/source/motion.glb")
+            self.assertEqual(ms["name"], "Horse")
+            self.assertIn("Walk", ms["clips"])
+            self.assertTrue((Path(td) / "rig" / "source" / "motion.glb").is_file())
+
+    def test_a_source_without_a_skinned_mesh_is_not_offered(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td) / "rig"
+            (work / "template").mkdir(parents=True)
+            self.assertIsNone(rig.motion_source({"built": True}, work))  # no clips.glb
+
+
 class RestCheckTests(unittest.TestCase):
     def test_a_turned_head_is_found_and_straightened(self) -> None:
         turned = rest_check.measure(toy_animal(25))

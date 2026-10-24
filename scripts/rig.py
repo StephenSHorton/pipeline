@@ -1212,6 +1212,34 @@ def template_info(template: dict, plan: dict) -> dict:
     return out
 
 
+MOTION_SOURCE = "rig/source/motion.glb"
+
+
+def motion_source(template: dict, work: Path) -> dict | None:
+    """rig.json `motion_source`: the animated model the clips were retargeted from (the Mesh2Motion horse's skinned
+    mesh and clips for a fixed template; a built template's clips.glb), copied to rig/source/motion.glb so the app can
+    play it beside the rig (Stephen: "I would think ... we should be able to browse the video too that was used and
+    maybe even see the rig up against it"). None when the source carries no skinned mesh to show."""
+    if template.get("built"):
+        src, name, credit = work / "template" / "clips.glb", "Built template", None
+    else:
+        src = M2M / template["clips"][0]
+        name = Path(template["rig"]).stem.removeprefix("rig-").replace("-", " ").replace("_", " ").title()
+        credit = "Mesh2Motion (CC0)"
+    try:
+        doc, _ = read_glb(src)
+    except (OSError, ValueError):
+        return None
+    if not doc.get("skins") or not doc.get("meshes"):
+        return None
+    out = work.parent / MOTION_SOURCE
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, out)
+    return {"file": MOTION_SOURCE, "name": name, "credit": credit,
+            "from": str(src.relative_to(M2M)) if not template.get("built") else "rig/template/clips.glb",
+            "clips": [a.get("name") for a in doc.get("animations", [])]}
+
+
 def slim_fbx_check(check: dict | None) -> dict | None:
     if not check:
         return None
@@ -1949,7 +1977,7 @@ def main(argv: list[str] | None = None) -> int:
         "head_reach": args.head_reach, "reused_skin": reused_skin, "skin_reuse": skin_reuse,
         "clips_report": clips_report, "clips_failed": clips_failed, "facing_prior": facing_prior,
         "build_error": build_error, "binder_report": binder_report, "reframe": reframed, "fbx_check": None,
-        "degraded": degraded,
+        "degraded": degraded, "motion_source": motion_source(template, work),
     }
     stage("check", "Checking the rig")
     bundle = None
