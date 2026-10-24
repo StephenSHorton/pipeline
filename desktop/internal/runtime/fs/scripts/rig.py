@@ -1888,7 +1888,8 @@ def main(argv: list[str] | None = None) -> int:
         clips, missing = bake_clips(template, names, ours, skel, ref_store)
     write_rigged(out_glb, ours, obin, src, sbin, J, W, clips)
     far = far_motion(out_glb, territory=cinfo.get("territory"))
-    if any(c in far for c in names):
+    allclips = any(c in far for c in names)
+    if allclips:
         shutil.copy2(out_glb, work / "rigged_allclips.glb")
     if trial:  # B2 alone passes a correctly bound chicken whose Flap still spreads its body sides into slabs
         import rig_motion
@@ -1918,6 +1919,11 @@ def main(argv: list[str] | None = None) -> int:
         if fixing:
             write_rigged(out_glb, ours, obin, src, sbin, J, W, clips)
             far = far_motion(out_glb, territory=cinfo.get("territory"))
+            # the app's viewer and the workbench's rig_review open rig/rigged_allclips.glb first: left as copied above,
+            # they played the clips from before this pass (a sheep's Sleep floating 0.28x height, its Run without the
+            # gait's bob). Clips left out above were never floored, so then it keeps them as they were.
+            if allclips and not dropped_clips:
+                shutil.copy2(out_glb, work / "rigged_allclips.glb")
         note(("Floor pass (" if rig_pred.paths_for(cls, plan_used) else "Floor pass, grounding only (") + f"{time.time() - t0:.0f} s): " + "; ".join(
             f"{c} lowest {v['low_min_before']:+.2f}→{v['low_min_after']:+.2f}× height" for c, v in floor.items()))
     gone_clips = list(dict.fromkeys(list(unsupported_clips) + list(dropped_clips) + [f["name"] for f in clips_failed]))

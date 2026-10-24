@@ -834,10 +834,14 @@ def _skin(P: np.ndarray, J: np.ndarray, W: np.ndarray, fk: FK, pos: dict, rot: d
     return out
 
 
-def template_floor_track(template: dict, names: list[str], legs_keys: list[str], times: dict) -> dict:
+def template_floor_track(template: dict, names: list[str], legs_keys: list[str], times: dict,
+                         trunk_cut: tuple[str, ...] = ()) -> dict:
     """The template's own body per frame (template units): its lowest point above its reference floor ("low"), and
     for each leg key joint the lowest point of that foot above the body's lowest point ("foot": ground-relative
-    clearance, 0 in stance); plus the template's height at the reference frame."""
+    clearance, 0 in stance); plus the template's height at the reference frame. trunk_cut: the joints whose subtrees
+    are not trunk (neck, leg roots, tail); given, the lowest trunk point above the reference floor per frame
+    ("trunk") and at the reference frame ("trunk_rest") too, and the body's height over its reference height
+    ("span": about 1 standing, about 0.5 lying)."""
     import rig_motion
     doc, b = rig.read_glb(rig.M2M / template["clips"][0])
     nodes = doc["nodes"]
@@ -862,6 +866,9 @@ def template_floor_track(template: dict, names: list[str], legs_keys: list[str],
             st += nodes[x].get("children", [])
         return out
     feet = {k: np.isin(top_node, sorted(sub(ni[k]) | {parent[ni[k]]})) for k in legs_keys if k in ni}
+    cut = [ni[n] for n in trunk_cut if n in ni]
+    # every cut joint must be found: a trunk that keeps a leg would read about 0 standing, i.e. always lying
+    trunk = ~np.isin(top_node, sorted(set().union(*[sub(i) for i in cut]))) if cut and len(cut) == len(trunk_cut) else None
     chans = {}
     for f in template["clips"]:
         d, bb = (doc, b) if f == template["clips"][0] else rig.read_glb(rig.M2M / f)
@@ -883,15 +890,20 @@ def template_floor_track(template: dict, names: list[str], legs_keys: list[str],
     for nm in names:
         if nm not in chans:
             continue
-        lows, fts = [], {k: [] for k in feet}
+        lows, fts, tks, sps = [], {k: [] for k in feet}, [], []
         for t in times[nm]:
             V = at(nm, float(t))
             lo = float(V[:, 1].min())
             lows.append(lo - fl0)
+            if trunk is not None and trunk.any():
+                tks.append(float(V[trunk, 1].min()) - fl0)
+                sps.append(float(np.ptp(V[:, 1])) / max(float(np.ptp(V0[:, 1])), 1e-9))
             for k, m in feet.items():
                 fts[k].append(float(V[m, 1].min()) - lo if m.any() else 0.0)
-        out[nm] = {"low": np.array(lows), "foot": {k: np.array(v) for k, v in fts.items()}}
-    return {"clips": out, "H": float(np.ptp(V0[:, 1]))}
+        out[nm] = {"low": np.array(lows), "foot": {k: np.array(v) for k, v in fts.items()},
+                   **({"trunk": np.array(tks), "span": np.array(sps)} if tks else {})}
+    return {"clips": out, "H": float(np.ptp(V0[:, 1])),
+            **({"trunk_rest": float(V0[trunk, 1].min()) - fl0} if trunk is not None and trunk.any() else {})}
 
 
 def template_head_track(template: dict, names: list[str], head_root: str, times: dict,
@@ -963,6 +975,14 @@ HEAD_REACH = (0.15, 0.5)  # template head clearance / its rest clearance: full r
 HEAD_STAND = 0.75  # the template's body (all but the head) at least this share of its rest height: standing, not lying
 HEAD_BEND_MAX = 60.0  # degrees of extra neck bend, shared along the neck chain
 HEAD_SHARE = (0.4, 0.35, 0.25)  # of the bend, from the neck's root toward the head (another length: even shares)
+# Share of the template's turn at the plan's neck_from joint (the horse's spine_4, its neck's base) that head_reach
+# keeps; the trunk joints behind it go back to rest. On the horse that joint carries 38 vertices and its neck rises
+# out of it; on the sheep it and its child ribcage_front carry 543 (the withers and the brisket), so the horse's 63
+# degree Eating turn there folded the sheep's chest down onto its front legs. 0 keeps the body standing and lowers the
+# head with the neck alone (on the sheep its mouth stops 0.38 of its height above the floor); a share keeps that much
+# of the turn, its off-path children (ribcage, shoulders) holding their standing world turn: 0.5 stops at 0.25 with
+# the brisket shifted 0.10 of the height, 1.0 at 0.19 with it shifted 0.19.
+NECK_BASE_KEEP = 0.0
 
 
 def _smooth01(x):
@@ -1019,6 +1039,10 @@ def head_bend(fk: "FK", quats: dict, trans: dict, chain: list[int], lateral: np.
         return quats, 0.0
     return bent(theta), float(np.degrees(abs(theta)))
 
+
+LIE = (0.25, 0.5)  # the template trunk's clearance / its rest clearance: lying below the first, standing above the second
+LIE_SPAN = 0.75  # and the template's height under this share of its rest height (lying), blended over 0.1 below it
+LIE_HOLD = 0.1  # seconds: lying must last about twice this; shorter (a flapping bird dropping through its floor) is not
 
 PITCH_MAX = 20.0  # degrees the trunk may tip forward about the hind legs' tops for the head to reach
 
@@ -1111,7 +1135,8 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
        HEAD_REACH[1] of its rest clearance, its body over HEAD_STAND of its rest height), the neck chain (neck_lift
        to the head) is bent down about the lateral axis (head_bend: the bend shared along the chain, at most
        HEAD_BEND_MAX degrees) until the head's lowest point has the template head's clearance, scaled; blended in and
-       out with the template's clearance (a short neck on the horse's clip otherwise stops in the air);
+       out with the template's clearance (a short neck on the horse's clip otherwise stops in the air); with a plan
+       neck_from the trunk is held standing first (NECK_BASE_KEEP) and is not tipped, so a short neck stops short;
     3. a head that still goes through the floor is lifted at the neck (about the lateral axis, up to 45 degrees).
     plan: the body plan whose leg / neck_lift paths to use (PATHS[cls] without one). prefer_track: a clip that carries
     its own contacts (c['track']['contact'], rig_clips) plants each foot on its own stance frames (clearance 0 there)
@@ -1144,7 +1169,21 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
     head_v = np.isin(J_top, sorted(sub(neck))) if neck in node_of else np.zeros(len(P), bool)
     body_v = ~head_v
     times = {c["name"]: c["times"] for c in clips}
-    track = template_floor_track(template, list(times), [c[-1] for c in legs], times)
+    # the trunk: what's left of the body without the neck, the legs (from each leg's root under a body joint) and the
+    # tail; a lying frame grounds it, not the folded legs under it
+    body_path = [n for n in spec.get("body") or [] if n in node_of]
+    cut = [neck] if neck in node_of else []
+    for cc in legs:
+        k = node_of[cc[0]]
+        while fk.parent.get(k) is not None and ours["nodes"][fk.parent[k]].get("name") not in body_path:
+            k = fk.parent[k]
+        cut.append(ours["nodes"][k]["name"] if fk.parent.get(k) is not None else cc[0])
+    tail = [n for n in spec.get("tail") or [] if n in node_of]
+    cut += tail[1:2]
+    trunk_v = body_v & ~np.isin(J_top, sorted(set().union(*[sub(n) for n in cut]))) if fix and body_path and cut \
+        else np.zeros(len(P), bool)
+    track = template_floor_track(template, list(times), [c[-1] for c in legs], times,
+                                 tuple(cut) if trunk_v.any() else ())
     k_scale = H / max(track["H"], 1e-9)
     rootn = clips[0]["root"]
     reach = None
@@ -1163,10 +1202,28 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
             body_names.index(hname) + 1 < len(body_names) else chain[1:]
         aims = list(zip(chain, tips))
         htrack = template_head_track(template, list(times), hname, times, tuple(dict.fromkeys(chain + tips)))
+        # the trunk to hold standing while the head reaches: the body joints after the first up to the neck's base
+        # (neck_from, before neck_lift), the legs hanging from the neck's base (the front legs, which the horse plants
+        # forward to reach: on the sheep that pose stretched 16 shoulder edges past 2x), and neck_from's children off
+        # the body path (ribcage, shoulders)
+        nf = spec.get("neck_from")
+        hold = None
+        if nf in body_names and neck in body_names and 0 < body_names.index(nf) < body_names.index(neck):
+            hold = {"trunk": [node_of[n] for n in body_names[1:body_names.index(nf)]], "base": node_of[nf],
+                    "off": [k for k in ours["nodes"][node_of[nf]].get("children", [])
+                            if k in fk.order and ours["nodes"][k].get("name") not in body_names]}
+            for cc in legs:  # each leg from its root (the child of a body joint) to the joint above the foot
+                k, run = node_of[cc[0]], [node_of[n] for n in cc[:-1]]
+                while fk.parent.get(k) is not None and ours["nodes"][fk.parent[k]].get("name") not in body_names:
+                    k = fk.parent[k]
+                    run.append(k)
+                if fk.parent.get(k) == node_of[nf]:
+                    hold["trunk"] += run
         if reach_v.any() and htrack.get("rest"):
             yaw = float(np.arctan2(-lateral[2], lateral[0]))
             reach = {"chain": [node_of[n] for n in chain], "v": reach_v, "track": htrack, "k": H / max(htrack["H"], 1e-9),
-                     "aims": [(node_of[a], node_of[b], a, b) for a, b in aims], "yaw": R.from_rotvec([0, yaw, 0])}
+                     "aims": [(node_of[a], node_of[b], a, b) for a, b in aims], "yaw": R.from_rotvec([0, yaw, 0]),
+                     "hold": hold}
             if body_names and legs and node_of.get(body_names[0]) is not None:
                 fwd = fk.rest[node_of[hname]] - fk.rest[node_of[body_names[0]]]
                 tops = sorted(legs, key=lambda cc: float(fk.rest[node_of[cc[0]]] @ fwd))
@@ -1207,6 +1264,24 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
         foot_own = {cch[-1]: own_mask(cch[-1]) for cch in legs}
         beak = own_mask("beak")
         tracked = bool(own) and any(m is not None for m in foot_own.values())
+        # lying: the template's trunk down on its floor, both near the floor and near the template's own lowest point
+        # (under LIE[1] of its rest clearance, blended in from there to LIE[0]; a flying bird whose clip carries it far
+        # below its floor with its legs tucked is not lying); the trunk is grounded at the template trunk's clearance,
+        # scaled, whenever the lowest-point grounding leaves it higher (a sheep's folded hooves would otherwise prop
+        # its belly off the floor). Only ever lower, so the legs fold under it rather than lift it. The template must be
+        # short too (its height under LIE_SPAN of its rest height), and stay down (an opening over LIE_HOLD each side
+        # keeps the ramps in and out and drops blips): a flapping bird's trunk passes its floor mid-air
+        lw = None
+        if trunk_v.any() and "trunk" in tr and track.get("trunk_rest", 0.0) > 0.05 * track["H"] and not tracked:
+            share = np.maximum(np.abs(tr["trunk"]), tr["trunk"] - tr["low"]) / track["trunk_rest"]
+            lw = (1.0 - _smooth01((share - LIE[0]) / (LIE[1] - LIE[0]))) \
+                * (1.0 - _smooth01((tr["span"] - LIE_SPAN + 0.1) / 0.1))
+            tt = np.asarray(c["times"], float)
+            near = np.abs(tt[:, None] - tt[None, :]) <= LIE_HOLD + 1e-6
+            lw = np.where(near, lw[None, :], 1.0).min(1)  # erode, then dilate: a dip shorter than the window goes
+            lw = np.where(near, lw[None, :], 0.0).max(1)
+            if lw.max() < 0.01:
+                lw = None
         for f in range(len(c["times"])):
             quats = {j: c["rot"][j][f].astype(float) for j in c["rot"]}
             trans = {rootn: c["root_t"][f].astype(float)}
@@ -1215,10 +1290,29 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
             before.append((V[:, 1].min() - floor) / H)
             if contact[f]:
                 flo_b.append((V[:, 1].min() - floor) / H)
+            if hb is not None and reach["hold"] and hb[f] > 0.01 and not (beak is not None and beak[f]):
+                # the head reaches with the neck, not the chest: the trunk and front legs blend back to rest (identity
+                # local turns) and the neck's base keeps NECK_BASE_KEEP of its turn, before the body is grounded and
+                # the feet planted, so the legs stand under a standing trunk
+                hold, w = reach["hold"], float(hb[f])
+                for j in hold["trunk"]:
+                    quats[j] = R.from_rotvec(R.from_quat(quats[j]).as_rotvec() * (1.0 - w)).as_quat()
+                q_base = R.from_quat(quats[hold["base"]])
+                q_stand = R.from_rotvec(q_base.as_rotvec() * (1.0 - w))
+                q_kept = R.from_rotvec(q_base.as_rotvec() * (1.0 - w * (1.0 - NECK_BASE_KEEP)))
+                quats[hold["base"]] = q_kept.as_quat()
+                for j in hold["off"]:
+                    quats[j] = (q_kept.inv() * q_stand * R.from_quat(quats[j])).as_quat()
+                pos, rot = fk.world(quats, trans)
+                V = _skin(P, J, W, fk, pos, rot)
             want = floor + max(0.0, float(tr["low"][f])) * k_scale
 
             def ground(V: np.ndarray) -> None:
-                trans[rootn] = trans[rootn] + np.array([0, want - float(V[body_v, 1].min()), 0])
+                dy = want - float(V[body_v, 1].min())
+                if lw is not None and lw[f] > 0.0:
+                    dt = floor + max(0.0, float(tr["trunk"][f])) * k_scale - float(V[trunk_v, 1].min())
+                    dy += float(lw[f]) * min(0.0, dt - dy)
+                trans[rootn] = trans[rootn] + np.array([0, dy, 0])
             def legs_ik() -> None:
                 nonlocal quats
                 pos, rot = fk.world(quats, trans)
@@ -1232,7 +1326,8 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                         continue  # a swing frame of a clip with its own contacts: its IK already lifts the foot
                     clear = 0.0 if fo is not None else max(0.0, float(tr["foot"][cch[-1]][f]))
                     need = (want + clear * k_scale) - float(Vf[:, 1].min())
-                    if abs(need) < 0.002 * H:
+                    # no dead band while lying: a folded hoof hovering about the floor would switch the IK on and off
+                    if abs(need) < (0.002 * H if lw is None or lw[f] <= 0.0 else 1e-6 * H):
                         continue
                     qB, qA = _two_bone(pos, rot, A, B, K, pos[K] + np.array([0, need, 0]), lateral)
                     oldK = rot[K]
@@ -1268,9 +1363,10 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                 V = _skin(P, J, W, fk, pos, rot)
                 now = float(V[reach["v"], 1].min())
                 want_h = now + float(hb[f]) * (target - now)
-                if now - want_h > 0.002 * H and reach.get("pitch"):
+                if now - want_h > 0.002 * H and reach.get("pitch") and not reach["hold"]:
                     # the neck alone is too short: tip the trunk forward about the hind legs' tops (the legs keep their
-                    # world turn), then plant the feet again
+                    # world turn), then plant the feet again (not with a held trunk: tipping it folds the front knees
+                    # to 27-65 degrees on the sheep; the head stops short instead)
                     quats, trans, pdeg = trunk_pitch(fk, quats, trans, reach["pitch"], lateral, P[reach["v"]],
                                                      J[reach["v"]], W[reach["v"]], want_h)
                     pitch_deg.append(pdeg)
@@ -1323,6 +1419,7 @@ def floor_pass(clips: list[dict], ours: dict, P: np.ndarray, J: np.ndarray, W: n
                                              "pitch_max_deg": round(max(pitch_deg, default=0.0), 1),
                                              "gap_max_before": round(max(reach_gap_b, default=0.0), 3),
                                              "gap_max_after": round(max(reach_gap_a, default=0.0), 3)}} if hb is not None else {}),
+                          **({"lying_frames": int((lw > 0.01).sum())} if lw is not None else {}),
                           **({"own_contacts": True} if tracked else {})}
     return out
 

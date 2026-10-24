@@ -125,6 +125,14 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
    - The sheep: its hind pivot sat 0.39 of a body length from the leg, so Walk swung the leg about a point mid-body.
      Weight edits barely moved the stretch. Putting the pivot back over the leg (0.13) took Walk from 53 edges past
      2x to 13 (rig_review; 106 to 26 before seam copies were welded), and the check's Walk p99 from 2.12 to 1.62.
+   - Clips: a clip that looks wrong is usually the floor pass (rig_pred.floor_pass) or the bake, not the weights.
+     Know which file you judge: until version 10, rig/rigged_allclips.glb (what the viewer and rig_review open) held
+     the clips from before the floor pass, so Stephen saw a floating Sleep and a still Run that rigged.glb didn't
+     have. Judge "grounded" by the trunk's gap to the floor, never the lowest point: a lying sheep's lowest point
+     is a folded hoof, which held its belly 0.05 of its height up. A horse clip's turn at a joint can carry a very
+     different share of our mesh: the horse's neck base owns 38 vertices, the sheep's owns its chest (543), so the
+     horse's Eating folded the sheep's chest. Replay the floor pass offline on rig/rigged_nofloor.glb's clips
+     (tests/test_rig_floor.py shows how) before a re-rig.
 6. **Show the change in Compare:** the Rig tab's Compare toggle shows an earlier version on the left and the
    current one on the right, with one camera and one clip. Point Stephen there instead of making before/after
    images.
