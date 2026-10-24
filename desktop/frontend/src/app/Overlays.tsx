@@ -1,6 +1,8 @@
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { X } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useUi } from "@/lib/ui";
 import { UpdateOverlay } from "@/screens/settings/UpdateOverlay";
 
@@ -10,6 +12,7 @@ export function Overlays() {
     <>
       <ToastHost />
       <ConfirmHost />
+      <TextHost />
       <UpdateOverlay />
     </>
   );
@@ -70,5 +73,55 @@ function ConfirmHost() {
         </AlertDialog.Popup>
       </AlertDialog.Portal>
     </AlertDialog.Root>
+  );
+}
+
+/** askText's prompt: the confirm's glass popup with one field, in a form so Enter saves. */
+function TextHost() {
+  const ask = useUi((s) => s.askingText);
+  const answer = useUi((s) => s.answerText);
+  return (
+    <AlertDialog.Root open={!!ask} onOpenChange={(open) => !open && answer(null)}>
+      <AlertDialog.Portal>
+        <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-[rgba(15,23,42,0.18)] data-open:animate-in data-open:fade-in-0" />
+        <AlertDialog.Popup className="glass-panel fixed top-1/2 left-1/2 z-50 w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl p-5 text-ink outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95">
+          {/* Keyed by the ask, so a second prompt starts from its own initial text. */}
+          {ask ? <TextForm key={ask.id} title={ask.title} placeholder={ask.placeholder} initial={ask.initial} confirmLabel={ask.confirmLabel} onAnswer={answer} /> : null}
+        </AlertDialog.Popup>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
+  );
+}
+
+function TextForm({ title, placeholder, initial, confirmLabel, onAnswer }: { title: string; placeholder: string; initial: string; confirmLabel: string; onAnswer: (t: string | null) => void }) {
+  const [value, setValue] = useState(initial);
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (value.trim()) onAnswer(value);
+      }}
+    >
+      <AlertDialog.Title className="m-0 text-[0.75rem] font-semibold tracking-wide text-ink-3 uppercase">{title}</AlertDialog.Title>
+      <Input
+        autoFocus
+        aria-label={title}
+        value={value}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(e) => setValue(e.target.value)}
+        onFocus={(e) => e.currentTarget.select()}
+        className="mt-3 h-10 rounded-xl bg-white/90 px-3"
+      />
+      <div className="mt-5 flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={() => onAnswer(null)}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={!value.trim()}>
+          {confirmLabel}
+        </Button>
+      </div>
+    </form>
   );
 }

@@ -10,8 +10,10 @@ import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { MoveMenu } from "@/components/ProjectMenu";
 import { renameAsset, type Lod } from "@/lib/api";
 import { degradedLine, displayStem } from "@/lib/jobs";
+import { projectOf, refreshProjects, useProjectList } from "@/lib/projects";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { KIND_NAMES, RIGGED, slugStem } from "@/viewer/candidates";
@@ -127,6 +129,7 @@ function AssetCard({ stem, docs, info, onRenamed, className }: HudProps & { info
   return (
     <Card size="hud" className={cn(PANEL, "w-full shrink-0 gap-1.5 px-4 pt-3 pb-3", className)}>
       <TitleInput stem={stem} onRenamed={onRenamed} />
+      <ProjectLine stem={stem} />
       <div className="flex flex-wrap items-center gap-1.5">
         {kind ? <Badge variant="info" size="hud-sm">{kind}</Badge> : null}
         {/* The rigged model is already named by the Rig tab. */}
@@ -178,6 +181,30 @@ function RigLine({ summary }: { summary: NonNullable<AssetDocs["summary"]> }) {
   );
 }
 
+/** "Project: X ▾" / "No project ▾" under the title: the library card's Move menu. Hidden until the list loads. */
+function ProjectLine({ stem }: { stem: string }) {
+  const projects = useProjectList();
+  if (!projects) return null;
+  const p = projectOf(projects, stem);
+  return (
+    <MoveMenu
+      stem={stem}
+      current={p?.id ?? null}
+      projects={projects}
+      trigger={
+        <Button
+          variant="hud-ghost"
+          title="Move to project"
+          className="hit-44 -mx-1.5 -mt-1 h-6 max-w-[calc(100%+12px)] justify-start gap-1 self-start rounded-md px-1.5 text-[length:calc(13px*var(--fs))] font-medium text-ink-3 hover:bg-white hover:text-ink aria-expanded:bg-white aria-expanded:text-ink"
+        >
+          <span className="min-w-0 truncate">{p ? <>Project: <b className="font-semibold text-ink-2">{p.name}</b></> : "No project"}</span>
+          <ChevronDown aria-hidden size={14} className="shrink-0" />
+        </Button>
+      }
+    />
+  );
+}
+
 /** Rename on Enter or blur (legacy commitRename): PATCH /assets/<stem> {name}; Escape or an empty/unchanged slug reverts. */
 function TitleInput({ stem, onRenamed }: { stem: string; onRenamed: (stem: string) => void }) {
   const [value, setValue] = useState(displayStem(stem));
@@ -193,6 +220,8 @@ function TitleInput({ stem, onRenamed }: { stem: string; onRenamed: (stem: strin
     busy.current = true;
     try {
       const res = await renameAsset(stem, value);
+      // The factory moves the project membership to the new stem.
+      void refreshProjects();
       onRenamed(res.stem || next);
     } catch (err) {
       setValue(displayStem(stem));

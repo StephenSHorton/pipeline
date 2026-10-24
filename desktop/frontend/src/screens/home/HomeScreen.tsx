@@ -12,7 +12,9 @@ import "./chain"; // the draw → 3D chain and the finish toast live at module s
 // (Stephen: "Why does make show the library if we have a library nav? Library should be a separate thing from the
 // create area."): the top bar's Library is where the assets live. Layout and colours follow the approved design
 // (Mokei.dc.html).
-export function HomeScreen({ section }: { section?: Extract<Route, { name: "home" }>["section"] }) {
+// ?project= is the Library's filter and the project Make files new assets into (the top bar keeps it between them).
+type HomeRoute = Extract<Route, { name: "home" }>;
+export function HomeScreen({ section, project }: { section?: HomeRoute["section"]; project?: string }) {
   const job = useJobs((s) => s.job);
   const watching = useJobs((s) => s.watching);
   const setWatching = useJobs((s) => s.setWatching);
@@ -55,11 +57,11 @@ export function HomeScreen({ section }: { section?: Extract<Route, { name: "home
           <div hidden={showJob} className="relative my-auto w-full max-w-[38rem]">
             {centred ? <Ground top={190} /> : null}
             <div className="relative">
-              <MakePanel />
+              <MakePanel project={project} />
             </div>
           </div>
         )}
-        {library ? <LibrarySection below={showJob} /> : null}
+        {library ? <LibrarySection below={showJob} project={project} /> : null}
       </div>
     </div>
   );
@@ -76,11 +78,11 @@ function Ground({ top }: { top: number }) {
 }
 
 /** The library page: its own component, so Make never asks GET /assets. `below`: under a watched job's card. */
-function LibrarySection({ below }: { below: boolean }) {
+function LibrarySection({ below, project }: { below: boolean; project?: string }) {
   const { assets, error, refresh } = useAssets();
   return (
     <div className={below ? "mt-[clamp(2.5rem,7vh,4rem)] w-full max-w-[52rem]" : "w-full max-w-[52rem]"}>
-      <Library assets={assets} error={error} refresh={refresh} />
+      <Library assets={assets} error={error} refresh={refresh} project={project} />
     </div>
   );
 }

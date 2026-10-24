@@ -64,6 +64,22 @@ export interface Asset {
   /** First existing of preview.png, input.*, flat/source.png, stack/preview.png, ideas/idea-01.png (relative to out/<id>/). */
   preview: string | null;
   mtime: number;
+  /** The project slug it is filed in (out/.projects/<slug>/), null when Unsorted. Absent from an older factory. */
+  project?: string | null;
+}
+
+/** One project (out/.projects/<id>/project.json): a folder of assets. `assets` lists only stems whose out/<stem>/ exists. */
+export interface Project {
+  id: string;
+  name: string;
+  assets: string[];
+  created: number;
+  updated: number;
+}
+
+export interface ProjectResponse {
+  ok: true;
+  project: Project;
 }
 
 export interface AssetsResponse {
@@ -594,11 +610,30 @@ export const listAssets = () => factoryJson<AssetsResponse>("/assets");
 export const renameAsset = (stem: string, name: string) => postJson<RenameResponse>(`/assets/${enc(stem)}`, { name }, "PATCH");
 export const deleteAsset = (stem: string) => factoryJson<DeleteResponse>(`/assets/${enc(stem)}`, { method: "DELETE" });
 
+/* Projects group assets like folders; an asset is in one project or none (Unsorted). The id is the slug of the
+   first name and never changes; a rename changes the display name only. */
+export const listProjects = () => factoryJson<{ ok: true; projects: Project[] }>("/projects");
+/** POST /projects: a taken slug gets -2, -3; `assets` are moved in (out of any other project). */
+export const createProject = (name: string, assets?: string[]) => postJson<ProjectResponse>("/projects", assets?.length ? { name, assets } : { name });
+export const renameProject = (id: string, name: string) => postJson<ProjectResponse>(`/projects/${enc(id)}`, { name }, "PATCH");
+/** Removes the project only: its assets become Unsorted, nothing under out/<stem>/ is touched. */
+export const deleteProject = (id: string) => factoryJson<{ ok: true; deleted: string }>(`/projects/${enc(id)}`, { method: "DELETE" });
+
+/** File a stem into `to` (out of any other; the folder need not exist yet), or unsort it from `from` when `to` is
+ * null. Unsorting something in no project asks nothing and resolves null. */
+export function moveAsset(stem: string, to: string | null, from?: string | null): Promise<(ProjectResponse & { stem: string }) | null> {
+  if (to) return postJson(`/projects/${enc(to)}/assets`, { stem });
+  if (from) return factoryJson(`/projects/${enc(from)}/assets/${enc(stem)}`, { method: "DELETE" });
+  return Promise.resolve(null);
+}
+
 /** POST /generate: 202 {job_id}; 409 when the slot is taken (jobs.ts follows the running one). */
 export const generate = (spec: GenerateSpec) => postJson<JobStarted>("/generate", spec);
 export const draw2d = (spec: DrawSpec) => postJson<JobStarted>("/2d/draw", spec);
 /** POST /2d/drop {stem, data: base64}: the picture becomes out/<stem>/flat/source.png. */
-export const drop2d = (stem: string, data: string) => postJson<Record<string, unknown>>("/2d/drop", { stem, data });
+/** project: Make's target (null: none); the factory files the new asset once the drop is saved. Absent: left alone. */
+export const drop2d = (stem: string, data: string, project?: string | null) =>
+  postJson<Record<string, unknown>>("/2d/drop", project === undefined ? { stem, data } : { stem, data, project });
 export const flat2dStatus = () => factoryJson<Record<string, unknown>>("/2d/status");
 export const saveIntent = (stem: string, intent: Intent) => postJson<{ ok: boolean; stem: string; intent: Intent }>(`/intent/${enc(stem)}`, intent);
 

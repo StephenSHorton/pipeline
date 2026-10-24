@@ -1,6 +1,7 @@
 // Pure Make-panel logic: the kinds, the automatic guesses (size, name), and the exact request bodies the legacy
 // page sends (readIntent / lookSpec / intentBody / startFlatJob / buildFromConcept, index.html). Kept free of
 // React so make.test.ts can pin the bodies.
+import { UNSORTED } from "@/app/router";
 import { slugStem } from "@/lib/names";
 import { listAssets, type Asset, type AssetOutput, type Facing, type FacingSource, type Intent } from "@/lib/api";
 
@@ -102,7 +103,8 @@ export function flatName(prompt: string, fileName?: string): string {
 
 /** A stem nobody uses yet: base, base-2, base-3… (GET /assets). */
 export async function freshStem(base: string): Promise<string> {
-  const list = await listAssets().catch(() => ({ assets: [] as Asset[] }));
+  // A failed listing throws rather than counting as empty: a guess could be an existing asset's name.
+  const list = await listAssets();
   const taken = new Set((list.assets || []).map((a) => a.id));
   let stem = base;
   for (let n = 2; taken.has(stem); n++) stem = `${base}-${n}`;
@@ -276,12 +278,15 @@ export function relativeTime(sec: number, nowMs = Date.now()): string {
   return new Date(sec * 1000).toLocaleDateString();
 }
 
-export function matchesFilter(a: Asset, kind: LibKind, query: string): boolean {
+/** project: the Library's ?project= (absent All, UNSORTED in none, else that slug), against a.project; the asset's
+ * project name joins the search text, so "farm" finds everything in MLG Farming. */
+export function matchesFilter(a: Asset, kind: LibKind, query: string, project?: string, projectName = ""): boolean {
   const k = assetKind(a);
   if (kind && k !== kind) return false;
+  if (project && (project === UNSORTED ? a.project != null : a.project !== project)) return false;
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return `${a.id} ${a.title || ""} ${KIND_LABEL[k] || ""}`.toLowerCase().includes(q);
+  return `${a.id} ${a.title || ""} ${KIND_LABEL[k] || ""} ${projectName}`.toLowerCase().includes(q);
 }
 
 /** "About N s|N min" (legacy roughSeconds: minutes from 90 s, else rounded to 5 s, at least 5). */

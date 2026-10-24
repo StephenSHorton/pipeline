@@ -1,10 +1,14 @@
 // A tiny query router. No path routes: the Go host owns every path prefix (/out, /assets, /2d, ...) and
 // serves the app only at "/". ?asset=<stem> opens the asset screen;
 // ?view=library|make focuses a Home section; ?view=settings is Settings. #/asset/<stem> is accepted too and rewritten to the query form.
+// &project=<id> rides on both Home sections: the Library's filter and the project Make files new assets into.
 import { useSyncExternalStore } from "react";
 
+/** The Library's "Unsorted" filter: outside slug space (^[a-z0-9]…), so no project can be called it. */
+export const UNSORTED = "_unsorted";
+
 export type Route =
-  | { name: "home"; section?: "make" | "library" }
+  | { name: "home"; section?: "make" | "library"; project?: string }
   | { name: "asset"; stem: string; lod?: string }
   | { name: "settings" };
 
@@ -16,7 +20,8 @@ export function parseRoute(search: string, hash = ""): Route {
   if (stem) return { name: "asset", stem, ...(q.get("lod") ? { lod: q.get("lod")! } : {}) };
   const view = q.get("view");
   if (view === "settings") return { name: "settings" };
-  return view === "make" || view === "library" ? { name: "home", section: view } : { name: "home" };
+  const project = q.get("project");
+  return { name: "home", ...(view === "make" || view === "library" ? { section: view } : {}), ...(project ? { project } : {}) };
 }
 
 export function routeHref(r: Route): string {
@@ -25,7 +30,10 @@ export function routeHref(r: Route): string {
     q.set("asset", r.stem);
     if (r.lod) q.set("lod", r.lod);
   } else if (r.name === "settings") q.set("view", "settings");
-  else if (r.section) q.set("view", r.section);
+  else {
+    if (r.section) q.set("view", r.section);
+    if (r.project) q.set("project", r.project);
+  }
   const s = q.toString();
   return `/${s ? `?${s}` : ""}`;
 }

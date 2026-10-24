@@ -46,7 +46,7 @@ export function App() {
         ) : route.name === "settings" ? (
           <SettingsScreen />
         ) : (
-          <HomeScreen section={route.section} />
+          <HomeScreen section={route.section} project={route.project} />
         )}
       </main>
       <ActivityDrawer />

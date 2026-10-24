@@ -15,6 +15,8 @@ import { navigate, type Route } from "./router";
 // brand word goes below 400 px and the nav turns to icons.
 export function TopBar({ route }: { route: Route }) {
   const active = route.name === "home" ? (route.section === "library" ? "library" : "make") : route.name === "settings" ? "settings" : null;
+  // Make and Library keep the open project between them: the Library's filter is the project Make files into.
+  const project = route.name === "home" ? route.project : undefined;
   return (
     <header
       data-slot="topbar"
@@ -48,8 +50,8 @@ export function TopBar({ route }: { route: Route }) {
         <JobChip />
         <FactoryPill />
         <nav aria-label="Main" className="flex shrink-0 gap-1 max-sm:gap-0">
-          <NavButton current={active === "make"} icon={<Plus />} onClick={() => navigate({ name: "home", section: "make" })}>Make</NavButton>
-          <NavButton current={active === "library"} icon={<LayoutGrid />} onClick={() => navigate({ name: "home", section: "library" })}>Library</NavButton>
+          <NavButton current={active === "make"} icon={<Plus />} onClick={() => navigate({ name: "home", section: "make", project })}>Make</NavButton>
+          <NavButton current={active === "library"} icon={<LayoutGrid />} onClick={() => navigate({ name: "home", section: "library", project })}>Library</NavButton>
           <NavButton current={active === "settings"} icon={<Settings />} onClick={() => navigate({ name: "settings" })}>Settings</NavButton>
         </nav>
       </div>

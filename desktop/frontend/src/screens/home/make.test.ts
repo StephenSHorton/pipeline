@@ -135,6 +135,17 @@ describe("library", () => {
     expect(matchesFilter(hen, "model", "")).toBe(false);
     expect(matchesFilter(hen, "", "PS1")).toBe(true);
   });
+  it("project filter, and the project name in the search", () => {
+    const hen = a({ id: "hen", has_psx: true, project: "mlg-farming" });
+    const pig = a({ id: "pig", has_psx: true, project: null });
+    const cow = a({ id: "cow", has_psx: true }); // an older factory's row: no field is Unsorted
+    expect([hen, pig, cow].filter((x) => matchesFilter(x, "", "")).length).toBe(3);
+    expect([hen, pig, cow].filter((x) => matchesFilter(x, "", "", "mlg-farming")).map((x) => x.id)).toEqual(["hen"]);
+    expect([hen, pig, cow].filter((x) => matchesFilter(x, "", "", "_unsorted")).map((x) => x.id)).toEqual(["pig", "cow"]);
+    expect(matchesFilter(hen, "model", "", "mlg-farming")).toBe(false);
+    expect(matchesFilter(hen, "", "farm", undefined, "MLG Farming")).toBe(true);
+    expect(matchesFilter(hen, "", "farm")).toBe(false);
+  });
   it("relativeTime", () => {
     const now = 1_000_000_000_000;
     expect(relativeTime(now / 1000 - 120, now)).toBe("2 min ago");

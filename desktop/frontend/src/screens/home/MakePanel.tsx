@@ -2,7 +2,8 @@
 // one text field, Add photo and Make; the kind switch under it; one route line; quiet chips for what is automatic
 // (head direction, height, file name, detail) with an Options disclosure to change them.
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type FormEvent } from "react";
-import { ChevronDown, ChevronsUpDown } from "lucide-react";
+import { ChevronDown, ChevronsUpDown, Folder } from "lucide-react";
+import { IntoMenu } from "@/components/ProjectMenu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,8 +19,10 @@ import {
   type FacingSource,
 } from "@/lib/api";
 import { displayStem, jobChipText, useJobs } from "@/lib/jobs";
+import { intoProject, useProjectList } from "@/lib/projects";
 import { toast } from "@/lib/ui";
 import { onJobChip, openAsset } from "@/app/open";
+import { navigate, UNSORTED } from "@/app/router";
 import { cn } from "@/lib/utils";
 import { startDrawThen3d, startHomeJob } from "./chain";
 import { KIND_TAB } from "./Library";
@@ -87,7 +90,8 @@ function useNarrow(): boolean {
   );
 }
 
-export function MakePanel() {
+/** project: the route's ?project=, the project new assets are filed into (Unsorted, from the Library, is none). */
+export function MakePanel({ project }: { project?: string }) {
   const [kind, setKindState] = useState<AssetOutput>(loadKind);
   const [text, setText] = useState("");
   const [photo, setPhoto] = useState<Photo | null>(null);
@@ -105,6 +109,12 @@ export function MakePanel() {
   const [flags, setFlags] = useState<FlatFlags | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const narrow = useNarrow();
+  const projects = useProjectList();
+  // Before the list loads, the route's id is trusted (the factory only logs a gone one); after, only a real project.
+  const into = intoProject(projects, project);
+  const intoId = projects ? (into?.id ?? null) : project && project !== UNSORTED ? project : null;
+  const intoName = into?.name ?? intoId;
+  const pickInto = (id: string | undefined) => navigate({ name: "home", section: "make", project: id }, { replace: true });
 
   const job = useJobs((s) => s.job);
   const watching = useJobs((s) => s.watching);
@@ -233,28 +243,43 @@ export function MakePanel() {
       return;
     }
     setLine(null);
-    const stem = await freshStem(nameSlug || flatName(c.prompt, p.file.name));
+    const stem = await stemFor(nameSlug || flatName(c.prompt, p.file.name));
+    if (!stem) return;
     void startDrawThen3d(
-      photoDrawBody(c, stem, path),
+      { ...photoDrawBody(c, stem, path), project: intoId },
       { path: "/2d/draw", kind: "flat2d", title: `Drawing ${displayStem(stem)} from your photo` },
       readIntent(c, { drawn: true }),
     );
   }
 
+  /** A name no asset has. The factory files the new asset into `project` (or none) once its first request is
+   * accepted, so every make says where it goes. null, with the reason on the line, when the names can't be checked:
+   * a guess could land on an existing asset and refile it. */
+  async function stemFor(base: string): Promise<string | null> {
+    try {
+      return await freshStem(base);
+    } catch (err) {
+      setLine({ text: `Couldn't check the names already taken: ${err instanceof Error ? err.message : err}`, state: "error" });
+      return null;
+    }
+  }
+
   async function make3dByDrawing() {
     const c = choice();
-    const stem = await freshStem(nameSlug || flatName(c.prompt));
-    void startDrawThen3d(drawFirstBody(c, stem), { path: "/2d/draw", kind: "flat2d", title: `Drawing ${displayStem(stem)}` }, readIntent(c, { drawn: true }));
+    const stem = await stemFor(nameSlug || flatName(c.prompt));
+    if (!stem) return;
+    void startDrawThen3d({ ...drawFirstBody(c, stem), project: intoId }, { path: "/2d/draw", kind: "flat2d", title: `Drawing ${displayStem(stem)}` }, readIntent(c, { drawn: true }));
   }
 
   async function makeSprite() {
     const c = choice();
-    const stem = await freshStem(nameSlug || flatName(c.prompt, photo?.file.name));
+    const stem = await stemFor(nameSlug || flatName(c.prompt, photo?.file.name));
+    if (!stem) return;
     const label = displayStem(stem);
     if (photo) {
       setLine({ text: "Opening the picture.", state: "running" });
       try {
-        await drop2d(stem, arrayBufferToBase64(await photo.file.arrayBuffer()));
+        await drop2d(stem, arrayBufferToBase64(await photo.file.arrayBuffer()), intoId);
       } catch (err) {
         setLine({ text: err instanceof Error ? err.message : String(err), state: "error" });
         return;
@@ -267,7 +292,7 @@ export function MakePanel() {
         return;
       }
     }
-    void startHomeJob(spriteDrawBody(c, stem, !!photo), { path: "/2d/draw", kind: "flat2d", title: photo ? `Finishing ${label}` : `Drawing ${label}` });
+    void startHomeJob({ ...spriteDrawBody(c, stem, !!photo), project: intoId }, { path: "/2d/draw", kind: "flat2d", title: photo ? `Finishing ${label}` : `Drawing ${label}` });
   }
 
   /* --------------------------------------------- drag and drop */
@@ -403,18 +428,37 @@ export function MakePanel() {
           {routeLine}
         </p>
         {/* The summary is the Options button: one outline button that says what Make will use and opens the
-            choices. While they are open it says Hide options, so nothing is listed twice. */}
-        <Button
-          variant="outline"
-          onClick={() => setOptions((o) => !o)}
-          aria-expanded={options}
-          aria-controls="mk-options"
-          title={options ? "Hide the options" : "Change these"}
-          className="hit-44 h-auto min-h-9 max-w-full gap-1.5 rounded-xl px-[0.85rem] text-[0.8rem] font-medium whitespace-normal text-ink-2 aria-expanded:bg-white aria-expanded:text-ink-2"
-        >
-          <span className="min-w-0 truncate">{options ? "Hide options" : ["Options", ...chips].join(" · ")}</span>
-          <ChevronDown aria-hidden="true" className={cn("size-3.5 shrink-0 text-ink-3 transition-transform", options && "rotate-180")} />
-        </Button>
+            choices. While they are open it says Hide options, so nothing is listed twice. Into sits beside it: the
+            project Make files into, the same ?project= the Library shows. */}
+        <div className="flex max-w-full flex-wrap items-center justify-center gap-2">
+          <IntoMenu
+            value={into?.id ?? null}
+            projects={projects ?? []}
+            onPick={pickInto}
+            trigger={
+              <Button
+                variant="outline"
+                title="The project new assets go into"
+                className="hit-44 h-auto min-h-9 max-w-[16rem] gap-1.5 rounded-xl px-[0.85rem] text-[0.8rem] font-medium text-ink-2 aria-expanded:bg-white aria-expanded:text-ink-2"
+              >
+                <Folder aria-hidden="true" className="size-3.5 shrink-0 text-ink-3" />
+                <span className="min-w-0 truncate">{intoName ? <>Into: <strong className="font-semibold">{intoName}</strong></> : "No project"}</span>
+                <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-ink-3" />
+              </Button>
+            }
+          />
+          <Button
+            variant="outline"
+            onClick={() => setOptions((o) => !o)}
+            aria-expanded={options}
+            aria-controls="mk-options"
+            title={options ? "Hide the options" : "Change these"}
+            className="hit-44 h-auto min-h-9 max-w-full gap-1.5 rounded-xl px-[0.85rem] text-[0.8rem] font-medium whitespace-normal text-ink-2 aria-expanded:bg-white aria-expanded:text-ink-2"
+          >
+            <span className="min-w-0 truncate">{options ? "Hide options" : ["Options", ...chips].join(" · ")}</span>
+            <ChevronDown aria-hidden="true" className={cn("size-3.5 shrink-0 text-ink-3 transition-transform", options && "rotate-180")} />
+          </Button>
+        </div>
 
         {options ? (
           <div id="mk-options" className="flex flex-wrap justify-center gap-[0.4rem]">
