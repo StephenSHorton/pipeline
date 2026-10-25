@@ -521,9 +521,15 @@ def _build(source: Path, plan: dict, pred: rig_pred.Pred | None, out_dir: Path, 
     body_lo = float(min(p[1] for p in leg_root.values())) - 0.05 * H
 
     # ---- 2. hips, root, spine, neck, head, jaw
-    if pred is not None:
+    root_z = [p[2] for p in leg_root.values()]
+    if pred is not None and min(root_z) - 0.1 * H <= pred.jp[pred.root[0]][2] <= max(root_z) + 0.1 * H:
         hb = pred.jp[pred.root[0]].copy()
         src_h = f"pred:{pred.names[pred.root[0]]}"
+    elif pred is not None:
+        # the crow's prediction rooted at the back of the body, behind both legs: hips there sat low and behind the
+        # tail, so the hips go above the legs instead, as on every bird that built
+        hb = np.array([cx, pred.jp[pred.root[0]][1], float(np.mean(root_z))])
+        src_h = "legs (predicted root off the legs)"
     else:
         hb = np.array([cx, y0 + 0.45 * H, float(C[:, 1].mean())])
         src_h = "fallback"
@@ -607,6 +613,13 @@ def _build(source: Path, plan: dict, pred: rig_pred.Pred | None, out_dir: Path, 
 
     # ---- 3. tail
     tailspec = chains.get("tail", {}) if isinstance(chains.get("tail"), dict) else {}
+    if tail_c is not None:
+        # a real tail runs back from the hips near the midline over 2+ joints; the crow's "tail" was a one-joint
+        # stub off the root at the side, forward of it, and the tail built from it came out outside the mesh
+        tj = np.array([pred.jp[k] for k in tail_c])
+        if len(tail_c) < 2 or abs(tj[-1][0] - cx) > 0.06 * H or tj[-1][2] >= pos["hips"][2]:
+            diag["tail_pred_rejected"] = {"joints": len(tail_c), "tip": [round(float(x), 4) for x in tj[-1]]}
+            tail_c = None
     if tail_c is not None:
         tline = np.array([pred.jp[k] for k in tail_c])
         tsrc = "pred:tail"

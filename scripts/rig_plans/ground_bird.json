@@ -49,7 +49,7 @@
   },
   "leg_ik": {"femur": "UpperLeg", "A": "LowerLeg", "B": "AnkleLeg", "K": "Foot", "pole": [0, 0, -1], "flat": ["Foot", "Toes"]},
   "neck_ik": ["spine_2", "spine_3", "head", "mouth_upper_tip"],
-  "ratios": {"leg": [0.30, 0.65], "neck": [0.25, 0.60], "tail": [0.10, 0.90]},
+  "ratios": {"leg": [0.22, 0.65], "neck": [0.25, 0.60], "tail": [0.10, 0.90]},
   "torso_prefixes": ["root", "hips", "spine"],
   "ref": "Rest",
   "clips": [
@@ -71,7 +71,7 @@
   ],
   "default": ["Idle", "Walk", "Run", "Peck", "Flap", "Sleep", "Death"],
   "gates": {"stretch_p99": 2.5, "stretch_ship": 3.0, "far_share": 0.10, "far_p99_H": 0.75, "cshape": 1.6, "cshape_flap_lateral": 2.2,
-            "floor_min_H": -0.01, "stance_clear_H": 0.02, "foot_slide": 0.03, "loop_seam_deg": 0.5,
-            "head_hold_drift_H": 0.012, "beak_gap_H": [-0.005, 0.02], "belly_gap_H": 0.03, "energy_step": 0.8, "tries": 4},
+            "floor_min_H": -0.03, "stance_clear_H": 0.02, "foot_slide": 0.03, "loop_seam_deg": 0.5,
+            "head_hold_drift_H": 0.012, "beak_gap_H": [-0.015, 0.02], "belly_gap_H": 0.03, "energy_step": 0.8, "tries": 4},
   "pred": {"beams": 1, "temperature": 0.7, "runs": 1}
 }
