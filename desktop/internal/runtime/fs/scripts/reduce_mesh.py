@@ -165,18 +165,34 @@ def rebake(high: trimesh.Trimesh, texture: Image.Image, low: trimesh.Trimesh, at
     return trimesh.Trimesh(vertices=verts, faces=faces, visual=visual, process=False)
 
 
+WELD = 1e-4  # near-duplicate vertices closer than this share of the mesh size are one vertex before decimating
+NUDGES = (1e-6, 1e-5, 1e-4, 1e-3)  # retry nudges, as shares of the mesh size; 1e-3 of a 20 in TV is 0.02 in
+
+
 def simplify(mesh: trimesh.Trimesh, target: int) -> trimesh.Trimesh:
-    """Quadric decimation to about target faces. Exactly flat areas (a clay cylinder's caps, a box's sides)
-    give every edge there zero error, and the decimator stalls at about half the faces. Hunyuan meshes are never
-    exactly flat, so this only shows on authored shapes; the fix is to retry once with the vertices nudged by a
-    millionth of the mesh size (seeded, so the result is repeatable), far below anything a texel can show."""
-    low = mesh.simplify_quadric_decimation(face_count=target)
-    if len(low.faces) <= 1.5 * target:
-        return low
-    nudged = mesh.copy()
+    """Quadric decimation to about target faces. Two things stall the decimator well above target:
+    - near-duplicate vertices along creases (the CRT: 379 pairs under 1e-4 of its size) leave sliver triangles its
+      flip and degenerate tests refuse to collapse, so it stopped at 650 whether asked for 450 or 340. They are
+      welded first.
+    - exactly flat areas (a clay cylinder's caps) give every edge zero error. A retry with the vertices nudged
+      (seeded, so repeatable) breaks the tie; the nudge grows until the count lands within 1.1x of target (a
+      millionth of the size alone never cleared the CRT's slivers), and the closest result is kept."""
+    scale = float(mesh.scale or 1.0)
+    welded = mesh.copy()
+    welded.merge_vertices(digits_vertex=max(0, int(-np.floor(np.log10(WELD * scale)))))
+    welded.update_faces(welded.nondegenerate_faces())
+    welded.remove_unreferenced_vertices()
+    best = welded.simplify_quadric_decimation(face_count=target)
     rng = np.random.default_rng(0)
-    nudged.vertices = mesh.vertices + rng.normal(scale=1e-6 * float(mesh.scale or 1.0), size=mesh.vertices.shape)
-    return nudged.simplify_quadric_decimation(face_count=target)
+    for k in NUDGES:
+        if len(best.faces) <= 1.1 * target:
+            break
+        nudged = welded.copy()
+        nudged.vertices = welded.vertices + rng.normal(scale=k * scale, size=welded.vertices.shape)
+        low = nudged.simplify_quadric_decimation(face_count=target)
+        if abs(len(low.faces) - target) < abs(len(best.faces) - target):
+            best = low
+    return best
 
 
 def reduce_mesh(mesh: trimesh.Trimesh, target: int) -> trimesh.Trimesh:

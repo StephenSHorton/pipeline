@@ -61,3 +61,25 @@ def test_head_weight_spends_more_on_the_head_and_keeps_its_place() -> None:
     assert head_faces(heavy) > head_faces(plain)
     assert np.allclose(heavy.bounds, mesh.bounds, atol=0.05)
     assert len(heavy.faces) <= 630
+
+
+def test_near_duplicate_vertices_are_welded_so_the_cut_reaches_its_target() -> None:
+    # the CRT: vertices a hair apart along its creases stalled the decimator at 650 whatever it was asked
+    box = trimesh.creation.box(extents=(1, 1, 1)).subdivide().subdivide().subdivide().subdivide()
+    split = trimesh.Trimesh(box.triangles.reshape(-1, 3), np.arange(len(box.faces) * 3).reshape(-1, 3), process=False)
+    split.vertices = split.vertices + np.random.default_rng(1).normal(scale=1e-7, size=split.vertices.shape)
+    low = P.simplify(split, 300)
+    assert 280 <= len(low.faces) <= 330
+
+
+def test_slivers_dropped_after_the_cut_are_made_up() -> None:
+    # the scrap pile: thin sheets break into one-face slivers the cut drops; the budget is raised to make them up
+    sheets = []
+    for k in range(40):
+        s = trimesh.creation.box(extents=(1.0, 0.002, 0.6)).subdivide().subdivide()
+        s.apply_translation([0, k * 0.05, 0])
+        sheets.append(s)
+    body = trimesh.creation.icosphere(subdivisions=5, radius=0.8)
+    body.apply_translation([0, 0.9, 0])
+    low = P.decimate(trimesh.util.concatenate([body, *sheets]), 900)
+    assert len(low.faces) >= 0.9 * 900

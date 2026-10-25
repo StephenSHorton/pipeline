@@ -121,11 +121,23 @@ def decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     # Hunyuan leaves floating crumbs; at a PS1 budget every triangle on one counts. Drop them on the detailed
     # mesh, where a crumb really is a separate piece.
     plain = _keep(plain, lambda p: p.area >= CRUMB * plain.area)
-    low = simplify(plain, faces)
-    low.remove_unreferenced_vertices()
     # Decimation pinches thin parts (a sheep's leg below the hock, its ears) down to a vertex or two, and split()
     # joins by edges, so they come out as pieces of their own. They are the model: keep them, drop only slivers.
-    return _keep(low, lambda p: len(p.faces) > 1 and p.area >= SLIVER * low.area)
+    # A thin-sheet source (the scrap pile) breaks into hundreds of slivers and lost a third of its budget (587 of
+    # 900), so the budget is raised by what was dropped and the cut made again, keeping the closest at or under it.
+    best = None
+    ask = faces
+    for _ in range(4):
+        low = simplify(plain, ask)
+        low.remove_unreferenced_vertices()
+        low = _keep(low, lambda p, a=low.area: len(p.faces) > 1 and p.area >= SLIVER * a)
+        n = len(low.faces)
+        if best is None or (n <= faces * 1.02 and abs(n - faces) < abs(len(best.faces) - faces)):
+            best = low
+        if n >= 0.95 * faces or n > faces * 1.02:
+            break
+        ask = int(ask + (faces - n) * 1.1)
+    return best
 
 
 def smoothstep(t: np.ndarray) -> np.ndarray:
