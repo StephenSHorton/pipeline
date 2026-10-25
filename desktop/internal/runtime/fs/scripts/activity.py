@@ -5,10 +5,11 @@ or a factory job (source "job", written by JobWatch as the job runs). Each chang
 whole entry with the next seq, so the app asks for `since=<last seq>` and replaces entries by id.
 
     {"id", "seq", "ts", "source", "tool", "stem", "title", "state": running|ok|error|cancelled, "started",
-     "ms", "detail", "glb", "image", "take", "job_id", "error"}
+     "ms", "detail", "glb", "image", "take", "job_id", "error", "view", "compare"}
 
 `glb` is a model the action wrote (out/-relative) for the viewer to load as it lands; `image` a picture to show
-beside the line (a look sheet, a drawn view). Kept in memory (the last KEEP) and appended to
+beside the line (a look sheet, a drawn view). `view` and `compare` come with a workbench `show`: the app opens
+the asset on that stage (mesh or rig), with an earlier version (a take id, or "previous") beside it in Compare. Kept in memory (the last KEEP) and appended to
 out/_logs/activity.jsonl, whose tail is read back at start so a restart keeps the recent history.
 """
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Any, Callable
 KEEP = 400
 STATES = frozenset({"running", "ok", "error", "cancelled"})
 FIELDS = ("source", "tool", "stem", "title", "state", "started", "ms", "detail", "glb", "image", "take", "job_id",
-          "error", "kind")
+          "error", "kind", "view", "compare")
 TEXT_MAX = 400
 
 

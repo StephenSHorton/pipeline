@@ -92,4 +92,17 @@ describe("followStep", () => {
     expect(followStep(e("j", 2, { state: "running", source: "job", glb: "s/mesh.glb" }), job)).toEqual({});
     expect(followStep(e("j", 3, { state: "running", source: "job", glb: "s/textured.glb" }), job)).toEqual({ model: { stem: "s", file: "textured.glb" } });
   });
+  it("opens what a workbench show asks for, once, with Compare's left side", () => {
+    const shown = e("v", 2, { state: "ok", source: "claude", tool: "show", stem: "s", view: "mesh", compare: "t4" });
+    expect(followStep(shown, e("v", 1, { state: "running", source: "claude", tool: "show", stem: "s" }))).toEqual({
+      show: { stem: "s", stage: "mesh", compare: "t4" },
+    });
+    expect(followStep(e("v", 3, { state: "ok", source: "claude", tool: "show", stem: "s" }), shown)).toEqual({});
+    expect(followStep(e("r", 1, { state: "ok", source: "claude", tool: "show", stem: "s", view: "rig", glb: "s/rig/rigged.glb" }), undefined)).toEqual({
+      show: { stem: "s", stage: "rig" },
+      model: { stem: "s", file: "rig/rigged.glb" },
+    });
+    // still running: nothing yet
+    expect(followStep(e("v", 1, { state: "running", source: "claude", tool: "show", stem: "s" }), undefined)).toEqual({});
+  });
 });

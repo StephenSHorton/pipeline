@@ -133,6 +133,19 @@ def test_narrator_lines(tmp_path: Path) -> None:
     assert n.start("job_status", {}) is None
 
 
+def test_narrator_show_carries_the_stage_and_the_compare(tmp_path: Path) -> None:
+    sent: list[dict] = []
+    n = Narrator(tmp_path, sent.append)
+    eid = n.start("show", {"stem": "can"})
+    n.end(eid, "show", {"stem": "can"}, {"stem": "can", "view": "mesh", "compare": "t4", "glb": "out/can/psx.glb"})
+    assert sent[-1]["title"] == "Showed Stephen can"
+    assert (sent[-1]["view"], sent[-1]["compare"], sent[-1]["glb"]) == ("mesh", "t4", "can/psx.glb")
+    a = Activity(tmp_path / "a.jsonl")
+    a.put("x", source="claude", tool="show", stem="can", state="ok", view="rig", compare="previous")
+    got = a.since(0)["entries"][-1]
+    assert (got["view"], got["compare"]) == ("rig", "previous")
+
+
 def test_narrator_survives_a_dead_feed(tmp_path: Path) -> None:
     def boom(entry: dict) -> None:
         raise OSError("down")

@@ -865,6 +865,31 @@ class Workbench:
         with self._lock(stem):
             return self.job(lambda: self.factory.pick(stem, a["stage"], a["take"]))
 
+    def show(self, a: dict) -> dict:
+        """Open the asset in Stephen's app (through the activity feed), on a stage, optionally beside an earlier
+        version in Compare. Stephen: "thought you would open it in pipeline" after a before/after went out as a PNG."""
+        stem = check_stem(a["stem"])
+        folder = self.root / "out" / stem
+        if not folder.is_dir():
+            raise ToolError(f"no asset {stem}")
+        view = a.get("stage") or "mesh"
+        out: dict = {"stem": stem, "view": view}
+        compare = a.get("compare")
+        if compare:
+            if compare != "previous" and not (folder / "takes" / view / compare).is_dir():
+                takes = sorted(p.name for p in (folder / "takes" / view).glob("t*")) if (folder / "takes" / view).is_dir() else []
+                raise ToolError(f"{stem} has no {view} take {compare} (takes: {', '.join(takes) or 'none'})")
+            out["compare"] = compare
+        if a.get("glb"):
+            g = self.path(a["glb"], (".glb",))
+            rel = g.relative_to(self.root / "out")
+            if rel.parts[0] != stem:
+                raise ToolError(f"{a['glb']} is not a file of {stem}")
+            out["glb"] = f"out/{rel.as_posix()}"
+        out["note"] = ("the app opens it now (unless Stephen is typing or has a viewer tool armed)"
+                       + (f"; Compare shows {compare} on the left" if compare else ""))
+        return out
+
     # ------------------------------------------------------------ the registry
 
     def _registry(self) -> list[Tool]:
@@ -1059,6 +1084,13 @@ class Workbench:
                  "job.", _obj({"job_id": {"type": "string"}}), self.job_status, "job"),
             Tool("cancel", "Cancel the factory's running job.", _obj({"job_id": {"type": "string"}}, ("job_id",)),
                  self.cancel, "job"),
+            Tool("show", "Show Stephen an asset in the pipeline app: it opens the asset on stage (mesh, the "
+                 "default, or rig), with compare (a take id from asset_info, or \"previous\") on the left in "
+                 "Compare for a before and after, and glb (a file of the asset) on screen. Use this, never a PNG, "
+                 "whenever Stephen should look at something. Works even with Follow Claude off; it waits while he is "
+                 "typing or has a viewer tool armed.",
+                 _obj({"stem": STEM, "stage": {"type": "string", "enum": ["mesh", "rig"]},
+                       "compare": {"type": "string"}, "glb": GLB}, ("stem",)), self.show),
             Tool("pick_take", "Go back (or forward) to a take of a stage (POST /flow/<stem>/pick); asset_info lists "
                  "them.", _obj({"stem": STEM, "stage": {"type": "string", "enum": STAGES},
                                 "take": {"type": "string"}}, ("stem", "stage", "take")), self.pick_take, "job"),

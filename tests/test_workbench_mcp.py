@@ -27,7 +27,7 @@ from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 PLAN_TOOLS = {"asset_info", "look", "measure", "compare_reference", "clay_get", "clay_set", "clay_edit", "clay_mesh",
               "mesh_edit", "bake_photo", "psx", "draw_views", "generate", "job_status", "cancel", "pick_take",
-              "rig", "rig_review", "rig_preview", "playbook", "review", "bake_wrap"}
+              "rig", "rig_review", "rig_preview", "playbook", "review", "bake_wrap", "show"}
 
 
 class StubFactory(FactoryClient):
@@ -99,6 +99,20 @@ class Base(unittest.TestCase):
         (folder / name).parent.mkdir(parents=True, exist_ok=True)
         mesh.export(folder / name)
         return f"out/{stem}/{name}"
+
+
+class ShowTests(Base):
+    def test_show_checks_the_take_and_the_file(self) -> None:
+        g = self.asset("mlg-can", trimesh.creation.box())
+        (self.root / "out" / "mlg-can" / "takes" / "mesh" / "t4").mkdir(parents=True)
+        out, _ = self.ok("show", {"stem": "mlg-can", "compare": "t4", "glb": g})
+        self.assertEqual((out["view"], out["compare"], out["glb"]), ("mesh", "t4", g))
+        out, _ = self.ok("show", {"stem": "mlg-can", "stage": "rig", "compare": "previous"})
+        self.assertEqual((out["view"], out["compare"]), ("rig", "previous"))
+        bad = self.call("show", {"stem": "mlg-can", "compare": "t9"})
+        self.assertTrue(bad["isError"])
+        self.assertIn("takes: t4", bad["content"][0]["text"])
+        self.assertTrue(self.call("show", {"stem": "mlg-none"})["isError"])
 
 
 class ProtocolTests(Base):

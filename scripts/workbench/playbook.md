@@ -14,6 +14,7 @@ Workbench rules (the playbook tool has the full playbook, with the why for each)
 5. Numbers before pictures: measure / rig_review before and after every change. look or heat only where the numbers point.
 6. Report honestly. Give the numbers before and after. Say when a change barely helped, and separate what a tool can fix from what needs another stage.
 7. Review before showing: psx returns the review (else call review). Fix what failed, then read the sheet: count the ears and eyes on the painted head row against the grey row. Each new critique becomes a check or a sheet row in review.py CRITIQUES.
+8. Show Stephen in the app, never a PNG: call show (stem, stage, compare = the earlier take for a before and after); the app opens it in the viewer and Compare.
 Mesh: a long animal drawn tall gets its length back from proportion_check. If shape.json's proportion skipped, use mesh_edit stretch on z. For legs or head, use the proportion ops (thicken_legs, shorten_legs, widen_head, trim_belly, tidy_legs). When one refuses, give it the parameter the refusal names (top, head, start, line). For the PS1 cut, use psx with head_weight 2; for legs, tidy_legs then leg_weight. A leg left as its own piece after the cut is pinched, not a crumb: weight it, don't delete it.
 Rig, after every rig or weights/joint change:
 a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears, foot slide and problems.

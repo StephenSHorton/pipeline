@@ -26,6 +26,10 @@ export interface ActivityEntry {
   image?: string;
   job_id?: string;
   error?: string;
+  /** A workbench `show`: the stage to open the asset on (mesh or rig)... */
+  view?: string;
+  /** ...and the earlier version to put beside it in Compare (a take id, or "previous"). */
+  compare?: string;
 }
 
 interface ActivityAnswer {

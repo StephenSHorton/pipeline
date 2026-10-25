@@ -32,6 +32,7 @@ TITLES: dict[str, tuple[str, str]] = {
     "generate": ("Starting the 3D build of", "Started the 3D build of"),
     "cancel": ("Stopping the job", "Stopped the job"),
     "pick_take": ("Going back to a version of", "Went back to a version of"),
+    "show": ("Showing Stephen", "Showed Stephen"),
 }
 # Polling is not an action: job_status runs every few seconds while a job goes and would bury the feed.
 QUIET = frozenset({"job_status"})
@@ -148,6 +149,13 @@ class Narrator:
             entry["glb"] = glb
         if out.get("job_id"):
             entry["job_id"] = out["job_id"]
+        if tool == "show":
+            # the app opens the asset on this stage, the earlier version beside it when compare is set
+            for key in ("view", "compare"):
+                if isinstance(out.get(key), str):
+                    entry[key] = out[key]
+            if glb_of(out):
+                entry["glb"] = glb_of(out)
         png = out.get("png")
         if isinstance(png, str) and png.endswith(".png"):
             shown = self._keep_picture(Path(png), eid)

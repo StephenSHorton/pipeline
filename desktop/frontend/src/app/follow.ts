@@ -4,11 +4,16 @@
 // the workbench) is picked up as the app's job, so its card and chip show its stages.
 //
 // Never pulls you away mid-task: not while a viewer tool (Carve, Paint) is armed or you are typing in a field.
+//
+// A workbench `show` is Claude asking you to look (the asset on a stage, an earlier version beside it in Compare):
+// it opens even with Follow off, since it was asked for, but still waits on the same two things.
 import { navigate, parseRoute } from "@/app/router";
 import { onActivity, splitOut, useActivity, type ActivityEntry } from "@/lib/activity";
 import { useFlow } from "@/lib/flow";
 import { reattachJob, useJobs } from "@/lib/jobs";
 import { useStage } from "@/screens/asset/stage";
+import { useCompare } from "@/screens/viewer/compare";
+import type { ViewerStage } from "@/screens/viewer/panels/panels";
 import { useViewerTools, viewerTools } from "@/viewer/tools";
 
 /** Something the person is doing that a jump would interrupt. */
@@ -26,12 +31,30 @@ function currentStem(): string | null {
   return r.name === "asset" ? r.stem : null;
 }
 
+export interface FollowStep {
+  open?: string;
+  model?: { stem: string; file: string };
+  refresh?: boolean;
+  adopt?: boolean;
+  /** A workbench show: open stem on stage, with compare (a take id or "previous") on the left. */
+  show?: { stem: string; stage: ViewerStage; compare?: string };
+}
+
 /** What a new copy of an entry asks of the screen. Pure, for the tests. */
 export function followStep(
   e: ActivityEntry,
   prev: ActivityEntry | undefined,
-): { open?: string; model?: { stem: string; file: string }; refresh?: boolean; adopt?: boolean } {
-  const out: { open?: string; model?: { stem: string; file: string }; refresh?: boolean; adopt?: boolean } = {};
+): FollowStep {
+  const out: FollowStep = {};
+  if (e.tool === "show") {
+    // Asked for: once, when it lands, whatever Follow says.
+    if (prev?.state === "ok" || e.state !== "ok" || !e.stem) return out;
+    const stage: ViewerStage = e.view === "rig" ? "rig" : "mesh";
+    out.show = { stem: e.stem, stage, ...(e.compare ? { compare: e.compare } : {}) };
+    const m = e.glb ? splitOut(e.glb) : null;
+    if (m) out.model = m;
+    return out;
+  }
   // The feed sends an entry's latest copy only, so a quick action can arrive already done: new is enough.
   const started = !prev || (e.state === "running" && prev.state !== "running");
   if (started && e.stem) out.open = e.stem;
@@ -70,9 +93,31 @@ async function showModel(stem: string, file: string, refresh: boolean): Promise<
   await viewerTools.loadFile(file).catch(() => {});
 }
 
+/** Claude asked: open the asset on the stage and, for a before and after, Compare with the earlier version. */
+async function showAsked(show: NonNullable<FollowStep["show"]>, model?: { stem: string; file: string }): Promise<void> {
+  if (busyHere()) return;
+  if (currentStem() !== show.stem) navigate({ name: "asset", stem: show.stem });
+  const stage = useStage.getState();
+  for (let i = 0; i < 40 && useStage.getState().stem !== show.stem; i++) await new Promise((r) => setTimeout(r, 100));
+  if (useStage.getState().stage !== show.stage) stage.enter(show.stage);
+  if (!(await viewerReady(show.stem))) return;
+  if (model) await viewerTools.loadFile(model.file).catch(() => {});
+  const c = useCompare.getState();
+  if (show.compare) {
+    c.start(show.stem, show.stage);
+    if (show.compare !== "previous") useCompare.getState().setLeft(show.compare);
+  } else if (c.stem) {
+    c.stop();
+  }
+}
+
 export function startFollow(): () => void {
   return onActivity((e, prev) => {
     const step = followStep(e, prev);
+    if (step.show) {
+      void showAsked(step.show, step.model);
+      return;
+    }
     if (step.adopt && !useJobs.getState().job) void reattachJob();
     if (!useActivity.getState().follow) return;
     if (step.open && currentStem() !== step.open && !busyHere()) navigate({ name: "asset", stem: step.open });
