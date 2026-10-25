@@ -100,6 +100,11 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
   (the flag's back baked grey: paint its texels red) rather than redrawing for it.
 - **A complex vehicle needs more than 1,200 triangles:** at 1,200 the tractor lost its exhaust and its wheels went
   jagged; `faces: 1800` (1,622 after crumbs) kept both. Say so when a model goes over the budget.
+- **Fix a shape the drawings won't make on the mesh, not with more words.** The image model draws a hole through a
+  jerry can's handle, collar slots and wing mirrors however it is told (three prompts each in round 3). `mesh_edit
+  gaps` lists what would fill; `close` with a center and radius fills only that hole (closing everywhere also filled
+  the can's embossed panels), `carve` empties a part first. Rebuild with generate (mesh = the edit, image the drawn
+  flat/source.png) with **paint on**: with paint off the filled handle had no view colour and baked a grey slab.
 
 ## Rig
 

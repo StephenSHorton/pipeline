@@ -314,6 +314,11 @@ def review(folder, bake=None, paint=None, out_dir=None, glb=None) -> dict:
         checks.append(_check("paint", None, PAINT_MAX, None, "not a --select bake: the check does not apply"))
     elif not paint.is_file():
         checks.append(_check("paint", None, PAINT_MAX, None, f"no paint to compare with ({paint.name})"))
+    elif (folder / "mesh.glb").is_file() and paint.stat().st_mtime < (folder / "mesh.glb").stat().st_mtime:
+        # generate with paint off reshapes without repainting: the gas can's closed handle was judged against the
+        # paint of its old mesh (0.37)
+        checks.append(_check("paint", None, PAINT_MAX, None, f"{paint.name} is older than mesh.glb (built with "
+                                                              "paint off): the check does not apply"))
     else:
         try:
             try:

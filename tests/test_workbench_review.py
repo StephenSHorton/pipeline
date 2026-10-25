@@ -125,6 +125,21 @@ class Review(unittest.TestCase):
         self.assertIsNotNone(cut["mirror"]["ok"])
         self.assertEqual(cut["tris"]["limit"], 5000)
 
+    def test_paint_from_an_older_mesh_does_not_apply(self) -> None:
+        import os
+        d = self.dir / "repainted"
+        d.mkdir(exist_ok=True)
+        (d / "intent.json").write_text(json.dumps({"subject": "animal", "psx": {"facing": "right"}}))
+        textured_box(d / "textured.glb", skin())
+        textured_box(d / "textured_photo.glb", skin() * 0.3)
+        (d / "textured_photo.select.json").write_text("{}")
+        textured_box(d / "mesh.glb", skin())
+        os.utime(d / "textured.glb", (1, 1))
+        res = review.review(d, glb=d / "textured_photo.glb")
+        paint = next(c for c in res["checks"] if c["name"] == "paint")
+        self.assertIsNone(paint["ok"])
+        self.assertIn("older than mesh.glb", paint["why"])
+
     def test_paint_does_not_apply_to_an_older_bake(self) -> None:
         d = self.dir / "older"
         d.mkdir(exist_ok=True)

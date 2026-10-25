@@ -628,6 +628,25 @@ class Workbench:
             info = {"axis": params["axis"], "factor": float(params["factor"]),
                     "extents_before": [round(float(x), 4) for x in mesh.extents],
                     "extents_after": [round(float(x), 4) for x in out_mesh.extents]}
+        elif op in ("close", "gaps"):
+            # Holes and parts the drawings put in however they were asked (round 3: the jerry can's handle).
+            from workbench import solid
+            sphere = _obj({"center": VEC3, "radius": {"type": "number", "minimum": 0}}, ("center", "radius"))
+            errs = check(_obj({"center": VEC3, "radius": {"type": "number", "minimum": 0},
+                               "size": {"type": "number", "minimum": 0},
+                               "carve": {"type": "array", "items": sphere}}), params, "params")
+            if not errs and ("center" in params) != ("radius" in params):
+                errs = ["params: center and radius go together"]
+            if errs:
+                raise ArgError("; ".join(errs))
+            if op == "gaps":
+                return {"stem": stem, "op": op, "src": self.rel(src),
+                        "gaps": solid.gaps(mesh, float(params.get("size", 0)))}
+            try:
+                out_mesh, info = solid.solidify(mesh, True, float(params.get("size", 0)), params.get("center"),
+                                                params.get("radius"), params.get("carve"))
+            except solid.SolidError as e:
+                raise ToolError(f"close: {e}") from None
         elif op in edit.OPS:
             # Proportions from a critique (the sheep: legs too thin, too tall, head too narrow). Only vertices move.
             frac = {"type": "number", "minimum": 0.02, "maximum": 0.98}
@@ -945,11 +964,21 @@ class Workbench:
                  "shape doesn't show them (fewer than two legs, legs it can't tell apart, no head end that rises "
                  "above the body or ends that look alike, no neck) the op refuses and says why: give the "
                  "parameter it names (top, head, start, or line for trim_belly). "
+                 "close (params center? [x,y,z], radius?, size? default 0, carve? [{center, radius}]; workbench/"
+                 "solid.py) is for shapes the drawings won't make: the mesh is filled solid on a voxel grid, holes "
+                 "straight through it (a jerry can's handle, a propane collar's slots, see-through windows) are "
+                 "filled, size > 0 also closes dents under about 2 x size, carve spheres are emptied first (wing "
+                 "mirrors), and it is surfaced again as one closed skin. Give center and radius to fill only there: "
+                 "filling everywhere also fills recesses that are meant (the can's embossed panels). The answer has "
+                 "no UVs: rebuild it with generate (mesh = the edit, paint off, image the drawn flat/source.png) so "
+                 "the drawings bake onto the new shape. gaps (params size? default 0) writes nothing and lists what "
+                 "close would fill, largest first (center, voxels, extent): find the hole there, then close it. "
                  "straighten_head, symmetrize and nudge are not built yet.",
                  _obj({"stem": STEM, "src": GLB, "op": {"type": "string", "enum": ["remove_floaters", "delete_sphere",
                                                                                    "stretch", "thicken_legs",
                                                                                    "shorten_legs", "widen_head",
                                                                                    "trim_belly", "tidy_legs",
+                                                                                   "close", "gaps",
                                                                                    "straighten_head", "symmetrize",
                                                                                    "nudge"]},
                        "params": {"type": "object"}}, ("stem", "src", "op")), self.mesh_edit),
