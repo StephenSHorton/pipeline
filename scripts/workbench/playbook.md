@@ -92,8 +92,9 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
   tell them apart): for a grey or white prop, generate with the drawn `mesh` and `paint: false`, then if the cast
   still bakes in, bake_photo views where pixels leaning both red and blue over green are pulled to grey (wood,
   which leans orange, is untouched). A round subject (a watermelon) has no orientation the four views keep:
-  model it as clay and bake one lengthwise view with `mirror`; take a warm magenta bounce out of a green subject by
-  pulling red under green in that view first. `delight` washed the melon's dark green to lime.
+  model it as clay and `bake_wrap` one lengthwise view round it (a camera bake left a fill swatch whose stripes
+  ran across, a seam round the middle); take a warm magenta bounce out of a green subject by pulling red under
+  green in that view first. `delight` washed the melon's dark green to lime.
 - **Read the drawn sheet before building.** The image model ignores some asks (a mailbox flag "lowered" came back
   raised) and draws one-sided details on both sides (the flag in both side views). Fix what that leaves on the mesh
   (the flag's back baked grey: paint its texels red) rather than redrawing for it.

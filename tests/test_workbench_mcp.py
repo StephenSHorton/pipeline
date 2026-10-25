@@ -27,7 +27,7 @@ from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 PLAN_TOOLS = {"asset_info", "look", "measure", "compare_reference", "clay_get", "clay_set", "clay_edit", "clay_mesh",
               "mesh_edit", "bake_photo", "psx", "draw_views", "generate", "job_status", "cancel", "pick_take",
-              "rig", "rig_review", "rig_preview", "playbook", "review"}
+              "rig", "rig_review", "rig_preview", "playbook", "review", "bake_wrap"}
 
 
 class StubFactory(FactoryClient):

@@ -292,7 +292,14 @@ def review(folder, bake=None, paint=None, out_dir=None, glb=None) -> dict:
     bake = Path(bake) if bake else folder / "textured_photo.glb"
     paint = Path(paint) if paint else folder / "textured.glb"
     paint_tiles = []
-    if not bake.with_suffix(".select.json").is_file():
+    try:
+        cut_from = json.loads((folder / "psx" / "psx.json").read_text()).get("source") if model.name == "psx.glb" else None
+    except (OSError, ValueError):
+        cut_from = None
+    if cut_from and Path(cut_from).name != bake.name:
+        checks.append(_check("paint", None, PAINT_MAX, None, f"the PS1 was cut from {Path(cut_from).name}, not "
+                                                              f"{bake.name}: the check does not apply"))
+    elif not bake.with_suffix(".select.json").is_file():
         checks.append(_check("paint", None, PAINT_MAX, None, "not a --select bake: the check does not apply"))
     elif not paint.is_file():
         checks.append(_check("paint", None, PAINT_MAX, None, f"no paint to compare with ({paint.name})"))

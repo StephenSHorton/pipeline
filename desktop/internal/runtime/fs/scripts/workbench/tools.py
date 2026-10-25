@@ -702,6 +702,22 @@ class Workbench:
 
         return self.write(stem, "workbench bake_photo", run)
 
+    def bake_wrap(self, a: dict) -> dict:
+        from workbench import wrap
+
+        stem = check_stem(a["stem"])
+        glb = self.path(a["glb"], (".glb",))
+        pic = self.cutout(a["picture"])
+        bench = self.bench(stem)
+
+        def run() -> dict:
+            bench.mkdir(parents=True, exist_ok=True)
+            dest = self.numbered(bench, "wrap")
+            info = wrap.wrap(glb, pic, dest, bool(a.get("flip")))
+            return {"stem": stem, "src": self.rel(glb), **info, "glb": self.rel(dest), "picture": self.rel(pic)}
+
+        return self.write(stem, "workbench bake_wrap", run)
+
     def psx(self, a: dict) -> dict:
         stem = check_stem(a["stem"])
         glb = self.path(a["glb"], (".glb",))
@@ -953,6 +969,12 @@ class Workbench:
                        "keep": {"type": "number", "minimum": 0, "maximum": 1}, "first_wins": {"type": "boolean"},
                        "fill": FILL, "mirror_ends": {"type": "boolean"}, "delight": {"type": "boolean"}},
                       ("stem", "glb", "views")), self.bake_photo),
+            Tool("bake_wrap", "Wrap one lengthwise cutout round a round prop (workbench/wrap.py) into "
+                 "workbench/wrap_N.glb: every point takes the picture's colour for where it sits along the long axis "
+                 "and how far round it, so stripes that run end to end (a watermelon) have no seam or fill swatch. "
+                 "Give a picture of the prop lying lengthwise; flip turns it end for end.",
+                 _obj({"stem": STEM, "glb": GLB, "picture": {"type": "string"}, "flip": {"type": "boolean"}},
+                      ("stem", "glb", "picture")), self.bake_wrap),
             Tool("psx", "Cut a baked GLB down to a PS1 model (psx_lowpoly.py, facing check off) and publish it as "
                  "generate.sh's PS1 step does: out/<stem>/psx.glb, out/<stem>/psx/<name>.obj + .mtl + .png + "
                  "psx.json, and the PSX entry in lods.json (after Photo bake), so the app's Model tabs show it. It "
