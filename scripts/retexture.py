@@ -580,7 +580,7 @@ def main() -> int:
     if args.select:
         mfaces, nv = seam_bake.merged_faces(np.asarray(mesh.vertices), np.asarray(mesh.faces))
         key = [float(c) for c in args.key.split(",")] if args.key else None
-        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv, key=key)
+        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv, key=key, consistency=side_on)
         print(f"retexture: select {json.dumps(res['report'])}")
         if os.environ.get("RETEXTURE_LABELS"):  # debug: paint each face its label's colour
             pal = np.array([[230, 60, 60], [60, 200, 60], [60, 90, 230], [230, 200, 40], [170, 170, 170],

@@ -341,9 +341,11 @@ def sample_atlas(tex: np.ndarray, uv: np.ndarray) -> np.ndarray:
 
 
 def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndarray, bary: np.ndarray,
-         mfaces: np.ndarray, nv: int, smooth: float = SMOOTH, key=None) -> dict:
+         mfaces: np.ndarray, nv: int, smooth: float = SMOOTH, key=None, consistency: bool = True) -> dict:
     """obs: one dict per view {name, seen (N,), conf (N,), colour (N x 3), boost, anchor}. key: the drawing sheet's
-    key RGB, whose colour in the paint is refilled from around it. Returns {colour (N x 3), label (F,), gains
+    key RGB, whose colour in the paint is refilled from around it. consistency: drop what a view draws that the
+    paint lacks there (a creature's eye or ear off its mesh position); off for a prop, whose weathered detail
+    differs between drawing and paint everywhere (the tractor lost the drawings on 61% of its faces). Returns {colour (N x 3), label (F,), gains
     (K x 3), base (the base texture with its gain), report}."""
     nf = len(mfaces)
     n = len(fid)
@@ -404,7 +406,7 @@ def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndar
     # Checked per sample, not per face mean: an eye is a few samples, and a face mean washed it out (the pig kept
     # the side views' eyes on its cheeks beside the front view's, and their ears behind the mesh's ears).
     penalised = 0
-    for j, o in enumerate(obs):
+    for j, o in enumerate(obs if consistency else []):
         seen = o["seen"]
         bad = np.zeros(n, bool)
         # detail against detail: each tone less its surroundings. A drawn eye or ear where the mesh has none is

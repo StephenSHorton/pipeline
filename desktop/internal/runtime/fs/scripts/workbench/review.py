@@ -276,7 +276,11 @@ def review(folder, bake=None, paint=None, out_dir=None, glb=None) -> dict:
                              "no head found to measure (body longer than wide only)"))
         checks.append(_check("mirror", m["mirror_iou"], MIRROR_MIN, m["mirror_iou"] >= MIRROR_MIN,
                              "top view against its own mirror image"))
-    checks.append(_check("pieces", m["pieces"], 1, m["pieces"] <= 1, "a leg as its own piece is pinched: weight it"))
+    creature = kind in CREATURES
+    # a prop's separate parts are often real (the tractor's wheels); a creature's are pinched legs
+    checks.append(_check("pieces", m["pieces"], 1, m["pieces"] <= 1 if creature else None,
+                         "a leg as its own piece is pinched: weight it" if creature else "separate parts (a prop's "
+                         "wheels or post may be real): read the sheet"))
     if model.name == "psx.glb":
         checks.append(_check("tris", m["tris"], PSX_TRIS_MAX, m["tris"] <= PSX_TRIS_MAX, "the PS1 budget"))
     checks.append(_check("circularity", m["circularity"], None, None, f"ellipse fill, {m['circularity_view']} view; "
@@ -299,9 +303,11 @@ def review(folder, bake=None, paint=None, out_dir=None, glb=None) -> dict:
             except (OSError, ValueError):
                 key = None
             pc, paint_tiles = paint_check(bake, paint, key=key)
-            checks.append(_check("paint", pc["worst"], PAINT_MAX, pc["worst"] <= PAINT_MAX,
+            # A prop's bake is not pulled toward the paint (retexture's consistency is creatures only), so
+            # disagreeing is no fault there: the tractor's drawings rightly replaced the paint's darker red.
+            checks.append(_check("paint", pc["worst"], PAINT_MAX, pc["worst"] <= PAINT_MAX if creature else None,
                                  f"largest patch disagreeing with the paint, worst view {pc['worst_view']}; "
-                                 f"per view {pc['per_view']}"))
+                                 f"per view {pc['per_view']}" + ("" if creature else "; a prop: reported only")))
         except ValueError as exc:
             checks.append(_check("paint", None, PAINT_MAX, None, str(exc)))
     try:
