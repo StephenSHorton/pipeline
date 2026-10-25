@@ -412,6 +412,8 @@ def main() -> int:
                          "best, seams placed where the views agree, every view's colour evened out to the others "
                          "and the seams levelled; the base texture (the paint) takes what no view sees well, "
                          "colour-matched to the views. Off: every view averaged in wherever it lands")
+    ap.add_argument("--key", help="R,G,B of the drawing sheet's key (flat/key.json): with --select, paint that "
+                                  "colour where no view lands is the key leaking in and takes the colour around it")
     args = ap.parse_args()
     # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
     # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
@@ -553,7 +555,7 @@ def main() -> int:
                 along = (pts - center) @ front_dir
                 t = (along - along.min()) / max(float(np.ptp(along)), 1e-9)
                 y = (pts[:, 1] - pts[:, 1].min()) / max(float(np.ptp(pts[:, 1])), 1e-9)
-                head = (t > 1.0 - seam_bake.HEAD_SHARE) & (y > seam_bake.HEAD_ABOVE)
+                head = seam_bake.head_zone(t, y, float(np.ptp(along)), float(np.ptp(pts[:, 1])))
                 observed[-1]["seen"] = observed[-1]["seen"] & ~head
                 print(f"retexture: {Path(view).name} keeps off the head ({int(head.sum())} samples)")
             if args.mirror:
@@ -577,7 +579,8 @@ def main() -> int:
     base = albedo
     if args.select:
         mfaces, nv = seam_bake.merged_faces(np.asarray(mesh.vertices), np.asarray(mesh.faces))
-        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv)
+        key = [float(c) for c in args.key.split(",")] if args.key else None
+        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv, key=key)
         print(f"retexture: select {json.dumps(res['report'])}")
         if os.environ.get("RETEXTURE_LABELS"):  # debug: paint each face its label's colour
             pal = np.array([[230, 60, 60], [60, 200, 60], [60, 90, 230], [230, 200, 40], [170, 170, 170],

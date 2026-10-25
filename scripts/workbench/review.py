@@ -39,6 +39,7 @@ from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import rig_render  # noqa: E402
+import seam_bake  # noqa: E402
 from workbench import eyes  # noqa: E402
 
 HEAD_OFFSET_MAX = 5.0  # % of body width; the sheep came out at 21, the fixed sheep and pig under 2
@@ -154,9 +155,10 @@ def _crop(im: np.ndarray, box) -> Image.Image:
 
 # ---------------------------------------------------------------- checks
 
-def paint_check(bake_glb, paint_glb, size: int = PAINT_SIZE) -> tuple[dict, list[Image.Image]]:
+def paint_check(bake_glb, paint_glb, size: int = PAINT_SIZE, key=None) -> tuple[dict, list[Image.Image]]:
     """The largest patch where a --select bake disagrees with the paint it was pulled toward, per view, and an
-    overlay of each view (the bake dimmed, disagreeing pixels blue, the largest patch red)."""
+    overlay of each view (the bake dimmed, disagreeing pixels blue, the largest patch red). Paint the key's colour
+    (the drawing sheet's key leaking into it, which the bake refills on purpose) is left out."""
     paint = Scene(paint_glb, size)
     bake = Scene(bake_glb, size, paint.cam)
     if len(paint.pts) != len(bake.pts):
@@ -170,7 +172,10 @@ def paint_check(bake_glb, paint_glb, size: int = PAINT_SIZE) -> tuple[dict, list
         gain = np.median(p[subj], 0) / np.maximum(np.median(b[subj], 0), 1.0)
         lum = np.array([0.299, 0.587, 0.114])
         diff = np.abs(ndimage.gaussian_filter((b * gain) @ lum, 6) - ndimage.gaussian_filter(p @ lum, 6))
-        off = ndimage.binary_opening((diff > PAINT_TONE) & subj, iterations=2)
+        judged = subj
+        if key is not None:
+            judged = subj & ~(np.linalg.norm(p - np.asarray(key, float), axis=2) < seam_bake.KEY_TOL)
+        off = ndimage.binary_opening((diff > PAINT_TONE) & judged, iterations=2)
         lab, n = ndimage.label(off)
         sizes = ndimage.sum(off, lab, range(1, n + 1)) if n else np.zeros(0)
         share = float(sizes.max() / subj.sum()) if n else 0.0
@@ -289,7 +294,11 @@ def review(folder, bake=None, paint=None, out_dir=None, glb=None) -> dict:
         checks.append(_check("paint", None, PAINT_MAX, None, f"no paint to compare with ({paint.name})"))
     else:
         try:
-            pc, paint_tiles = paint_check(bake, paint)
+            try:
+                key = json.loads((folder / "flat" / "key.json").read_text()).get("rgb")
+            except (OSError, ValueError):
+                key = None
+            pc, paint_tiles = paint_check(bake, paint, key=key)
             checks.append(_check("paint", pc["worst"], PAINT_MAX, pc["worst"] <= PAINT_MAX,
                                  f"largest patch disagreeing with the paint, worst view {pc['worst_view']}; "
                                  f"per view {pc['per_view']}"))

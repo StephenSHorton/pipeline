@@ -784,6 +784,8 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   # Drawn views never agree exactly, so averaged they showed as patches (the pig): one view per triangle, colours
   # evened out, seams levelled, the paint under what no view sees (scripts/seam_bake.py).
   [[ "$USE_MV" -eq 1 ]] && VIEW_ARGS+=(--select)
+  # The paint takes the key's maroon in hollows the drawings don't reach (the hen's back, the pig's back stripe).
+  [[ "$USE_MV" -eq 1 && -n "${KEY_RGB:-}" ]] && VIEW_ARGS+=(--key "$KEY_RGB")
   OPPOSITE=""
   ENDS=0
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac

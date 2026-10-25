@@ -72,6 +72,49 @@ class SeamBakeTests(unittest.TestCase):
         self.assertGreater(float(np.median(dx[fixed])), 5.0)  # the inside moves with the edge, not just the edge
         self.assertLess(sb.align.report["error_after"], sb.align.report["error_before"])
 
+    def test_head_zone_follows_the_body(self) -> None:
+        t = np.array([0.9, 0.9, 0.2])
+        y = np.array([0.5, 0.8, 0.9])
+        # a long animal (the pig): its head is the front above the legs
+        self.assertEqual(sb.head_zone(t, y, 1.4, 1.0).tolist(), [True, True, False])
+        # a tall one (a hen): the front at mid height is breast, only the top is head
+        self.assertEqual(sb.head_zone(t, y, 1.0, 1.0).tolist(), [False, True, False])
+
+    def test_local_mean_ignores_what_has_no_weight(self) -> None:
+        V, F = grid()
+        mf, _ = sb.merged_faces(V, F)
+        adj = sb.face_adjacency(mf)
+        fid = np.arange(len(F))
+        vals = np.full((len(F), 3), 200.0)
+        hole = V[F].mean(1)[:, 0] > 0.3
+        vals[hole] = [40, 0, 40]
+        out = sb.local_mean(vals, (~hole).astype(float), fid, adj, 60)
+        self.assertTrue(np.allclose(out[hole], 200.0, atol=1.0))
+
+    def test_key_coloured_paint_takes_the_colour_around_it(self) -> None:
+        V, F = grid()
+        mf, nv = sb.merged_faces(V, F)
+        nf = len(F)
+        fid = np.repeat(np.arange(nf), 3)
+        bary = np.tile(np.eye(3), (nf, 1))
+        n = len(fid)
+        cx = V[F].mean(1)[:, 0][fid]
+        key = (130.0, 25.0, 70.0)
+        tex = np.zeros((8, 8, 3), np.float32)
+        tex[:] = key
+        uv = np.full((n, 2), 0.5)
+        seen = cx < 0.2  # one view sees most of the box; the rest is key-coloured paint
+        obs = [{"name": "v", "seen": seen, "conf": np.where(seen, 0.9, 0.0).astype(np.float32),
+                "colour": np.full((n, 3), 220.0)}]
+        res = sb.bake(obs, tex, uv, fid, bary, mf, nv, key=key)
+        on_base = res["label"][fid] == 1
+        self.assertTrue(on_base.any())
+        got = res["colour"][on_base]
+        self.assertLess(float(np.abs(got - 220.0).max(axis=1).mean()), 25.0)  # the view's white, not maroon
+        plain = sb.bake(obs, tex, uv, fid, bary, mf, nv)
+        kept = plain["colour"][plain["label"][fid] == 1]
+        self.assertGreater(float(np.abs(kept - 220.0).max(axis=1).mean()), 50.0)  # without the key it stays tinted
+
 
 if __name__ == "__main__":
     unittest.main()

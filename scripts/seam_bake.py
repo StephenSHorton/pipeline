@@ -40,10 +40,25 @@ CONSIST_SPAN = 0.3      # ...and is down to CONSIST_FLOOR at CONSIST_FRAC + this
 CONSIST_FLOOR = 0.05
 CONSIST_DROP = 1        # outlier samples leave the view entirely (0: only its face scores drop)
 CONSIST_GROW = 6        # rings of faces a penalty spreads over (fading 10% a ring)
+KEY_TOL = 70.0          # paint this close (RGB) to the drawing sheet's key colour is the key leaking in, not the
+                        # subject: the hen's back and tail and the pig's back stripe came out the key's maroon (the
+                        # pig's pink is 155 away, the hen's red comb 87)
+KEY_FILL = 200          # rounds of face-neighbour averaging that carry the colour around a leak into it
+CONSIST_LOCAL = 40      # rounds of face-neighbour averaging for the surroundings a sample's tone is measured against
 HEAD_SHARE = 0.45       # a side-on creature's head: this front share of its length...
 HEAD_ABOVE = 0.35       # ...above this share of its height (the legs below are the side views')
+HEAD_ABOVE_TALL = 0.62  # a creature about as tall as long (a hen: length 0.97x height) holds its head up on a neck:
+TALL = 1.2              # under this length/height, only above this share; at 0.35 its whole breast went to the paint
 RATIO_CAP = 0.5         # the paint's colour moves at most e^0.5 (x1.65) toward the views'
 RATIO_SMOOTH = 8       # rounds of neighbour averaging on the view/paint colour ratio before it is spread
+
+
+def head_zone(t: np.ndarray, y: np.ndarray, length: float, height: float) -> np.ndarray:
+    """A side-on creature's head, which its side views keep off: t (0 tail .. 1 nose) and y (0 feet .. 1 top) of
+    each sample. The front HEAD_SHARE above HEAD_ABOVE for a long animal (the pig, the sheep: 1.4-1.5x as long as
+    tall); only the top for a tall one, whose front half is breast and neck the side views see best."""
+    above = HEAD_ABOVE_TALL if length < TALL * height else HEAD_ABOVE
+    return (t > 1.0 - HEAD_SHARE) & (y > above)
 
 
 def merged_faces(vertices: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, int]:
@@ -143,6 +158,21 @@ def _tone_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     la, lb = a.mean(axis=1), b.mean(axis=1)
     ra, rb = a[:, 0] - a[:, 1], b[:, 0] - b[:, 1]
     return np.hypot(la - lb, ra - rb)
+
+
+def local_mean(values: np.ndarray, weight: np.ndarray, fid: np.ndarray, adj: sparse.csr_matrix,
+               rounds: int = CONSIST_LOCAL) -> np.ndarray:
+    """Each sample's surroundings: the weighted per-face mean of values, averaged with the face's neighbours
+    `rounds` times (a few faces wider than an eye), read back per sample."""
+    nf = adj.shape[0]
+    w = np.bincount(fid, weights=weight, minlength=nf)
+    s = np.stack([np.bincount(fid, weights=values[:, c] * weight, minlength=nf) for c in range(values.shape[1])], 1)
+    a = adj + sparse.identity(nf, format="csr")
+    for _ in range(int(rounds)):
+        w, s = a @ w, a @ s
+        top = max(float(w.max()), 1e-12)  # rescale both: the ratio is all that matters, the sums only grow
+        w, s = w / top, s / top
+    return (s / np.maximum(w, 1e-12)[:, None])[fid]
 
 
 def solve_gains(means: np.ndarray, scores: np.ndarray, anchors: np.ndarray) -> np.ndarray:
@@ -311,13 +341,16 @@ def sample_atlas(tex: np.ndarray, uv: np.ndarray) -> np.ndarray:
 
 
 def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndarray, bary: np.ndarray,
-         mfaces: np.ndarray, nv: int, smooth: float = SMOOTH) -> dict:
-    """obs: one dict per view {name, seen (N,), conf (N,), colour (N x 3), boost, anchor}. Returns {colour (N x 3),
-    label (F,), gains (K x 3), base (the base texture with its gain), report}."""
+         mfaces: np.ndarray, nv: int, smooth: float = SMOOTH, key=None) -> dict:
+    """obs: one dict per view {name, seen (N,), conf (N,), colour (N x 3), boost, anchor}. key: the drawing sheet's
+    key RGB, whose colour in the paint is refilled from around it. Returns {colour (N x 3), label (F,), gains
+    (K x 3), base (the base texture with its gain), report}."""
     nf = len(mfaces)
     n = len(fid)
     k = len(obs) + 1
     base_col = sample_atlas(base_tex, uv_pts)
+    spill = (np.linalg.norm(base_col - np.asarray(key, float), axis=1) < KEY_TOL if key is not None
+             else np.zeros(n, bool))
     scores = np.zeros((nf, k), np.float32)
     means = np.full((nf, k, 3), np.nan)
     count = np.bincount(fid, minlength=nf)
@@ -355,6 +388,13 @@ def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndar
         local = match_base(mfaces, nv, label, fid, bary, colour, base_col, k, used)
         on_base = used == k - 1
         colour[on_base] = (base_col * local)[on_base]
+        leak = on_base & spill
+        if leak.any() and (~leak).any():
+            # Where nothing drew it, the paint's key-coloured patch takes the colour around it. Only the key's own
+            # colour: recolouring all paint far from the drawings around it also whitened the hen's red comb and
+            # dappled the pig's head.
+            around = local_mean(colour, (~leak).astype(float), fid, adj, KEY_FILL)
+            colour[leak] = around[leak]
         return colour, base_col * local
 
     colour, matched = compose(label)
@@ -367,7 +407,15 @@ def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndar
     for j, o in enumerate(obs):
         seen = o["seen"]
         bad = np.zeros(n, bool)
-        bad[seen] = _tone_distance(o["colour"][seen] * gains[j], matched[seen]) > CONSIST_SAMPLE
+        # detail against detail: each tone less its surroundings. A drawn eye or ear where the mesh has none is
+        # detail the paint lacks there; a wrong paint colour over a whole region (the hen's maroon tail under a
+        # white drawing) is not, and judged on absolute tone it threw the right drawing out (back view 14% of the
+        # faces to 8%) and left the wrong paint showing.
+        c = o["colour"] * gains[j]
+        wt = seen.astype(float)
+        dv = c - local_mean(c, wt, fid, adj)
+        dp = matched - local_mean(matched, wt, fid, adj)
+        bad[seen] = _tone_distance(dv[seen], dp[seen]) > CONSIST_SAMPLE
         if o.get("stray") is not None:
             bad |= seen & o["stray"]
         nseen = np.bincount(fid, weights=seen.astype(float), minlength=nf)
@@ -392,7 +440,9 @@ def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndar
     share = np.bincount(label, minlength=k) / max(nf, 1)
     report = {"faces": {names[j]: round(float(share[j]), 4) for j in range(k)}, "inconsistent_faces": penalised,
               "gains": {names[j]: [round(float(x), 3) for x in gains[j]] for j in range(k)},
-              "offset_mean": round(float(np.abs(off).mean()), 2), **getattr(level_seams, "report", {})}
+              "offset_mean": round(float(np.abs(off).mean()), 2),
+              "key_leak": round(float((spill & (label[fid] == k - 1)).mean()), 4),
+**getattr(level_seams, "report", {})}
     return {"colour": colour.astype(np.float32), "label": label, "gains": gains,
             "base": np.clip(base_tex.astype(np.float32) * gains[-1], 0, 255), "report": report}
 
