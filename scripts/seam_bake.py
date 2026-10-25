@@ -33,10 +33,17 @@ ICM_ROUNDS = 12
 SEAM_SMOOTH = 0.15     # weight of offset smoothness inside a patch against seam agreement (1)
 MIN_SHARE = 0.15       # a face counts for the gain solve when both sources score at least this
 GAIN_CAP = 0.15        # a drawn view's gain stays within 1 +- this: views of one sheet differ little, more is misfit
-CONSIST_FROM = 45.0     # tone distance (0..255 lightness and redness) a view may differ from the paint for free
-CONSIST_SPAN = 60.0     # past CONSIST_FROM its score falls to CONSIST_FLOOR over this much more
-CONSIST_FLOOR = 0.15
-RATIO_SMOOTH = 3       # rounds of neighbour averaging on the view/paint colour ratio before it is spread
+CONSIST_SAMPLE = 50.0   # a sample whose tone (0..255 lightness and redness) is this far from the paint's is a
+                        # feature the mesh does not have there (a drawn eye or ear off its mesh position)
+CONSIST_FRAC = 0.1      # a face whose samples are this fraction such outliers starts to lose the view
+CONSIST_SPAN = 0.3      # ...and is down to CONSIST_FLOOR at CONSIST_FRAC + this
+CONSIST_FLOOR = 0.05
+CONSIST_DROP = 1        # outlier samples leave the view entirely (0: only its face scores drop)
+CONSIST_GROW = 6        # rings of faces a penalty spreads over (fading 10% a ring)
+HEAD_SHARE = 0.45       # a side-on creature's head: this front share of its length...
+HEAD_ABOVE = 0.35       # ...above this share of its height (the legs below are the side views')
+RATIO_CAP = 0.5         # the paint's colour moves at most e^0.5 (x1.65) toward the views'
+RATIO_SMOOTH = 8       # rounds of neighbour averaging on the view/paint colour ratio before it is spread
 
 
 def merged_faces(vertices: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, int]:
@@ -197,14 +204,15 @@ def harmonic_fill(adj: sparse.csr_matrix, value: np.ndarray, known: np.ndarray) 
     return out
 
 
-def match_base(mfaces, nv, label, fid, bary, colour, base_col, k):
+def match_base(mfaces, nv, label, fid, bary, colour, base_col, k, used=None):
     """Per-sample gain for the base texture (N x 3): the ratio of the views' colour to the paint's, measured per
     vertex where views own the faces, smoothed, and spread over the faces no view owns. The paint keeps its detail
     and takes the views' local colour (a darker flank stays darker, the pink snout stays pink)."""
     corner = mfaces.reshape(-1)
     w = bary.reshape(-1, 3)
     vs = mfaces[fid]
-    view_s = label[fid] != k - 1
+    # only samples a view actually painted (used): a dropped outlier on a view's face carries no view colour
+    view_s = (label[fid] != k - 1) if used is None else (used != k - 1)
     num = np.zeros((nv, 3))
     den = np.zeros((nv, 3))
     cnt = np.zeros(nv)
@@ -218,13 +226,14 @@ def match_base(mfaces, nv, label, fid, bary, colour, base_col, k):
     ratio = np.ones((nv, 3))
     ratio[known] = np.log(np.clip(num[known], 1, None) / np.clip(den[known], 1, None))
     ratio[~known] = 0.0
+    ratio = np.clip(ratio, -RATIO_CAP, RATIO_CAP)  # before smoothing: one stray dark pixel must not spread a smudge
     adj = vertex_adjacency(mfaces, nv)
     deg = np.maximum(np.asarray(adj.sum(axis=1)).reshape(-1), 1)
     for _ in range(int(RATIO_SMOOTH)):  # low-pass where known: the ratio carries colour, not the views' detail
         sm = (adj @ ratio + ratio) / (deg + 1)[:, None]
         ratio[known] = sm[known]
     ratio = harmonic_fill(adj, ratio, known)
-    ratio = np.clip(ratio, -1.2, 1.2)
+    ratio = np.clip(ratio, -RATIO_CAP, RATIO_CAP)
     return np.exp((ratio[vs] * w[:, :, None]).sum(axis=1))
 
 
@@ -343,7 +352,7 @@ def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndar
             alt &= slabel != k - 1
             colour[alt] = c[alt]
             best[alt] = o["conf"][alt]
-        local = match_base(mfaces, nv, label, fid, bary, colour, base_col, k)
+        local = match_base(mfaces, nv, label, fid, bary, colour, base_col, k, used)
         on_base = used == k - 1
         colour[on_base] = (base_col * local)[on_base]
         return colour, base_col * local
@@ -352,17 +361,29 @@ def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndar
     # Photo-consistency: where a view's colour on a face is far from the paint there (matched to the views'
     # local colour), that view drew something the mesh does not have at that spot (a drawn ear on the neck behind
     # the mesh's ear): its score there drops and the faces are labelled again.
-    ref = np.stack([np.bincount(fid, weights=matched[:, ch], minlength=nf) / np.maximum(count, 1)
-                    for ch in range(3)], axis=1)
+    # Checked per sample, not per face mean: an eye is a few samples, and a face mean washed it out (the pig kept
+    # the side views' eyes on its cheeks beside the front view's, and their ears behind the mesh's ears).
     penalised = 0
-    for j in range(k - 1):
-        m = means[:, j] * gains[j]
-        ok = np.isfinite(m[:, 0])
-        dev = np.zeros(nf)
-        dev[ok] = _tone_distance(m[ok], ref[ok])
-        factor = np.clip(1.0 - (dev - CONSIST_FROM) / CONSIST_SPAN, CONSIST_FLOOR, 1.0)
+    for j, o in enumerate(obs):
+        seen = o["seen"]
+        bad = np.zeros(n, bool)
+        bad[seen] = _tone_distance(o["colour"][seen] * gains[j], matched[seen]) > CONSIST_SAMPLE
+        if o.get("stray") is not None:
+            bad |= seen & o["stray"]
+        nseen = np.bincount(fid, weights=seen.astype(float), minlength=nf)
+        frac = np.bincount(fid, weights=bad.astype(float), minlength=nf) / np.maximum(nseen, 1)
+        factor = np.clip(1.0 - (frac - CONSIST_FRAC) / CONSIST_SPAN, CONSIST_FLOOR, 1.0)
+        # a misplaced feature's surroundings go with it (the pale outline of a drawn ear around its dark inside)
+        pen = 1.0 - factor
+        for _ in range(int(CONSIST_GROW)):
+            pen = np.maximum(pen, np.asarray(adj.multiply(pen[None, :]).max(axis=1).todense()).reshape(-1) * 0.9)
+        factor = 1.0 - pen
         penalised += int(((factor < 0.99) & (label == j)).sum())
         scores[:, j] *= factor
+        if CONSIST_DROP:
+            # gone from every path, not only the face scores: the per-sample fallback in compose() handed a
+            # penalised view's samples straight back
+            o["seen"] = seen & ~bad
     label = label_faces(scores, adj, smooth)
     colour, _ = compose(label)
     off = level_seams(mfaces, nv, label, fid, bary, colour)
@@ -377,6 +398,33 @@ def bake(obs: list[dict], base_tex: np.ndarray, uv_pts: np.ndarray, fid: np.ndar
 
 
 # ---------------------------------------------------------------- aligning a view to the mesh
+
+CONTOUR_SIGMA = 0.004   # blur before edges, fraction of the view's longer side (the bristles are not contours)
+CONTOUR_NEAR = 0.012    # the paint's edge may be this far (fraction of the longer side) and still count
+CONTOUR_HIGH = 1.0      # a drawing edge at least this x its 90th percentile is a contour...
+CONTOUR_LOW = 0.45      # ...that the paint lacks when its nearby edge is under this x the paint's 90th percentile
+
+
+def edge_strength(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Blurred-lightness gradient magnitude inside the mask (its own outline left out), over its 90th percentile."""
+    h, w = mask.shape
+    s = max(1.0, CONTOUR_SIGMA * max(h, w))
+    lum = ndimage.gaussian_filter(rgb.mean(axis=2), s)
+    mag = np.hypot(ndimage.sobel(lum, 0), ndimage.sobel(lum, 1))
+    inner = ndimage.binary_erosion(mask, iterations=max(2, int(3 * s)))
+    mag = np.where(inner, mag, 0.0)
+    p90 = np.percentile(mag[inner], 90) if inner.any() else 1.0
+    return mag / max(p90, 1e-6)
+
+
+def stray_contours(draw_rgb, draw_mask, paint_rgb, paint_mask, px, py, qx, qy) -> np.ndarray:
+    """Per sample: the drawing (sampled at its aligned pixel qx, qy) has a contour there and the paint (at the
+    sample's own pixel px, py) has none nearby: an ear or eye drawn where the mesh has plain skin."""
+    h, w = draw_mask.shape
+    ed = edge_strength(draw_rgb, draw_mask)
+    ep = edge_strength(paint_rgb, paint_mask)
+    ep = ndimage.maximum_filter(ep, size=max(3, int(2 * CONTOUR_NEAR * max(h, w)) | 1))
+    return (ed[qy, qx] > CONTOUR_HIGH) & (ep[py, px] < CONTOUR_LOW) & paint_mask[py, px]
 
 ALIGN_PX = 256          # registration runs at this size (the longer side)
 ALIGN_ROUNDS = (60, 40, 30)  # demons iterations per level, coarse to fine

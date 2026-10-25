@@ -467,6 +467,7 @@ def main() -> int:
     weight_t = np.zeros((th, tw), dtype=np.float32)
     reports = []
     observed = []  # --select: what each view saw, baked together after the loop
+    side_on = args.select and args.first_facing in ("right", "left")  # a creature's turnaround
     base_col = seam_bake.sample_atlas(albedo, uv_pts) if args.select else None
     tol = 0.02 * diag
 
@@ -521,6 +522,7 @@ def main() -> int:
                 vp = perspective(np.deg2rad(40.0), 1.0, 0.05, 40.0) @ look_at(eye_, center)
                 px, py, depth, inb = register(pts, vp, fit_)
                 seen, ndotv = seam_bake.observe(pts, nrm, px, py, depth, inb, eye_, bake_, tol)
+                stray = None
                 if os.environ.get("RETEXTURE_ALIGN", "1") != "0":
                     # nudge the picture onto the mesh: the paint (which sits on the mesh exactly) as this camera
                     # sees it is the target, so a drawn ear lands on the mesh's ear, not on the neck behind it
@@ -533,12 +535,27 @@ def main() -> int:
                     px = np.clip(np.round(px + dx[cy, cx]), 0, pw - 1).astype(np.int32)
                     py = np.clip(np.round(py + dy[cy, cx]), 0, ph - 1).astype(np.int32)
                     seen = zb_seen & (ndotv > seam_bake.ANGLE_MIN) & bake_[py, px]
+                    stray = seam_bake.stray_contours(rgb_, fit_, ren, rmask, cx, cy, px, py)
+                    print(f"retexture: {int((stray & seen).sum())} samples of {name_} draw a contour the mesh lacks")
                 conf = seam_bake.confidence(ndotv, px, py, bake_, seam_bake.fit_quality(score), trust_)
                 col = rgb_[np.clip(py, 0, ph - 1), np.clip(px, 0, pw - 1)].astype(np.float64)
                 print(f"retexture: {int(seen.sum())} samples seen from {name_}")
                 observed.append({"name": name_, "seen": seen, "conf": conf, "colour": col, "boost": boost,
-                                 "anchor": boost >= 1.0})
+                                 "anchor": boost >= 1.0, "stray": stray})
             look(eye, rgb, alpha_fit, alpha_bake, trust, Path(view).name, 3.0 if on_top else 1.0)
+            if side_on and off is not None and abs(off) == 90.0:
+                # A side-on creature's side views never put the head where the mesh has it (the pig's ears and
+                # eyes 20-40 px off, beyond what align can move): they keep off the head, which the front view
+                # and the paint (one set of eyes and ears, on the mesh's own) cover.
+                front_dir = eye_on_sphere(center, 1.0, (az - off) % 360, 0.0) - center
+                front_dir[1] = 0.0
+                front_dir /= np.linalg.norm(front_dir) + 1e-9
+                along = (pts - center) @ front_dir
+                t = (along - along.min()) / max(float(np.ptp(along)), 1e-9)
+                y = (pts[:, 1] - pts[:, 1].min()) / max(float(np.ptp(pts[:, 1])), 1e-9)
+                head = (t > 1.0 - seam_bake.HEAD_SHARE) & (y > seam_bake.HEAD_ABOVE)
+                observed[-1]["seen"] = observed[-1]["seen"] & ~head
+                print(f"retexture: {Path(view).name} keeps off the head ({int(head.sum())} samples)")
             if args.mirror:
                 meye = eye_on_sphere(center, rad, mirror_az(az, off, args.mirror_ends), el)
                 look(meye, rgb[:, ::-1].copy(), alpha_fit[:, ::-1].copy(), alpha_bake[:, ::-1].copy(),
