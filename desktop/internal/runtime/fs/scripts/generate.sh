@@ -843,6 +843,11 @@ stage inspect "Checking the model"
 echo "generate: inspecting $FINAL"
 "$PYTHON" "$ROOT/scripts/inspect_glb.py" "$FINAL" "$INSPECT"
 merge_degraded "$INSPECT"
+# The review (scripts/workbench/review.py): the checks every critique so far taught, and the sheet to read before
+# anyone sees the model. It reports; it never fails a make.
+echo "generate: review"
+"$PYTHON" "$ROOT/scripts/workbench/review.py" "$OUT" --glb "$FINAL" > /dev/null \
+  || echo "generate: the review failed; the model is unaffected"
 
 if [[ "$WANT_STACK" -eq 1 ]]; then
   stage stack "Slicing the sprite stack"
@@ -869,5 +874,8 @@ if [[ -f "$OUT/psx/psx.json" ]]; then
 fi
 if [[ -f "$OUT/stack/stack.json" ]]; then
   echo "STACK_RESULT $OUT/stack/stack.json"
+fi
+if [[ -f "$OUT/workbench/review/review.json" ]]; then
+  echo "REVIEW_RESULT $OUT/workbench/review/review.json"
 fi
 cat "$INSPECT"

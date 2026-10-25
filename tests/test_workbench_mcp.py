@@ -27,7 +27,7 @@ from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 PLAN_TOOLS = {"asset_info", "look", "measure", "compare_reference", "clay_get", "clay_set", "clay_edit", "clay_mesh",
               "mesh_edit", "bake_photo", "psx", "draw_views", "generate", "job_status", "cancel", "pick_take",
-              "rig", "rig_review", "rig_preview", "playbook"}
+              "rig", "rig_review", "rig_preview", "playbook", "review"}
 
 
 class StubFactory(FactoryClient):
@@ -374,6 +374,9 @@ class ToolTests(Base):
         doc = json.loads((folder / "lods.json").read_text())
         self.assertEqual([x["id"] for x in doc["lods"]], ["paint", "photo", "psx", "hero"])
         self.assertEqual(doc["lods"][2], want)
+        # Every cut is reviewed: the answer carries the verdict, the sheet is written under workbench/review/.
+        self.assertIn("verdict", out["review"])
+        self.assertTrue((folder / "workbench" / "review" / "sheet.png").is_file())
         # Again with another budget: the entry is replaced where it stands, not added twice.
         self.fake_psx(faces=800)
         self.ok("psx", {"stem": "bale", "glb": src, "height": 60, "facing": "camera"})

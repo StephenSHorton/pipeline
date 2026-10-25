@@ -447,6 +447,23 @@ class Workbench:
         res = eyes.compare_reference(glb, image, a.get("facing"), out)
         return {"glb": self.rel(glb), "image": self.rel(image), **res, "_image": res["png"]}
 
+    def review(self, a: dict) -> dict:
+        stem = check_stem(a["stem"])
+        folder = self.folder(stem)
+        args = {k: self.path(a[k], (".glb",)) for k in ("glb", "bake", "paint") if a.get(k)}
+        return self.write(stem, "review", lambda: self._review(folder, **args), take=False)
+
+    def _review(self, folder: Path, **kw) -> dict:
+        """workbench/review.py into <folder>/workbench/review/; the answer drops the critique list (the playbook
+        has it) and attaches the sheet."""
+        from workbench import review
+
+        res = review.review(folder, **kw)
+        out = {k: v for k, v in res.items() if k != "critiques"}
+        out["model"], out["sheet"] = self.rel(Path(res["model"])), self.rel(Path(res["sheet"]))
+        out["_image"] = res["sheet"]
+        return out
+
     def rig_review(self, a: dict) -> dict:
         from workbench import rigeyes
 
@@ -732,10 +749,19 @@ class Workbench:
             shutil.rmtree(bench / "psx", ignore_errors=True)
             item = lods.entry(folder, "psx")
             lods.put(folder, stem, item)
+            # Every cut is reviewed before anyone sees it: the numbers and the sheet come back with the answer.
+            try:
+                rev = self._review(folder)
+            except Exception as e:  # noqa: BLE001 - a failed review must not lose the published cut
+                rev = {"verdict": "review failed", "error": error_text(e)}
             # psx.json names its files relative to the folder; the answer gives repo paths.
-            return {"stem": stem, **report, "src": self.rel(glb), "glb": self.rel(folder / "psx.glb"),
-                    "folder": self.rel(out_dir), "obj": self.rel(out_dir / report["obj"]),
-                    "texture": self.rel(out_dir / report["texture"]), "lod": item}
+            out = {"stem": stem, **report, "src": self.rel(glb), "glb": self.rel(folder / "psx.glb"),
+                   "folder": self.rel(out_dir), "obj": self.rel(out_dir / report["obj"]),
+                   "texture": self.rel(out_dir / report["texture"]), "lod": item,
+                   "review": {k: v for k, v in rev.items() if k != "_image"}}
+            if rev.get("_image"):
+                out["_image"] = rev["_image"]
+            return out
 
         return self.write(stem, "workbench psx", run)
 
@@ -843,6 +869,14 @@ class Workbench:
                        "heat": {"type": ["array", "string"], "items": {"type": "string"}, "minItems": 1, "maxItems": 6,
                                 "description": "bone names, or \"flagged\" (the bones the diagnosis names, at most 4)"},
                        "keep_images": {"type": "boolean"}}, ("stem",)), self.rig_review),
+            Tool("review", "Run every check Stephen's critiques taught on an asset (workbench/review.py): head offset, "
+                 "mirror, pieces, tris, magenta spill, the --select bake against Hunyuan's paint (a feature in the "
+                 "wrong place, patchwork), degraded.json. Writes workbench/review/{review.json,sheet.png} and "
+                 "returns the sheet: the head painted above grey (count the ears and eyes), the whole model, where "
+                 "the bake disagrees with the paint. The psx tool runs it after every cut. verdict is never a pass: "
+                 "read the sheet before showing anyone.",
+                 _obj({"stem": STEM, "glb": GLB, "bake": {"type": "string"}, "paint": {"type": "string"}},
+                      ("stem",)), self.review),
             Tool("rig_preview", "Where a re-rig would put the joints, in seconds and without one (workbench/"
                  "rig_preview.py: rig.py on a temp copy of the asset, stopped before the skin step; the predicted "
                  "skeleton only from its cache, so no model loads; out/ is not touched). Gives the posed trunk and leg "

@@ -13,6 +13,7 @@ Workbench rules (the playbook tool has the full playbook, with the why for each)
 4. The photo is a reference, never a view: draw_views first, then generate with image out/<stem>/flat/source.png. Any other picture builds from one picture.
 5. Numbers before pictures: measure / rig_review before and after every change. look or heat only where the numbers point.
 6. Report honestly. Give the numbers before and after. Say when a change barely helped, and separate what a tool can fix from what needs another stage.
+7. Review before showing: psx returns the review (else call review). Fix what failed, then read the sheet: count the ears and eyes on the painted head row against the grey row. Each new critique becomes a check or a sheet row in review.py CRITIQUES.
 Mesh: a long animal drawn tall gets its length back from proportion_check. If shape.json's proportion skipped, use mesh_edit stretch on z. For legs or head, use the proportion ops (thicken_legs, shorten_legs, widen_head, trim_belly, tidy_legs). When one refuses, give it the parameter the refusal names (top, head, start, line). For the PS1 cut, use psx with head_weight 2; for legs, tidy_legs then leg_weight. A leg left as its own piece after the cut is pinched, not a crumb: weight it, don't delete it.
 Rig, after every rig or weights/joint change:
 a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears, foot slide and problems.
@@ -47,6 +48,18 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
 - **Tell Stephen through the app.** The activity feed shows each workbench call as it runs (Follow Claude opens
   the asset and each model as it lands). For a before and after, point him to Compare in the viewer, where the left
   side is an earlier version. Why: he asked not to clutter space with pictures that aren't needed.
+
+## Review
+
+- **Every model is reviewed before Stephen sees it** (review.py: on every psx cut and at the end of generate.sh,
+  into `workbench/review/`). `paint` compares a `--select` bake with Hunyuan's paint, which has one set of eyes and
+  ears in the right places: the pig's ghost-ear bakes scored 0.12-0.22, the fixed bake 0.054. Why: the pig went to
+  Stephen with two sets of ears and eyes and nothing had measured it.
+- **The verdict is never a pass.** Count the ears and eyes on the sheet's painted head row against the grey row
+  (shading alone, so a painted ear with no ear under it shows), then read the body row. Why: the ghost ear was
+  skin-coloured and passed every colour check; the close-ups beside the grey model caught it.
+- **A critique the review missed joins `CRITIQUES`**: a check when a number separates bad from good (give the
+  margin), else a sheet row.
 
 ## Mesh
 
