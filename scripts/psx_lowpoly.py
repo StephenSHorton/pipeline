@@ -832,6 +832,7 @@ def main() -> int:
         "texture": tex.name,
         "glb": args.glb_out.name if args.glb_out else None,
         "triangles": int(len(faces)),
+        "faces_asked": int(args.faces),
         "source": args.src.name,
         "source_triangles": int(len(high.faces)),
         "atlas": args.atlas,

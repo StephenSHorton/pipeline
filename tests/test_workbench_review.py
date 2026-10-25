@@ -110,6 +110,21 @@ class Review(unittest.TestCase):
         self.assertTrue(Path(res["sheet"]).is_file())
         self.assertEqual(json.loads((d / "workbench" / "review" / "review.json").read_text())["failed"], res["failed"])
 
+    def test_mirror_is_judged_on_the_cut_and_tris_follow_the_ask(self) -> None:
+        d = self.dir / "cut"
+        (d / "psx").mkdir(parents=True, exist_ok=True)
+        (d / "intent.json").write_text(json.dumps({"subject": "animal", "psx": {"facing": "right"}}))
+        textured_box(d / "textured.glb", skin())
+        textured_box(d / "psx.glb", skin())
+        names = lambda res: {c["name"]: c for c in res["checks"]}  # noqa: E731
+        bake = names(review.review(d, glb=d / "textured.glb"))
+        self.assertIsNone(bake["mirror"]["ok"])
+        self.assertNotIn("tris", bake)
+        (d / "psx" / "psx.json").write_text(json.dumps({"faces_asked": 5000}))
+        cut = names(review.review(d, glb=d / "psx.glb"))
+        self.assertIsNotNone(cut["mirror"]["ok"])
+        self.assertEqual(cut["tris"]["limit"], 5000)
+
     def test_paint_does_not_apply_to_an_older_bake(self) -> None:
         d = self.dir / "older"
         d.mkdir(exist_ok=True)

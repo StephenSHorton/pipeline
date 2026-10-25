@@ -274,15 +274,26 @@ def review(folder, bake=None, paint=None, out_dir=None, glb=None) -> dict:
         checks.append(_check("head_offset", off, HEAD_OFFSET_MAX, None if off is None else off <= HEAD_OFFSET_MAX,
                              "head's sideways offset, % of body width" if off is not None else
                              "no head found to measure (body longer than wide only)"))
-        checks.append(_check("mirror", m["mirror_iou"], MIRROR_MIN, m["mirror_iou"] >= MIRROR_MIN,
-                             "top view against its own mirror image"))
+        # only the PS1 cut is known to face +Z; a bake is in Hunyuan's frame, where the cow lay along X and its
+        # top view was mirrored head onto tail (0.67 there, 0.90 on its cut)
+        placed = model.name == "psx.glb"
+        checks.append(_check("mirror", m["mirror_iou"], MIRROR_MIN, (m["mirror_iou"] >= MIRROR_MIN) if placed else None,
+                             "top view against its own mirror image" + ("" if placed else
+                                                                         " (bake frame: judged on the PS1 cut)")))
     creature = kind in CREATURES
     # a prop's separate parts are often real (the tractor's wheels); a creature's are pinched legs
     checks.append(_check("pieces", m["pieces"], 1, m["pieces"] <= 1 if creature else None,
                          "a leg as its own piece is pinched: weight it" if creature else "separate parts (a prop's "
                          "wheels or post may be real): read the sheet"))
     if model.name == "psx.glb":
-        checks.append(_check("tris", m["tris"], PSX_TRIS_MAX, m["tris"] <= PSX_TRIS_MAX, "the PS1 budget"))
+        # a brief can ask for more (the cow: up to 1,400); psx.json records what the cut was asked for
+        try:
+            asked = int(json.loads((folder / "psx" / "psx.json").read_text()).get("faces_asked") or 0)
+        except (OSError, ValueError):
+            asked = 0
+        limit = max(PSX_TRIS_MAX, asked)
+        checks.append(_check("tris", m["tris"], limit, m["tris"] <= limit,
+                             "the PS1 budget" + (f" (asked for {asked})" if asked > PSX_TRIS_MAX else "")))
     checks.append(_check("circularity", m["circularity"], None, None, f"ellipse fill, {m['circularity_view']} view; "
                                                                        "near 1 for a round prop"))
     sc = Scene(model, TILE)
