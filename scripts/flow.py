@@ -67,6 +67,10 @@ FILES: dict[str, tuple[str, ...]] = {
     "mesh": (
         "mesh*.glb",
         "textured*.glb",
+        # the photo bake's sidecars (select report, camera fits, fill, albedo, cover): a pick that left a newer
+        # bake's select.json beside an older bake made the review judge the old bake by it
+        "textured*.json",
+        "textured*.png",
         "pbr.glb",
         "pixel.glb",
         "psx.glb",

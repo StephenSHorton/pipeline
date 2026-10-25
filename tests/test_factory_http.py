@@ -955,6 +955,22 @@ class FactoryHttpTests(unittest.TestCase):
                                           data={"image": "out/hen/flat/source.png", "stem": "hen"}))
         self.assertEqual(self.factory._snapshot()["job_id"], before)
 
+    def test_only_the_sides_off_builds_from_front_and_back(self) -> None:
+        vj = self.make_views("farmer", consistent=False)
+        doc = json.loads(vj.read_text())
+        doc.update(flaws=["side"], canonical="front")
+        vj.write_text(json.dumps(doc))
+        seen, last = self.run_generate({"image": "out/farmer/flat/source.png", "stem": "farmer"})
+        kept = json.loads(Path(seen["views_json"]).read_text())
+        self.assertEqual([v["id"] for v in kept["views"]], ["front", "back"])
+        self.assertTrue(kept["consistent"])
+        self.assertEqual([(d["stage"], d["code"]) for d in last["degraded"]], [("views", "sides_dropped")])
+        # a side-on creature's canonical view is a side: dropping the sides would lose it, so one picture
+        doc.update(canonical="right")
+        vj.write_text(json.dumps(doc))
+        seen, last = self.run_generate({"image": "out/farmer/flat/source.png", "stem": "farmer"})
+        self.assertIsNone(seen["views_json"])
+
     def test_rig_and_draw_sidecars_feed_degraded(self) -> None:
         folder = self.root / "out" / "radio"
         (folder / "rig").mkdir()

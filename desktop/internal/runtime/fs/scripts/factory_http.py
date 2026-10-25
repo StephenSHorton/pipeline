@@ -911,8 +911,19 @@ class Factory:
             require_picture(resolve_under_root(folder, rel))
         notes: list[dict[str, str]] = []
         if doc.get("consistent") is False:
-            flaws = ", ".join(str(f) for f in doc.get("flaws") or []) or "the views disagree"
-            return None, [degraded_entry("views", "inconsistent", f"{flaws}; using one picture")]
+            flaws = [str(f) for f in doc.get("flaws") or []]
+            ids = {v.get("id") for v in views if isinstance(v, dict)}
+            if flaws == ["side"] and {"front", "back"} <= ids and doc.get("canonical") in ("front", "back"):
+                # Only the side views are off (an A-pose person's side came back turned to the back, twice, on
+                # the farmer): front and back still agree, and two views beat one picture.
+                kept = dict(doc, views=[v for v in views if v.get("id") in ("front", "back")], consistent=True,
+                            flaws=[], dropped=["side"])
+                fb = views_path.with_name("views.front_back.json")
+                fb.write_text(json.dumps(kept, indent=2) + "\n", encoding="utf-8")
+                return fb, [degraded_entry("views", "sides_dropped",
+                                           "the side views disagree with the front; built from front and back")]
+            why = ", ".join(flaws) or "the views disagree"
+            return None, [degraded_entry("views", "inconsistent", f"{why}; using one picture")]
         return views_path, notes
 
     def start_generate(
