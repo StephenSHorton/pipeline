@@ -60,7 +60,7 @@ func TestWorkflowAndSheet(t *testing.T) {
 	sc.SetRoot(root)
 	h := Handler(http.NotFoundHandler(), sc, "dev")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/control/sheet?stem=sheet&part=gun", nil))
+	h.ServeHTTP(rec, localReq(http.MethodGet, "/control/sheet?stem=sheet&part=gun"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -72,7 +72,7 @@ func TestWorkflowAndSheet(t *testing.T) {
 		t.Fatalf("payload=%v", payload)
 	}
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/diagnostics", nil))
+	h.ServeHTTP(rec, localReq(http.MethodGet, "/diagnostics"))
 	if rec.Code != 200 || !json.Valid(rec.Body.Bytes()) {
 		t.Fatalf("diagnostics %d", rec.Code)
 	}

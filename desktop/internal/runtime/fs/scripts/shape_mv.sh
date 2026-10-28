@@ -3,7 +3,7 @@
 #
 # usage: shape_mv.sh <stem> [out.glb]
 # Views come from out/<stem>/views/lifted/{front,left,back,right}.png (Hunyuan names: 'left' = the subject's
-# left side, nose toward image left; 'right' = nose toward image right). At least three are needed.
+# left side, nose toward image left; 'right' = nose toward image right). Three or more, or front and back.
 # Env: SHAPE_OCTREE (256), SHAPE_SEED (0), SHAPE_MV_MODEL turbo|full (turbo), SHAPE_MV_STEPS (turbo 5, full 30).
 # Weights load from $ROOT/weights/tencent/... (HY3DGEN_MODELS) with the hub offline: no downloads mid-job
 # (scripts/bootstrap.sh fetches them).
@@ -21,7 +21,11 @@ ARGS=()
 for v in front left back right; do
   [[ -f "$VIEWS/$v.png" ]] && ARGS+=("$v=$VIEWS/$v.png")
 done
-((${#ARGS[@]} >= 3)) || fail "missing_views: need 3+ of front/left/back/right under $VIEWS (have ${#ARGS[@]})"
+# Three or more, or front and back alone: the handoff keeps only those two when the side views were drawn wrong
+# (an A-pose person's side came back turned to the back), and two views still give the back a real picture.
+if ((${#ARGS[@]} < 3)) && ! [[ ${#ARGS[@]} -eq 2 && -f "$VIEWS/front.png" && -f "$VIEWS/back.png" ]]; then
+  fail "missing_views: need 3+ of front/left/back/right, or front and back, under $VIEWS (have ${#ARGS[@]})"
+fi
 
 HY2="$ROOT/vendor/hunyuan3d-2"
 PY="$HY2/.venv/bin/python"

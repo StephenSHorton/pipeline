@@ -85,6 +85,24 @@ ALLOWED_HOSTS = LOOPBACK
 DEFAULT_PORT = 8766
 
 
+def local_origin(origin: str | None) -> bool:
+    """No Origin (curl, scripts, the workbench) or a page on this machine: a loopback host or the app's own
+    webview (wails://). Any other web page is refused, so a site open in a browser can't read or delete assets."""
+    if not origin:
+        return True
+    u = urlparse(origin)
+    host = (u.hostname or "").strip("[]")
+    return u.scheme == "wails" or host in LOOPBACK or host == "wails.localhost"
+
+
+def local_host(host_header: str | None) -> bool:
+    """The Host header names this machine, so a DNS-rebound name can't reach the factory."""
+    if not host_header:
+        return True
+    host = host_header.rsplit(":", 1)[0] if not host_header.startswith("[") else host_header[1:].split("]")[0]
+    return host in LOOPBACK
+
+
 def _dir_has_files(path: Path) -> bool:
     if not path.is_dir():
         return False
@@ -747,12 +765,22 @@ class Factory:
         d = stem_dir(self.root, stem)
         if not d.is_dir():
             return {"ok": False, "error": "not found", "stem": stem}
-        shutil.rmtree(d)
+        # Move, don't erase: out/.trash/ is on the same disk (an instant rename), the library skips dot folders,
+        # and a mis-click or a stray request can be undone by moving the folder back.
+        trash = d.parent / ".trash"
+        trash.mkdir(exist_ok=True)
+        dest = trash / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+        n = 2
+        while dest.exists():
+            dest = trash / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}-{n}"
+            n += 1
+        d.rename(dest)
         try:
             projects.drop_stem(self.root, stem)
         except (projects.ProjectError, OSError) as e:
             print(f"delete: could not drop {stem} from its project: {e}", file=sys.stderr)
-        return {"ok": True, "deleted": True, "stem": stem, "path": f"out/{stem}"}
+        return {"ok": True, "deleted": True, "stem": stem, "path": f"out/{stem}",
+                "trashed": str(dest.relative_to(d.parent.parent))}
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Stop a running generate (the whole process group) and mark it cancelled."""
@@ -2041,9 +2069,24 @@ def make_handler(factory: Factory):
             return self.rfile.read(n)
 
         def _cors(self) -> None:
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            origin = self.headers.get("Origin")
+            if origin and local_origin(origin):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+        def _refuse(self) -> bool:
+            """403 for a web page that isn't the app or this machine, or a Host that isn't loopback."""
+            if local_origin(self.headers.get("Origin")) and local_host(self.headers.get("Host")):
+                return False
+            body = json.dumps({"error": "origin not allowed"}).encode()
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return True
 
         def _send(self, status: int, body: bytes, content_type: str) -> None:
             self.send_response(status)
@@ -2062,31 +2105,43 @@ def make_handler(factory: Factory):
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "GET", parsed.path, parse_qs(parsed.query), b"")
             self._send(status, body, ctype)
 
         def do_POST(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "POST", parsed.path, parse_qs(parsed.query), self._read_body())
             self._send(status, body, ctype)
 
         def do_PATCH(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "PATCH", parsed.path, parse_qs(parsed.query), self._read_body())
             self._send(status, body, ctype)
 
         def do_DELETE(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "DELETE", parsed.path, parse_qs(parsed.query), b"")
             self._send(status, body, ctype)
 
         def do_OPTIONS(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             self.send_response(204)
             self._cors()
             self.end_headers()
 
         def do_HEAD(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "GET", parsed.path, parse_qs(parsed.query), b"")
             self.send_response(status)

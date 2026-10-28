@@ -19,3 +19,7 @@ desktop/bin/
 desktop/frontend/node_modules/
 desktop/frontend/dist/
 desktop/.task/
+
+# Workflow worktrees and local photos (photo sources: in/mlg/SOURCES.md). Tracked samples stay tracked.
+.claude/worktrees/
+in/

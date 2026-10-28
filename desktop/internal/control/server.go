@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +25,10 @@ func Handler(next http.Handler, sc *sidecar.Sidecar, version string) http.Handle
 	probeClient := &http.Client{Timeout: 2 * time.Second}
 	opClient := &http.Client{Timeout: 3 * time.Minute}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !LocalRequest(r) {
+			writeJSONCode(w, http.StatusForbidden, map[string]any{"ok": false, "error": "origin not allowed"})
+			return
+		}
 		if r.URL.Path == "/diagnostics" {
 			writeJSON(w, Diagnostics(sc, version, probeClient))
 			return
@@ -38,6 +43,40 @@ func Handler(next http.Handler, sc *sidecar.Sidecar, version string) http.Handle
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// LocalRequest is false for a web page that isn't the app or this machine, or for a Host that isn't loopback
+// (DNS rebinding). No Origin means curl, scripts or agents. The webview sends wails:// or wails.localhost.
+func LocalRequest(r *http.Request) bool {
+	if o := r.Header.Get("Origin"); o != "" && !localOrigin(o) {
+		return false
+	}
+	if h := r.Host; h != "" {
+		host, _, err := net.SplitHostPort(h)
+		if err != nil {
+			host = strings.Trim(h, "[]")
+		}
+		if !loopbackHost(host) && host != "wails.localhost" && host != "wails" {
+			return false
+		}
+	}
+	return true
+}
+
+func localOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "wails" {
+		return true
+	}
+	h := u.Hostname()
+	return loopbackHost(h) || h == "wails.localhost"
+}
+
+func loopbackHost(h string) bool {
+	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
 // Start listens on addr (PIPELINE_CONTROL_ADDR, else 127.0.0.1:8777).
@@ -139,7 +178,6 @@ func writeJSON(w http.ResponseWriter, payload map[string]any) {
 
 func writeJSONCode(w http.ResponseWriter, code int, payload map[string]any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)
 }

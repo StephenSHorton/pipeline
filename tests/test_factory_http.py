@@ -426,9 +426,40 @@ class FactoryHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload.get("deleted"))
         self.assertFalse((self.root / "out" / "radio").exists())
+        trashed = self.root / payload["trashed"]
+        self.assertTrue(trashed.is_dir())
+        self.assertEqual(trashed.parent, self.root / "out" / ".trash")
         status, payload = http_json(self.base + "/assets")
         ids = [a["id"] for a in payload.get("assets") or []]
         self.assertNotIn("radio", ids)
+        self.assertNotIn(".trash", ids)
+
+    def test_refuses_other_web_pages(self) -> None:
+        def call(method: str, headers: dict) -> tuple[int, dict]:
+            req = urllib.request.Request(self.base + "/assets/radio" if method == "DELETE" else self.base + "/health",
+                                         method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status, dict(resp.headers)
+            except urllib.error.HTTPError as e:
+                return e.code, dict(e.headers)
+
+        status, _ = call("DELETE", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        self.assertTrue((self.root / "out" / "radio").is_dir())
+        status, _ = call("GET", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        status, _ = call("GET", {"Host": "evil.example:8766"})
+        self.assertEqual(status, 403)
+        status, _ = call("OPTIONS", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        for ok_origin in ("wails://wails", "http://wails.localhost", "http://127.0.0.1:8766", "http://localhost:5173"):
+            status, headers = call("GET", {"Origin": ok_origin})
+            self.assertEqual(status, 200, ok_origin)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), ok_origin)
+        status, headers = call("GET", {})
+        self.assertEqual(status, 200)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
 
     def test_list_mesh_preview_png(self) -> None:
         folder = self.root / "out" / "spider-mech"

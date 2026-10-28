@@ -211,9 +211,9 @@ class RetextureDelightTests(unittest.TestCase):
         real = trimesh.sample.sample_surface
         argv = ["retexture.py", str(self.glb), "-o", str(out), "--view", str(self.photo), "--samples", "40000",
                 *extra]
-        # The same surface samples both times (sample_surface is unseeded), so the fits can be compared exactly.
+        # The same surface samples both times, so the fits can be compared exactly (retexture now seeds its own call).
         with mock.patch.object(sys, "argv", argv), \
-             mock.patch.object(trimesh.sample, "sample_surface", lambda m, n, **k: real(m, n, seed=7, **k)):
+             mock.patch.object(trimesh.sample, "sample_surface", lambda m, n, **k: real(m, n, **{**k, "seed": 7})):
             self.assertEqual(retexture.main(), 0)
         albedo = np.asarray(Image.open(out.with_suffix(".albedo.png")).convert("RGB")).astype(float)
         return albedo, json.loads(out.with_suffix(".fit.json").read_text()), out
