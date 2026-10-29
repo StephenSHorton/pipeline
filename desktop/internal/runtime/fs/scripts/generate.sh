@@ -49,7 +49,7 @@ DELIGHT="off"
 NO_PICTURE="3D needs a picture. Draw or add one first."
 
 usage() {
-  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N] [--mesh <glb>] [--paint on|off] [--fill photo|none] [--mirror-ends on|off] [--delight on|off]" >&2
+  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N] [--mesh <glb>] [--paint on|off|trellis] [--fill photo|none] [--mirror-ends on|off] [--delight on|off]" >&2
   echo "       psx: [--facing camera|right|left|away] [--psx-height N] [--psx-faces N] [--psx-atlas N] [--psx-up z|y] [--psx-name name]" >&2
   exit 2
 }
@@ -127,11 +127,17 @@ if [[ -n "$REMESH" && ! "$REMESH" =~ ^[0-9]+$ ]]; then
   echo "generate: --remesh takes a quad count" >&2; exit 2
 fi
 case "$PAINT" in
-  on|off) ;;
-  *) echo "generate: unknown --paint $PAINT (on|off)" >&2; exit 2 ;;
+  on|off|trellis) ;;
+  *) echo "generate: unknown --paint $PAINT (on|off|trellis)" >&2; exit 2 ;;
 esac
-if [[ "$PAINT" == "off" && "$QUALITY" == "pbr" ]]; then
-  echo "generate: --quality pbr needs the PBR paint; --paint off has none" >&2; exit 2
+if [[ "$PAINT" != "on" && "$QUALITY" == "pbr" ]]; then
+  echo "generate: --quality pbr needs hy3d's PBR paint; --paint $PAINT has none" >&2; exit 2
+fi
+# --paint trellis: TRELLIS.2's texturing paints the mesh instead of hy3d (MIT; vendor/trellis-mac/texture_runner.py).
+TRELLIS_PY="$ROOT/vendor/trellis-mac/.venv/bin/python"
+TRELLIS_PAINT="$ROOT/vendor/trellis-mac/texture_runner.py"
+if [[ "$PAINT" == "trellis" && ( ! -x "$TRELLIS_PY" || ! -f "$TRELLIS_PAINT" ) ]]; then
+  echo "generate: --paint trellis needs vendor/trellis-mac (its .venv and texture_runner.py)" >&2; exit 1
 fi
 case "$FILL" in
   photo|none) ;;
@@ -450,7 +456,7 @@ fi
 
 # hy3d only when it shapes or paints: a supplied mesh that is not painted needs just the cut-out.
 NEED_HY3D=1
-if [[ -n "$MESH_IN" && ( "$QUALITY" == "draft" || "$PAINT" == "off" ) ]]; then
+if [[ -n "$MESH_IN" && ( "$QUALITY" == "draft" || "$PAINT" != "on" ) ]]; then
   NEED_HY3D=0
 fi
 if [[ ! -x "$BIN/lift-subject" || ( "$NEED_HY3D" -eq 1 && ( ! -x "$BIN/hy3d" || ! -f "$BIN/mlx.metallib" ) ) ]]; then
@@ -737,6 +743,10 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
     stage unwrap "Unwrapping the mesh"
     echo "generate: unwrap $(basename "$LOD") (no paint)"
     "$PYTHON" "$UNWRAP_CLI" "$LOD" -o "$TEXTURED" --texture 1024
+  elif [[ "$PAINT" == "trellis" ]]; then
+    stage paint "Painting the texture"
+    echo "generate: TRELLIS.2 paint on $(basename "$LOD")"
+    "$TRELLIS_PY" "$TRELLIS_PAINT" "$LOD" "$LIFTED" "$TEXTURED"
   else
     stage paint "Painting the texture"
     echo "generate: hy3d paint ($PAINT_MODEL) on $(basename "$LOD")"

@@ -967,13 +967,14 @@ class Factory:
         psx: dict[str, Any] | None = None,
         intent: dict[str, Any] | None = None,
         mesh: str | None = None,
-        paint: bool = True,
+        paint: bool | str = True,
         fill: str | None = None,
         mirror_ends: bool | None = None,
         delight: bool | None = None,
     ) -> dict[str, Any]:
         """mesh: a .glb under out/<stem>/ that generate.sh takes as the shape instead of hy3d's (the stem is that
         folder's when none is given). paint False: no paint model, the mesh is unwrapped and only the photo bakes.
+        paint "trellis": TRELLIS.2's texturing paints the mesh instead of hy3d (MIT, no Hunyuan output).
         The picture is required either way: isolate, the orientation check and the bake read it.
         fill "photo": every texel from the photo (generate.sh --fill photo); "none" or absent: as before.
         mirror_ends: mirror a front-on photo onto the far end too (generate.sh's default: on with fill photo).
@@ -982,10 +983,10 @@ class Factory:
         quality = str(quality or "stack")
         if quality not in QUALITIES:
             raise ValueError(f"quality must be one of {', '.join(QUALITIES)}")
-        if not isinstance(paint, bool):
-            raise ValueError("paint must be true or false")
-        if not paint and quality == "pbr":
-            raise ValueError("quality pbr needs the paint; paint false has none")
+        if not isinstance(paint, bool) and paint != "trellis":
+            raise ValueError('paint must be true, false or "trellis"')
+        if paint is not True and quality == "pbr":
+            raise ValueError("quality pbr needs hy3d's PBR paint")
         fill = None if fill in (None, "") else fill
         if fill not in (None, "photo", "none"):
             raise ValueError("fill must be photo or none")
@@ -1408,7 +1409,7 @@ class Factory:
             views_json=Path(spec["views_json"]) if spec.get("views_json") else None,
             degraded=list(spec.get("degraded") or []),
             mesh=Path(spec["mesh"]) if spec.get("mesh") else None,
-            paint=spec.get("paint", True) is not False,
+            paint="trellis" if spec.get("paint") == "trellis" else spec.get("paint", True) is not False,
             fill=spec.get("fill"),
             mirror_ends=spec.get("mirror_ends"),
             delight=spec.get("delight"),

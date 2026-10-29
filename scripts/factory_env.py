@@ -218,7 +218,7 @@ def generate_argv(
     views_json: Path | None = None,
     degraded: list[dict[str, str]] | None = None,
     mesh: Path | None = None,
-    paint: bool = True,
+    paint: bool | str = True,
     fill: str | None = None,
     mirror_ends: bool | None = None,
     delight: bool | None = None,
@@ -250,7 +250,9 @@ def generate_argv(
     # A shape made elsewhere (the workbench's clay) instead of hy3d's; no paint: unwrap, then the photo bake.
     if mesh:
         cmd += ["--mesh", str(mesh)]
-    if not paint:
+    if paint == "trellis":
+        cmd += ["--paint", "trellis"]
+    elif not paint:
         cmd += ["--paint", "off"]
     # Every texel from the photo (mirrored onto the far end, the rest filled from its swatch). Only when asked, so a
     # plain make's argv is as it was; mirror_ends only when stated (generate.sh's default follows fill).

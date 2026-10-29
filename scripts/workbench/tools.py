@@ -819,7 +819,7 @@ class Workbench:
             mesh = self.path(a["mesh"], (".glb",))
             body["mesh"] = self.rel(mesh)
         if "paint" in a:
-            body["paint"] = bool(a["paint"])
+            body["paint"] = "trellis" if a["paint"] == "trellis" else bool(a["paint"])
         # The workbench fills by default (every texel from the photo); a draft has no bake to fill.
         fill = a.get("fill") or "photo"
         if body["quality"] != "draft":
@@ -1058,13 +1058,13 @@ class Workbench:
                        "intent": {"type": "object"}}, ("stem", "image", "prompt")), self.draw_views, "job"),
             Tool("generate", "Factory job: generate.sh through POST /generate. mesh (a .glb under out/<stem>/) is "
                  "used as the shape instead of hy3d's; paint false skips the paint model (unwrap, then the photo "
-                 "bake), so a clay asset loads no shape or paint model (quality psx may still ask the vision model for the facing, "
+                 "bake), so a clay asset loads no shape or paint model; paint \"trellis\" paints with TRELLIS.2 instead of hy3d (MIT, no Hunyuan output) (quality psx may still ask the vision model for the facing, "
                  "inside the job). psx: {facing, height, faces, atlas, up, name}. fill photo (default; not for "
                  "draft) gives every texel the photo: a front-on photo mirrored onto the far end (mirror_ends, "
                  "default true) and a swatch of it on the rest; delight (default false; not for draft) takes the "
                  "photo's lighting out before the bake and the fill (for a side in shadow, not dark material). "
                  "Returns a job_id.",
-                 _obj({"stem": STEM, "image": {"type": "string"}, "mesh": GLB, "paint": {"type": "boolean"},
+                 _obj({"stem": STEM, "image": {"type": "string"}, "mesh": GLB, "paint": {"type": ["boolean", "string"], "enum": [True, False, "trellis"]},
                        "fill": FILL, "mirror_ends": {"type": "boolean"}, "delight": {"type": "boolean"},
                        "quality": {"type": "string", "enum": ["draft", "textured", "pbr", "stack", "psx"]},
                        "psx": _obj({k: {"type": ["string", "number"]} for k in PSX_KEYS}),

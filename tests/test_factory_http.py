@@ -219,6 +219,9 @@ class FactoryEnvTests(unittest.TestCase):
                                          paint=False)
         self.assertEqual(argv[argv.index("--mesh") + 1], str(mesh))
         self.assertEqual(argv[argv.index("--paint") + 1], "off")
+        trellis = factory_env.generate_argv(ROOT, image=image, quality="textured", stem="radio", poly="medium",
+                                            mesh=mesh, paint="trellis")
+        self.assertEqual(trellis[trellis.index("--paint") + 1], "trellis")
         # The defaults add neither flag: a plain make's argv is as it was.
         plain = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium")
         self.assertNotIn("--mesh", plain)

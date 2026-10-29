@@ -613,7 +613,8 @@ class GenerateViewsTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("scripts/workbench/unwrap_cli.py, which is missing", proc.stderr)
         self.assertFalse(self.out().exists())
-        for args, word in ((("--paint", "off", "--quality", "pbr"), "pbr"), (("--paint", "maybe"), "--paint")):
+        for args, word in ((("--paint", "off", "--quality", "pbr"), "pbr"), (("--paint", "trellis", "--quality", "pbr"), "pbr"),
+                           (("--paint", "maybe"), "--paint")):
             proc = self.run_gen("--image", str(self.image), *args)
             self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
             self.assertIn(word, proc.stderr)
