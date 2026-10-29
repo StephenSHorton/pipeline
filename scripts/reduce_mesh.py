@@ -46,6 +46,11 @@ MIN_PIECE = 0.02
 # on every saved hero mesh: crumbs reach 0.13 at most; qmv-new-lantern-r2's dropped side rod was 0.38 (1.5% area).
 MIN_EXTENT = 0.25
 MIN_LONG_AREA = 0.002
+# A piece touching the biggest one (within this share of its largest side) is a part of it the generator meshed on
+# its own, not a crumb floating off it: TRELLIS.2's pig tail came as five such pieces (0.07% to 0.4% of the area,
+# gap 0) and the cut dropped them all. From MIN_TOUCH_AREA up it stays.
+TOUCH_GAP = 0.005
+MIN_TOUCH_AREA = 0.0005
 
 
 def drop_small_pieces(mesh: trimesh.Trimesh, share: float = MIN_PIECE) -> tuple[trimesh.Trimesh, dict]:
@@ -75,7 +80,18 @@ def drop_small_pieces(mesh: trimesh.Trimesh, share: float = MIN_PIECE) -> tuple[
     long_ = ((hi - lo).max(1) >= MIN_EXTENT * size) & (area >= MIN_LONG_AREA * area.sum())
     info["kept_long"] = int((long_ & ~keep).sum())
     keep |= long_
-    keep[int(np.argmax(area))] = True
+    big = int(np.argmax(area))
+    keep[big] = True
+    cand = np.where(~keep & (area >= MIN_TOUCH_AREA * area.sum()))[0]
+    if len(cand):
+        from scipy.spatial import cKDTree
+        main = cKDTree(welded.vertices[np.unique(welded.faces[labels == big])])
+        # vertex to vertex, so at least an edge apart: a coarse body's nearest vertex can be that far from the seam
+        gap = max(TOUCH_GAP * size, float(welded.edges_unique_length.mean()))
+        touch = [c for c in cand if main.query(welded.vertices[np.unique(welded.faces[labels == c])],
+                                                distance_upper_bound=gap)[0].min() <= gap]
+        keep[touch] = True
+        info["kept_touching"] = len(touch)
     mask = keep[labels]
     info["kept"] = int(keep.sum())
     info["dropped_faces"] = int((~mask).sum())

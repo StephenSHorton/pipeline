@@ -103,6 +103,8 @@ def to_obj_axes(v: np.ndarray, up: str) -> np.ndarray:
 
 
 CRUMB = 0.02  # a piece of the detailed mesh under this share of its area is a crumb Hunyuan left floating
+PART_MIN = 40  # faces at least for the small pieces touching the body (a tail), cut apart from it
+PART_BOOST = 4.0  # ...or this many times their area's share of the budget: thin, they need more faces than area
 SLIVER = 0.001  # after decimation, pieces under this share of the area (or of one face) are slivers
 
 
@@ -120,7 +122,20 @@ def decimate(mesh: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
         return plain
     # Hunyuan leaves floating crumbs; at a PS1 budget every triangle on one counts. Drop them on the detailed
     # mesh, where a crumb really is a separate piece.
-    plain = _keep(plain, lambda p: p.area >= CRUMB * plain.area)
+    # A small piece touching the body (TRELLIS.2's tail came as five) is the model, not a crumb: reduce's rule.
+    import reduce_mesh
+    touching, info = reduce_mesh.drop_small_pieces(plain, CRUMB)
+    if not info.get("kept_touching"):
+        return _cut(_keep(plain, lambda p: p.area >= CRUMB * plain.area), faces)
+    # The cut takes thin tubes first: the tail came out a 2-face sliver. The small pieces get their own share.
+    parts = sorted(touching.split(only_watertight=False), key=lambda p: -p.area)
+    main, small = parts[0], trimesh.util.concatenate(parts[1:])
+    share = max(PART_MIN, int(round(faces * PART_BOOST * small.area / touching.area)))
+    small = _keep(simplify(small, share), lambda p, a=small.area: len(p.faces) > 1 and p.area >= 0.02 * a)
+    return trimesh.util.concatenate([_cut(main, faces - len(small.faces)), small])
+
+
+def _cut(plain: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     # Decimation pinches thin parts (a sheep's leg below the hock, its ears) down to a vertex or two, and split()
     # joins by edges, so they come out as pieces of their own. They are the model: keep them, drop only slivers.
     # A thin-sheet source (the scrap pile) breaks into hundreds of slivers and lost a third of its budget (587 of
