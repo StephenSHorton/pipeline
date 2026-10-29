@@ -4,6 +4,7 @@ fitted near the drawn view it looks like."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -202,6 +203,86 @@ class CoverAndEndMirrorTests(unittest.TestCase):
         # Plain --mirror is what it always was, for every view: through z (a ref of the front end fitted at 105).
         for az, off in ((80.0, 0.0), (105.0, None), (80.0, 180.0), (25.0, 0.0), (80.0, -90.0)):
             self.assertAlmostEqual(retexture.mirror_az(az, off), (180.0 - az) % 360)
+
+
+class SelectOcclusionTests(unittest.TestCase):
+    """--select's visibility: a face hidden behind another from a view's camera does not take that view."""
+
+    def test_a_hidden_face_does_not_take_the_view_in_front_of_it(self) -> None:
+        # A small box hidden behind a big one from the front: its front face, which no camera sees, keeps the paint.
+        # observe() once got NDC depth against a world-units tol, which hid nothing: that face came out red.
+        big = trimesh.creation.box(extents=(1.0, 1.0, 0.5))
+        big.apply_translation((0.0, 0.0, 0.5))
+        small = trimesh.creation.box(extents=(0.5, 0.5, 0.5))
+        small.apply_translation((0.0, 0.0, -0.5))
+        both = trimesh.util.concatenate([big.subdivide().subdivide(), small.subdivide().subdivide()])
+        mesh = patched(both, 512)
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            glb, out = tmp / "boxes.glb", tmp / "out.glb"
+            mesh.export(glb)
+            front = cutout(tmp / "front.png", (220, 30, 30))
+            proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "retexture.py"), str(glb), "-o", str(out),
+                                   "--view", str(front), "--first-facing", "camera", "--front-az", "0", "--select",
+                                   "--samples", "60000"], capture_output=True, text=True, timeout=300,
+                                  env={**os.environ, "RETEXTURE_LABELS": "1"})
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            albedo = np.asarray(Image.open(out.with_suffix(".albedo.png")).convert("RGB")).astype(int)
+        h, w = albedo.shape[:2]
+        centre = mesh.triangles_center
+        uv = mesh.visual.uv[mesh.faces].mean(axis=1)
+        px = np.clip((uv[:, 0] * (w - 1)).astype(int), 0, w - 1)
+        py = np.clip(((1 - uv[:, 1]) * (h - 1)).astype(int), 0, h - 1)
+        col = albedo[py, px]
+        red = (col[:, 0] > 150) & (col[:, 1] < 120)  # RETEXTURE_LABELS: the view's faces red, the paint's green
+        nz = mesh.face_normals[:, 2]
+        seen = (nz > 0.9) & (centre[:, 2] > 0.7)      # the big box's front face
+        hidden = (nz > 0.9) & (centre[:, 2] < -0.2)   # the small box's front face, behind the big box
+        self.assertGreater(float(red[seen].mean()), 0.9)
+        self.assertLess(float(red[hidden].mean()), 0.1)
+
+
+class FlatPaintTests(unittest.TestCase):
+    """--flat-paint helpers: small dark features drawn bolder, and a side view's head fitted on its own."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import retexture
+        self.rt = retexture
+
+    def test_small_dark_features_grow_and_big_dark_patches_stay(self) -> None:
+        rgb = np.full((200, 200, 3), 220.0, np.float32)
+        rgb[100:104, 60:64] = 20.0      # an eye: 4 px
+        rgb[20:80, 120:180] = 20.0      # a dark patch: 3,600 px, shading or a dark material
+        alpha = np.ones((200, 200), bool)
+        out, n = self.rt.bold_features(rgb, alpha, grow=3)
+        self.assertEqual(n, 1)
+        grown = int((out[85:120, 45:80, 0] < 60).sum())
+        self.assertGreater(grown, 3 * 16)  # the 4 px eye, grown 3 px all round (a diamond, not quite 10 x 10)
+        self.assertLessEqual(grown, 10 * 10)
+        np.testing.assert_array_equal(out[10:90, 110:190], rgb[10:90, 110:190])
+
+    def test_the_head_is_fitted_on_the_ear(self) -> None:
+        # Mesh head samples from the neck (x 100) to the nose (x 200), its ear tip at x 180; the drawing's ear tip
+        # is at x 140. The ear moves onto the drawing's, the neck and the nose stay.
+        xs = np.arange(100, 201)
+        px = np.concatenate([xs, xs, [180]]).astype(np.int32)
+        py = np.concatenate([np.full(len(xs), 80), np.full(len(xs), 60), [20]]).astype(np.int32)
+        head = np.ones(len(px), bool)
+        inb = np.ones(len(px), bool)
+        px = np.concatenate([px, [10, 20]]).astype(np.int32)  # the body behind, so the nose points right
+        py = np.concatenate([py, [70, 70]]).astype(np.int32)
+        head = np.concatenate([head, [False, False]])
+        inb = np.concatenate([inb, [True, True]])
+        alpha = np.zeros((120, 240), bool)
+        alpha[60:81, 100:201] = True
+        alpha[20:60, 138:143] = True  # the drawn ear
+        nx, ny = self.rt.fit_head(px, py, inb, head, alpha)
+        self.assertTrue(self.rt.fit_head.report["moved"])
+        self.assertEqual(int(nx[2 * len(xs)]), 140)                         # the ear tip
+        self.assertEqual((int(nx[0]), int(nx[len(xs) - 1])), (100, 200))  # neck and nose
+        np.testing.assert_array_equal(ny, py)
+        np.testing.assert_array_equal(nx[-2:], px[-2:])                    # the body does not move
 
 
 if __name__ == "__main__":

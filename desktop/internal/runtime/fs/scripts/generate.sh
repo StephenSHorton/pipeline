@@ -794,6 +794,8 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   # Drawn views never agree exactly, so averaged they showed as patches (the pig): one view per triangle, colours
   # evened out, seams levelled, the paint under what no view sees (scripts/seam_bake.py).
   [[ "$USE_MV" -eq 1 ]] && VIEW_ARGS+=(--select)
+  # TRELLIS.2's paint is plain colour: the drawings give the eyes, snout and ear insides, not the paint.
+  [[ "$USE_MV" -eq 1 && "$PAINT" == "trellis" ]] && VIEW_ARGS+=(--flat-paint)
   # The paint takes the key's maroon in hollows the drawings don't reach (the hen's back, the pig's back stripe).
   [[ "$USE_MV" -eq 1 && -n "${KEY_RGB:-}" ]] && VIEW_ARGS+=(--key "$KEY_RGB")
   OPPOSITE=""

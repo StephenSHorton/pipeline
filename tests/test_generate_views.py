@@ -485,6 +485,26 @@ class GenerateViewsTests(unittest.TestCase):
         args = self.retexture_args()
         self.assertEqual([Path(args[i + 1]).name for i, a in enumerate(args) if a == "--view"][0], "right.png")
         self.assertNotIn("--front-az", args)  # not turned: where its front faces is not known
+        self.assertNotIn("--flat-paint", args)  # hy3d's paint draws its own eyes
+
+    def test_trellis_paint_bakes_the_views_as_flat_paint(self) -> None:
+        # TRELLIS.2 paints plain colour: the bake takes the eyes, snout and ear insides from the drawings.
+        self.stub("scripts/shape_mv.sh", SHAPE_MV_OK)
+        vendor = self.root / "vendor" / "trellis-mac"
+        (vendor / ".venv" / "bin").mkdir(parents=True)
+        (vendor / ".venv" / "bin" / "python").write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        (vendor / ".venv" / "bin" / "python").chmod(0o755)
+        (vendor / "texture_runner.py").write_text("import shutil, sys\nshutil.copy(sys.argv[1], sys.argv[3])\n")
+        clay = self.tmp / "clay.glb"
+        trimesh.creation.box(extents=(1.0, 1.0, 1.0)).export(clay)
+        vj = self.views_json()
+        proc = self.run_gen("--image", str(self.image), "--views-json", str(vj), "--mesh", str(clay),
+                            "--paint", "trellis", "--quality", "textured")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.hy3d_calls(), [])
+        args = self.retexture_args()
+        self.assertIn("--select", args)
+        self.assertIn("--flat-paint", args)
 
     def test_a_bad_mesh_is_refused(self) -> None:
         txt = self.src / "thing.glb"

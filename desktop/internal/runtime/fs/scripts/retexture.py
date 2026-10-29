@@ -231,6 +231,69 @@ def register(pts, vp, alpha_fit):
     return px, py, ndc[:, 2], inb
 
 
+def bold_features(rgb, alpha, grow: int = 3, depth: float = 48.0, max_share: float = 0.002):
+    """Small dark features (eyes, nostrils, hoof clefts) grown by grow px in a drawing, so they still read once
+    the bake lands on a 256 px PS1 atlas: the pig's drawn eye is 8 px across and came out as one pale texel. A
+    feature is a blob at least depth darker than its 21 px median, off the cut-out's rim, at most max_share of the
+    subject (shading and big dark patches stay as drawn). Returns (rgb, how many features)."""
+    lum = rgb.mean(axis=2)
+    inner = ndimage.binary_erosion(alpha, iterations=4)
+    dark = inner & (lum < ndimage.median_filter(lum, size=21) - depth)
+    # not the rim of a big dark area (a dark patch's edge is darker than its median too)
+    big, nb = ndimage.label(inner & (lum < np.median(lum[alpha]) - depth))
+    if nb:
+        size = ndimage.sum(np.ones_like(lum), big, index=np.arange(1, nb + 1))
+        dark &= ~np.concatenate([[False], size > max_share * alpha.sum()])[big]
+    lab, n = ndimage.label(dark)
+    if n == 0:
+        return rgb, 0
+    area = ndimage.sum(np.ones_like(lum), lab, index=np.arange(1, n + 1))
+    keep = np.zeros(n + 1, bool)
+    keep[1:] = (area >= 3) & (area <= max_share * alpha.sum())
+    region = ndimage.binary_dilation(keep[lab], iterations=grow) & alpha
+    out = rgb.copy()
+    for c in range(3):
+        out[..., c][region] = np.minimum(rgb[..., c], ndimage.grey_erosion(rgb[..., c], size=2 * grow + 1))[region]
+    return out, int(keep[1:].sum())
+
+
+def fit_head(px, py, inb, head, alpha):
+    """A side view's head moved onto the mesh's. register() fits the whole silhouette's box, so the nose tip and
+    the ear tops already meet; what lies between does not when the drawn head is shaped unlike the mesh's (the
+    pig's drawn snout is shorter than TRELLIS.2's, so its eye landed on the cheek). The ear tip is the landmark
+    between: the mesh's and the drawing's (the top of each silhouette past the same neck column) are matched,
+    the neck and nose stay where they are, and the columns between stretch piecewise. Returns the new (px, py);
+    fit_head.report says how far the ear moved."""
+    h = head & inb
+    fit_head.report = {"moved": False}
+    if h.sum() < 100:
+        return px, py
+    hx, hy = px[h].astype(np.float64), py[h].astype(np.float64)
+    right = hx.mean() > px[inb].mean()  # which way the nose points in the picture
+    x0 = hx.min() if right else hx.max()
+    xm = hx.max() if right else hx.min()
+    yb = hy.max()
+    top = hy <= hy.min() + 2
+    ear_m = float(np.median(hx[top]))
+    ys, xs = np.nonzero(alpha)
+    sel = ((xs >= x0) if right else (xs <= x0)) & (ys <= yb)
+    if sel.sum() < 100 or abs(xm - x0) < 8:
+        return px, py
+    ys, xs = ys[sel], xs[sel]
+    ear_d = float(np.median(xs[ys <= ys.min() + 2]))
+    # the ear tip must sit strictly between the neck and the nose on both
+    lo, hi = min(x0, xm), max(x0, xm)
+    if not (lo < ear_m < hi and lo < ear_d < hi):
+        return px, py
+    knots_m = np.array(sorted([x0, ear_m, xm]))
+    knots_d = np.array([x0, ear_d, xm])[np.argsort([x0, ear_m, xm])]
+    ph, pw = alpha.shape
+    out_x = px.copy()
+    out_x[h] = np.clip(np.round(np.interp(hx, knots_m, knots_d)), 0, pw - 1).astype(np.int32)
+    fit_head.report = {"moved": True, "ear_px": round(float(ear_d - ear_m), 1), "head_px": round(float(abs(xm - x0)), 1)}
+    return out_x, py
+
+
 def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, name, trust=None):
     """Project one photo from one camera into the atlas accumulators. Returns visible sample count. trust (per photo
     pixel, 0..1, from delight) scales each sample's weight."""
@@ -407,6 +470,11 @@ def main() -> int:
                          "bare, 0 or absent: off): its shade comes up to the lit level instead of baking in as a "
                          "dark patch, and shade too deep to lift splats with less weight (fill.py covers it). The "
                          "fit and bake mask use the untouched alpha, so the cameras do not change")
+    ap.add_argument("--flat-paint", action="store_true",
+                    help="with --select: the paint under the views has no eyes, nostrils or ear insides of its own "
+                         "(TRELLIS.2's): a side-on creature's side views paint the head too, each fitted to the "
+                         "mesh's head on its own (fit_head), nothing a view draws is dropped for disagreeing "
+                         "with the paint, no view is aligned to it, and small dark features are drawn bolder (bold_features). Without it those come from the paint, as Hunyuan's drew them")
     ap.add_argument("--select", action="store_true",
                     help="photogrammetry bake (scripts/seam_bake.py): each triangle takes the one view that sees it "
                          "best, seams placed where the views agree, every view's colour evened out to the others "
@@ -475,6 +543,9 @@ def main() -> int:
 
     for i, (view, off) in enumerate(zip(views, offsets)):
         rgb, alpha_fit, alpha_bake, trust = load_photo(view, args.delight, with_trust=True)
+        if args.flat_paint:
+            rgb, n_feat = bold_features(rgb, alpha_bake)
+            print(f"retexture: {Path(view).name} {n_feat} small dark features made bolder")
         trust = trust if args.delight else None
         ph, pw = rgb.shape[:2]
         if args.erode > 0:
@@ -520,12 +591,29 @@ def main() -> int:
 
         eye = eye_on_sphere(center, rad, az, el)
         if args.select:
-            def look(eye_, rgb_, fit_, bake_, trust_, name_, boost):
+            head = None
+            if side_on and off is not None and abs(off) == 90.0:
+                front_dir = eye_on_sphere(center, 1.0, (az - off) % 360, 0.0) - center
+                front_dir[1] = 0.0
+                front_dir /= np.linalg.norm(front_dir) + 1e-9
+                along = (pts - center) @ front_dir
+                t = (along - along.min()) / max(float(np.ptp(along)), 1e-9)
+                y = (pts[:, 1] - pts[:, 1].min()) / max(float(np.ptp(pts[:, 1])), 1e-9)
+                head = seam_bake.head_zone(t, y, float(np.ptp(along)), float(np.ptp(pts[:, 1])))
+
+            def look(eye_, rgb_, fit_, bake_, trust_, name_, boost, head_=None):
                 vp = perspective(np.deg2rad(40.0), 1.0, 0.05, 40.0) @ look_at(eye_, center)
-                px, py, depth, inb = register(pts, vp, fit_)
+                px, py, _, inb = register(pts, vp, fit_)
+                # observe's tol is world units (2% of the diagonal): its depth must be too. NDC z moved 0.014 over
+                # 2 m at this camera, so a 0.046 tol hid nothing: the back view "saw" the snout through the body.
+                depth = np.linalg.norm(pts - eye_, axis=1).astype(np.float32)
+                if head_ is not None:
+                    px, py = fit_head(px, py, inb, head_, fit_)
+                    print(f"retexture: {name_} head fitted {fit_head.report}")
                 seen, ndotv = seam_bake.observe(pts, nrm, px, py, depth, inb, eye_, bake_, tol)
                 stray = None
-                if os.environ.get("RETEXTURE_ALIGN", "1") != "0":
+                # --flat-paint: nothing to align to (the paint has no ears or eyes); it smeared a drawn ear on the neck
+                if os.environ.get("RETEXTURE_ALIGN", "1") != "0" and not args.flat_paint:
                     # nudge the picture onto the mesh: the paint (which sits on the mesh exactly) as this camera
                     # sees it is the target, so a drawn ear lands on the mesh's ear, not on the neck behind it
                     front = inb & (ndotv > 0)
@@ -544,18 +632,12 @@ def main() -> int:
                 print(f"retexture: {int(seen.sum())} samples seen from {name_}")
                 observed.append({"name": name_, "seen": seen, "conf": conf, "colour": col, "boost": boost,
                                  "anchor": boost >= 1.0, "stray": stray})
-            look(eye, rgb, alpha_fit, alpha_bake, trust, Path(view).name, 3.0 if on_top else 1.0)
-            if side_on and off is not None and abs(off) == 90.0:
+            look(eye, rgb, alpha_fit, alpha_bake, trust, Path(view).name, 3.0 if on_top else 1.0,
+                 head if args.flat_paint else None)
+            if head is not None and not args.flat_paint:
                 # A side-on creature's side views never put the head where the mesh has it (the pig's ears and
                 # eyes 20-40 px off, beyond what align can move): they keep off the head, which the front view
                 # and the paint (one set of eyes and ears, on the mesh's own) cover.
-                front_dir = eye_on_sphere(center, 1.0, (az - off) % 360, 0.0) - center
-                front_dir[1] = 0.0
-                front_dir /= np.linalg.norm(front_dir) + 1e-9
-                along = (pts - center) @ front_dir
-                t = (along - along.min()) / max(float(np.ptp(along)), 1e-9)
-                y = (pts[:, 1] - pts[:, 1].min()) / max(float(np.ptp(pts[:, 1])), 1e-9)
-                head = seam_bake.head_zone(t, y, float(np.ptp(along)), float(np.ptp(pts[:, 1])))
                 observed[-1]["seen"] = observed[-1]["seen"] & ~head
                 print(f"retexture: {Path(view).name} keeps off the head ({int(head.sum())} samples)")
             if args.mirror:
@@ -580,7 +662,7 @@ def main() -> int:
     if args.select:
         mfaces, nv = seam_bake.merged_faces(np.asarray(mesh.vertices), np.asarray(mesh.faces))
         key = [float(c) for c in args.key.split(",")] if args.key else None
-        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv, key=key, consistency=side_on)
+        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv, key=key, consistency=side_on and not args.flat_paint)
         print(f"retexture: select {json.dumps(res['report'])}")
         if os.environ.get("RETEXTURE_LABELS"):  # debug: paint each face its label's colour
             pal = np.array([[230, 60, 60], [60, 200, 60], [60, 90, 230], [230, 200, 40], [170, 170, 170],
