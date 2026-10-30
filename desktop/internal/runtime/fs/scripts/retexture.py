@@ -294,6 +294,53 @@ def fit_head(px, py, inb, head, alpha):
     return out_x, py
 
 
+def nostrils(rgb, alpha, depth: float = 30.0, min_area: int = 100):
+    """A front view's nostrils: the lower of the two biggest pairs of dark spots in the face (the other is the
+    eyes), side by side about the middle of the figure in its top 60%. (x, y) of the pair's middle, or None."""
+    lum = rgb.mean(axis=2)
+    inner = ndimage.binary_erosion(alpha, iterations=4)
+    lab, n = ndimage.label(inner & (lum < ndimage.median_filter(lum, 21) - depth))
+    if n < 2:
+        return None
+    area = np.bincount(lab.ravel(), minlength=n + 1)
+    ids = [i for i in range(1, n + 1) if area[i] >= min_area]
+    cm = dict(zip(ids, ndimage.center_of_mass(lab > 0, lab, ids)))
+    ys, xs = np.where(alpha)
+    width, mid, low = float(np.ptp(xs)), (xs.min() + xs.max()) / 2.0, ys.min() + 0.6 * np.ptp(ys)
+    pairs = []
+    for a in ids:
+        for b in ids:
+            (ya, xa), (yb, xb) = cm[a], cm[b]
+            if xa < xb and abs(ya - yb) < 0.03 * width and 0.05 * width < xb - xa < 0.4 * width \
+                    and abs((xa + xb) / 2 - mid) < 0.1 * width and max(ya, yb) < low:
+                pairs.append((area[a] + area[b], (xa + xb) / 2, (ya + yb) / 2))
+    pairs = sorted(pairs, reverse=True)[:2]
+    if not pairs:
+        return None
+    _, x, y = max(pairs, key=lambda p: p[2])
+    return float(x), float(y)
+
+
+def fit_snout(px, py, inb, pts, eye, center, rgb, alpha):
+    """A front view's face fitted to the mesh's: the snout tip (the samples nearest the camera) onto the drawn
+    nostrils, y only, piecewise between the figure's top and bottom. TRELLIS.2's pig landed its snout tip 60 px
+    above the drawn snout, between the eyes, and the nose painted on the face above it. Unmoved without nostrils."""
+    fit_snout.report = {"moved": False}
+    found = nostrils(rgb, alpha)
+    fwd = (eye - center) / max(float(np.linalg.norm(eye - center)), 1e-9)
+    s = (pts - center) @ fwd
+    tip = inb & (s >= np.percentile(s[inb], 99.7)) if inb.any() else inb
+    if found is None or not tip.any():
+        return px, py
+    ys = np.where(alpha)[0]
+    y0, y1, ym, yd = float(ys.min()), float(ys.max()), float(np.median(py[tip])), found[1]
+    if not y0 < ym < y1 or not y0 < yd < y1:
+        return px, py
+    out = np.round(np.interp(py, [y0, ym, y1], [y0, yd, y1])).astype(np.int32)
+    fit_snout.report = {"moved": True, "tip_px": round(ym, 1), "nostrils_px": round(yd, 1)}
+    return px, out
+
+
 def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, name, trust=None):
     """Project one photo from one camera into the atlas accumulators. Returns visible sample count. trust (per photo
     pixel, 0..1, from delight) scales each sample's weight."""
@@ -601,7 +648,7 @@ def main() -> int:
                 y = (pts[:, 1] - pts[:, 1].min()) / max(float(np.ptp(pts[:, 1])), 1e-9)
                 head = seam_bake.head_zone(t, y, float(np.ptp(along)), float(np.ptp(pts[:, 1])))
 
-            def look(eye_, rgb_, fit_, bake_, trust_, name_, boost, head_=None):
+            def look(eye_, rgb_, fit_, bake_, trust_, name_, boost, head_=None, snout_=False):
                 vp = perspective(np.deg2rad(40.0), 1.0, 0.05, 40.0) @ look_at(eye_, center)
                 px, py, _, inb = register(pts, vp, fit_)
                 # observe's tol is world units (2% of the diagonal): its depth must be too. NDC z moved 0.014 over
@@ -610,6 +657,9 @@ def main() -> int:
                 if head_ is not None:
                     px, py = fit_head(px, py, inb, head_, fit_)
                     print(f"retexture: {name_} head fitted {fit_head.report}")
+                if snout_:
+                    px, py = fit_snout(px, py, inb, pts, eye_, center, rgb_, fit_)
+                    print(f"retexture: {name_} snout fitted {fit_snout.report}")
                 seen, ndotv = seam_bake.observe(pts, nrm, px, py, depth, inb, eye_, bake_, tol)
                 stray = None
                 # --flat-paint: nothing to align to (the paint has no ears or eyes); it smeared a drawn ear on the neck
@@ -633,7 +683,7 @@ def main() -> int:
                 observed.append({"name": name_, "seen": seen, "conf": conf, "colour": col, "boost": boost,
                                  "anchor": boost >= 1.0, "stray": stray})
             look(eye, rgb, alpha_fit, alpha_bake, trust, Path(view).name, 3.0 if on_top else 1.0,
-                 head if args.flat_paint else None)
+                 head if args.flat_paint else None, args.flat_paint and side_on and off == 0.0)
             if head is not None and not args.flat_paint:
                 # A side-on creature's side views never put the head where the mesh has it (the pig's ears and
                 # eyes 20-40 px off, beyond what align can move): they keep off the head, which the front view

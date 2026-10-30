@@ -287,3 +287,28 @@ class FlatPaintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_fit_snout_puts_the_mesh_snout_on_the_drawn_nostrils(self) -> None:
+        h = w = 200
+        rgb = np.full((h, w, 3), 200.0)
+        alpha = np.zeros((h, w), bool)
+        alpha[20:190, 30:170] = True
+        for cx, cy, r in ((75, 60, 7), (125, 60, 7), (88, 110, 8), (112, 110, 8)):  # eyes, then nostrils
+            yy, xx = np.ogrid[:h, :w]
+            rgb[(yy - cy) ** 2 + (xx - cx) ** 2 <= r * r] = 20.0
+        x, y = self.rt.nostrils(rgb, alpha)
+        self.assertAlmostEqual(x, 100.0, delta=1.5)
+        self.assertAlmostEqual(y, 110.0, delta=1.5)
+        rng = np.random.default_rng(0)
+        pts = rng.uniform(-1, 1, (4000, 3))
+        tip = pts[:, 2] > np.percentile(pts[:, 2], 99.7)
+        px = np.full(len(pts), 100, np.int32)
+        py = np.where(tip, 70, rng.integers(25, 185, len(pts))).astype(np.int32)
+        inb = np.ones(len(pts), bool)
+        _, out = self.rt.fit_snout(px, py, inb, pts, np.array([0.0, 0.0, 5.0]), np.zeros(3), rgb, alpha)
+        self.assertTrue(self.rt.fit_snout.report["moved"])
+        self.assertAlmostEqual(float(np.median(out[tip])), 110.0, delta=1.0)
+        self.assertEqual((int(out.min()) >= 20, int(out.max()) <= 189), (True, True))
+        # no nostrils drawn: left as it was
+        _, same = self.rt.fit_snout(px, py, inb, pts, np.array([0.0, 0.0, 5.0]), np.zeros(3), np.full((h, w, 3), 200.0), alpha)
+        np.testing.assert_array_equal(same, py)
