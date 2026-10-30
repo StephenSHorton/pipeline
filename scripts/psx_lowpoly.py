@@ -155,6 +155,68 @@ def _cut(plain: trimesh.Trimesh, faces: int) -> trimesh.Trimesh:
     return best
 
 
+HOLE_SPAN = 0.15  # an open ring up to this share of the model's largest side is a hole to cap
+
+
+def close_up(low: trimesh.Trimesh) -> tuple[trimesh.Trimesh, dict]:
+    """The cut closed and facing out. TRELLIS.2's pig came with open hoof soles and ears and faces wound both ways,
+    which a viewer culling back faces shows as gaps. Each ring of open edges (found as a connected set, not walked
+    edge by edge: several open edges can meet at one vertex) is capped with a fan around its middle, ordered by
+    angle about its best-fit plane and wound against the face beside it; then each piece's winding is made
+    consistent and turned outward if most rays from its faces say it points in."""
+    w = trimesh.Trimesh(vertices=low.vertices, faces=low.faces, process=True)
+    directed = w.faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    single = directed[trimesh.grouping.group_rows(np.sort(directed, axis=1), require_count=1)]
+    info = {"holes": 0, "skipped": 0, "flipped_pieces": 0}
+    V, F = [np.asarray(w.vertices)], [np.asarray(w.faces)]
+    if len(single):
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+        n = len(w.vertices)
+        _, ring = connected_components(coo_matrix((np.ones(len(single)), (single[:, 0], single[:, 1])), (n, n)),
+                                       directed=False)
+        size = float(np.ptp(w.vertices, axis=0).max()) or 1.0
+        nxt = n
+        for r in np.unique(ring[single[:, 0]]):
+            edges = single[ring[single[:, 0]] == r]
+            ids = np.unique(edges)
+            if len(ids) < 3:
+                continue
+            pts = w.vertices[ids]
+            if float(np.ptp(pts, axis=0).max()) > HOLE_SPAN * size:
+                info["skipped"] += 1
+                continue
+            c = pts.mean(axis=0)
+            normal = np.linalg.svd(pts - c)[2][2]
+            u = np.cross(normal, [1.0, 0.0, 0.0] if abs(normal[0]) < 0.9 else [0.0, 1.0, 0.0])
+            u /= np.linalg.norm(u)
+            order = ids[np.argsort(np.arctan2((pts - c) @ np.cross(normal, u), (pts - c) @ u))]
+            a, b = edges[0]
+            pos = {v: i for i, v in enumerate(order)}
+            if (pos[b] - pos[a]) % len(order) == 1:  # the fan would run a -> b, as the face beside it does
+                order = order[::-1]
+            V.append(c[None])
+            F.append(np.c_[order, np.roll(order, -1), np.full(len(order), nxt)])
+            nxt += 1
+            info["holes"] += 1
+    out = trimesh.Trimesh(vertices=np.vstack(V), faces=np.vstack(F), process=True)
+    trimesh.repair.fix_winding(out)
+    labels = trimesh.graph.connected_component_labels(out.face_adjacency, node_count=len(out.faces))
+    faces = np.asarray(out.faces).copy()
+    rng = np.random.default_rng(0)
+    eps = 1e-4 * float(np.ptp(out.vertices, axis=0).max())
+    for k in np.unique(labels):
+        mine = np.where(labels == k)[0]
+        pick = rng.choice(mine, min(25, len(mine)), replace=False)
+        o = out.triangles_center[pick] + out.face_normals[pick] * eps
+        _, ray_idx, _ = out.ray.intersects_location(o, out.face_normals[pick], multiple_hits=True)
+        hits = np.bincount(ray_idx, minlength=len(pick))
+        if (hits % 2 == 1).mean() > 0.5:  # most rays out along the normals hit the mesh an odd number of times
+            faces[mine] = faces[mine][:, ::-1]
+            info["flipped_pieces"] += 1
+    return trimesh.Trimesh(vertices=out.vertices, faces=faces, process=False), info
+
+
 def smoothstep(t: np.ndarray) -> np.ndarray:
     t = np.clip(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
@@ -642,7 +704,7 @@ def write_glb(path: Path, verts: np.ndarray, faces: np.ndarray, uvs: np.ndarray,
         "nodes": [{"mesh": 0, "name": name}],
         "meshes": [{"name": name, "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2},
                                                   "indices": 3, "material": 0}]}],
-        "materials": [{"name": f"{name}_psx", "pbrMetallicRoughness": {
+        "materials": [{"name": f"{name}_psx", "doubleSided": True, "pbrMetallicRoughness": {
             "baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 1.0}}],
         "textures": [{"sampler": 0, "source": 0}],
         "samplers": [{"magFilter": 9728, "minFilter": 9728, "wrapS": 33071, "wrapT": 33071}],  # NEAREST, clamp
@@ -810,6 +872,12 @@ def main() -> int:
             degraded.append(degrade("psx", "leg_weight", f"no legs to weight ({e}); cut as they are"))
     if low is None:
         low = decimate_head(high, args.faces, args.head_weight)
+    # --legs clean builds its own columns, set into the body on purpose, and its regions index the faces as cut
+    closed = {"holes": 0, "flipped_pieces": 0, "skipped": 0}
+    if regions is None:
+        low, closed = close_up(low)
+    print(f"psx_lowpoly: capped {closed['holes']} holes, turned {closed['flipped_pieces']} pieces outward"
+          + (f", left {closed['skipped']} big openings" if closed["skipped"] else ""))
     verts, faces, uvs, image, used = bake(high, texture, low, args.atlas, regions)
     png = crunch(image)
 
