@@ -81,7 +81,8 @@ if [[ ! -x "$BIN/lift-subject" ]]; then
 fi
 echo "bootstrap: lift-subject -> $BIN/lift-subject"
 
-if [[ ! -x "$BIN/preview-glb" ]]; then
+# Rebuilt when the source is newer too: the thumbnail's look and framing live in it (#356).
+if [[ ! -x "$BIN/preview-glb" || ( -f "$ROOT/scripts/preview-glb.swift" && "$ROOT/scripts/preview-glb.swift" -nt "$BIN/preview-glb" ) ]]; then
   echo "bootstrap: building preview-glb (SceneKit + ModelIO)"
   swiftc -O -o "$BIN/preview-glb" "$ROOT/scripts/preview-glb.swift" \
     -framework SceneKit -framework ModelIO -framework Metal -framework AppKit \

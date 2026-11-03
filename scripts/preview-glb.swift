@@ -52,64 +52,86 @@ guard let scene = loadScene(inURL) else {
     exit(1)
 }
 
-// Clay look for untextured meshes
+// The viewer's look and framing (#356; the numbers are in scripts/workbench/playbook.md "Viewer and thumbnail
+// defaults"): flat Lambert like the app's diorama (trimesh's OBJ material has Ks 0.4 / Ns 1, a broad sheen that
+// washed every thumbnail out), the orbit home's angle (az 36, el 26, Y up), orthographic, the model filling ~68%.
+let FILL: Float = 0.68
+let HOME_AZ: Float = 36 * .pi / 180
+let HOME_EL: Float = 26 * .pi / 180
+
 let clay = SCNMaterial()
 clay.diffuse.contents = NSColor(calibratedRed: 0.45, green: 0.52, blue: 0.40, alpha: 1)
-clay.roughness.contents = 0.55
-clay.lightingModel = .physicallyBased
 scene.rootNode.enumerateChildNodes { node, _ in
     guard let geom = node.geometry else { return }
     if geom.materials.isEmpty || geom.materials.allSatisfy({ $0.diffuse.contents == nil }) {
         geom.materials = [clay]
     }
-}
-
-var minV = SCNVector3(Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude)
-var maxV = SCNVector3(-Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude)
-scene.rootNode.enumerateChildNodes { node, _ in
-    let (locMin, locMax) = node.boundingBox
-    let corners = [
-        SCNVector3(locMin.x, locMin.y, locMin.z),
-        SCNVector3(locMin.x, locMin.y, locMax.z),
-        SCNVector3(locMin.x, locMax.y, locMin.z),
-        SCNVector3(locMin.x, locMax.y, locMax.z),
-        SCNVector3(locMax.x, locMin.y, locMin.z),
-        SCNVector3(locMax.x, locMin.y, locMax.z),
-        SCNVector3(locMax.x, locMax.y, locMin.z),
-        SCNVector3(locMax.x, locMax.y, locMax.z),
-    ]
-    for c in corners {
-        let w = node.convertPosition(c, to: nil)
-        minV.x = min(minV.x, w.x); minV.y = min(minV.y, w.y); minV.z = min(minV.z, w.z)
-        maxV.x = max(maxV.x, w.x); maxV.y = max(maxV.y, w.y); maxV.z = max(maxV.z, w.z)
+    for m in geom.materials {
+        m.lightingModel = .lambert
+        m.specular.contents = NSColor.black
+        m.emission.contents = NSColor.black
     }
 }
-let center = SCNVector3((minV.x + maxV.x) / 2, (minV.y + maxV.y) / 2, (minV.z + maxV.z) / 2)
-let dx = maxV.x - minV.x, dy = maxV.y - minV.y, dz = maxV.z - minV.z
-let diag = CGFloat(sqrt(dx * dx + dy * dy + dz * dz))
-let dist = max(diag * 1.4, 0.5)
+
+// Every vertex in world space (the bounding box's corners framed the pig at 50%).
+var pts: [SIMD3<Float>] = []
+scene.rootNode.enumerateChildNodes { node, _ in
+    guard let geom = node.geometry else { return }
+    let world = node.simdWorldTransform
+    for src in geom.sources(for: .vertex) where src.usesFloatComponents && src.bytesPerComponent == 4 && src.componentsPerVector >= 3 {
+        src.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            for i in 0..<src.vectorCount {
+                let o = src.dataOffset + i * src.dataStride
+                let x = raw.load(fromByteOffset: o, as: Float.self)
+                let y = raw.load(fromByteOffset: o + 4, as: Float.self)
+                let z = raw.load(fromByteOffset: o + 8, as: Float.self)
+                let w = world * SIMD4<Float>(x, y, z, 1)
+                pts.append(SIMD3<Float>(w.x, w.y, w.z))
+            }
+        }
+    }
+}
+guard !pts.isEmpty else {
+    fputs(PreviewError.load(inURL.path).description + "\n", stderr)
+    exit(1)
+}
+var lo = pts[0], hi = pts[0]
+for p in pts { lo = simd_min(lo, p); hi = simd_max(hi, p) }
+let center = (lo + hi) / 2
+let diag = simd_length(hi - lo)
+let dir = SIMD3<Float>(sin(HOME_AZ) * cos(HOME_EL), sin(HOME_EL), cos(HOME_AZ) * cos(HOME_EL))
+let right = SIMD3<Float>(cos(HOME_AZ), 0, -sin(HOME_AZ))
+let up = simd_cross(dir, right)
+var half: Float = 1e-6
+for p in pts {
+    let d = p - center
+    half = max(half, abs(simd_dot(d, right)), abs(simd_dot(d, up)))
+}
 
 let camera = SCNCamera()
-camera.zNear = 0.01
-camera.zFar = max(1000, dist * 20)
-camera.fieldOfView = 45
+camera.usesOrthographicProjection = true
+camera.orthographicScale = Double(half / FILL)
+camera.zNear = 0.001
+camera.zFar = Double(max(1000, diag * 20))
 let camNode = SCNNode()
 camNode.camera = camera
-camNode.position = SCNVector3(center.x + dist * 0.65, center.y - dist * 0.95, center.z + dist * 0.4)
-camNode.look(at: center)
+camNode.simdPosition = center + dir * max(diag * 2, 1)
+camNode.simdLook(at: center, up: SIMD3<Float>(0, 1, 0), localFront: SIMD3<Float>(0, 0, -1))
 scene.rootNode.addChildNode(camNode)
 
+// A key from above and to the camera's right, the way Mokei's sun falls on the diorama, and a soft fill.
 let key = SCNNode()
 key.light = SCNLight()
-key.light?.type = .area
-key.light?.intensity = 1200
+key.light?.type = .directional
+key.light?.intensity = 900
 key.light?.color = NSColor.white
-key.position = SCNVector3(center.x + dist, center.y - dist * 0.3, center.z + dist)
+key.simdPosition = center + SIMD3<Float>(sin(HOME_AZ + 0.7), 1.3, cos(HOME_AZ + 0.7)) * max(diag, 1)
+key.simdLook(at: center, up: SIMD3<Float>(0, 1, 0), localFront: SIMD3<Float>(0, 0, -1))
 scene.rootNode.addChildNode(key)
 let fill = SCNNode()
 fill.light = SCNLight()
 fill.light?.type = .ambient
-fill.light?.intensity = 250
+fill.light?.intensity = 420
 scene.rootNode.addChildNode(fill)
 
 scene.background.contents = NSColor(calibratedWhite: 0.12, alpha: 1)
@@ -121,7 +143,7 @@ guard let device = MTLCreateSystemDefaultDevice() else {
 let renderer = SCNRenderer(device: device, options: nil)
 renderer.scene = scene
 renderer.pointOfView = camNode
-renderer.autoenablesDefaultLighting = true
+renderer.autoenablesDefaultLighting = false
 
 let size = CGSize(width: 1024, height: 1024)
 let image = renderer.snapshot(atTime: 0, with: size, antialiasingMode: .multisampling4X)

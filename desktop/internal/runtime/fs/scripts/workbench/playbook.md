@@ -52,6 +52,24 @@ f. Show before and after in the app's Compare view (Rig tab), not as image files
 - **A missed critique joins `CRITIQUES`**: a check when a number separates bad from good (give the margin), else a
   sheet row.
 
+## Viewer and thumbnail defaults
+
+Teardown's checklist (#352), checked in the app in #356. Hold every viewer and thumbnail change to these numbers:
+
+- **Glow under 1.0.** No bloom pass, and emissive intensity under 1.0. The diorama has none: it uses Lambert
+  materials with N8AO and NoToneMapping, and `prepareModel` drops emissive. The thumbnail turns emission off.
+- **Near-white parts on a pale ground get an outline.** Mokei's ground is #e9eef8, and the pad and Clay are #f7f9fd.
+  Every model gets a back-face hull of 1.5 CSS px in #3a4568, one game pixel under PS1 (`viewer/frame.ts`). The
+  thumbnail renders on a 0.12 grey ground.
+- **Big glossy surfaces at roughness 0.45 or more, envMapIntensity about 0.5.** The diorama has no specular. The
+  thumbnail is Lambert with black specular: trimesh's OBJ material (Ks 0.4, Ns 1) put a sheen over every thumbnail.
+  The Stack stage's own viewer uses roughness 0.7 and envMapIntensity 0.35.
+- **The model fills 60-70% of the frame** on its limiting side at the orbit home (az 36, el 26), measured on its
+  vertices, not its bounding sphere. The sphere left the pig at about 50%. FILL is 0.68 in `viewer/frame.ts` and
+  `preview-glb.swift`, so a lopsided model lands at about 62%.
+- **The thumbnail shows the model on its own.** `preview-glb` shoots from the orbit home with Y up. Its camera was
+  Z-up and looked at the pig's belly from below. Rig thumbnails are the sheet's Rest cell at q.
+
 ## Mesh
 
 - **Proportions after the shape.** Each drawn view sits in a square quarter of the sheet, which squashes a long

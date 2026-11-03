@@ -4,15 +4,17 @@
 import {
   Box3,
   Group,
+  Mesh,
   MeshLambertMaterial,
+  SkinnedMesh,
   NearestFilter,
   Vector3,
   type Material,
-  type Mesh,
+  type MeshBasicMaterial,
   type Object3D,
-  type SkinnedMesh,
   type Texture,
 } from "three";
+import { outlineMaterial, trackTargetSize } from "./frame";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 /** Model size on the pad, in world units. Mokei's shadow frustum (±42), PCF radius and AO radius (2.2) assume this scale. */
@@ -28,6 +30,8 @@ export interface PreparedModel {
   radius: number;
   /** Footprint half-diagonal after scaling (for the pad). */
   footprint: number;
+  /** Up to ~4000 of its vertices (x, y, z), in the diorama's frame: centred on x/z, y from mid-height (./frame.ts). */
+  points: Float32Array;
   hasMap: boolean;
   skinned: boolean;
   vertices: number;
@@ -87,9 +91,11 @@ export function prepareModel(gltf: GLTF, opts: { clayColor: string; pixel: boole
     return m;
   };
 
+  const meshes: Mesh[] = [];
   scene.traverse((o) => {
     const mesh = o as Mesh;
     if (!mesh.isMesh) return;
+    meshes.push(mesh);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     if ((mesh as SkinnedMesh).isSkinnedMesh) {
@@ -126,6 +132,30 @@ export function prepareModel(gltf: GLTF, opts: { clayColor: string; pixel: boole
   root.updateMatrixWorld(true);
   box.setFromObject(root);
   const fitted = box.getSize(new Vector3());
+  const points = samplePoints(meshes, fitted.y / 2);
+
+  // The outline (#356): near-white parts vanish on Mokei's pale ground and pad, so every mesh gets a back-face hull.
+  const hullMats: MeshBasicMaterial[] = [];
+  const hulls: Mesh[] = [];
+  for (const mesh of meshes) {
+    const sk = (mesh as SkinnedMesh).isSkinnedMesh;
+    const mat = outlineMaterial(sk);
+    let hull: Mesh;
+    if (sk) {
+      const src = mesh as SkinnedMesh;
+      const skin = new SkinnedMesh(mesh.geometry, mat);
+      skin.bind(src.skeleton, src.bindMatrix);
+      skin.frustumCulled = false;
+      hull = skin;
+    } else hull = new Mesh(mesh.geometry, mat);
+    hull.castShadow = false;
+    hull.receiveShadow = false;
+    hull.raycast = () => {}; // tools pick the model, never its outline
+    hull.onBeforeRender = (renderer) => trackTargetSize(mat, renderer);
+    mesh.add(hull);
+    hullMats.push(mat);
+    hulls.push(hull);
+  }
 
   return {
     root,
@@ -133,6 +163,7 @@ export function prepareModel(gltf: GLTF, opts: { clayColor: string; pixel: boole
     height: fitted.y,
     radius: fitted.length() / 2,
     footprint: Math.hypot(fitted.x, fitted.z) / 2,
+    points,
     hasMap,
     skinned,
     vertices,
@@ -143,6 +174,7 @@ export function prepareModel(gltf: GLTF, opts: { clayColor: string; pixel: boole
     setWire(on) {
       // Every material this model owns (textured and clay), so Clay keeps the wire, as legacy Texture does.
       for (const m of made) (m as Material & { wireframe?: boolean }).wireframe = on;
+      for (const h of hulls) h.visible = !on;
     },
     dispose() {
       for (const m of made) {
@@ -151,10 +183,28 @@ export function prepareModel(gltf: GLTF, opts: { clayColor: string; pixel: boole
         mm.alphaMap?.dispose();
         m.dispose();
       }
+      for (const m of hullMats) m.dispose();
       scene.traverse((o) => {
         const mesh = o as Mesh;
         if (mesh.isMesh) mesh.geometry.dispose();
       });
     },
   };
+}
+
+/** Every k-th vertex of the meshes in root space, y shifted down by `mid` (the diorama lowers the model so). */
+function samplePoints(meshes: Mesh[], mid: number, max = 4000): Float32Array {
+  const total = meshes.reduce((n, m) => n + (m.geometry.attributes.position?.count ?? 0), 0);
+  const step = Math.max(1, Math.ceil(total / max));
+  const out: number[] = [];
+  const v = new Vector3();
+  for (const mesh of meshes) {
+    const pos = mesh.geometry.attributes.position;
+    if (!pos) continue;
+    for (let i = 0; i < pos.count; i += step) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      out.push(v.x, v.y - mid, v.z);
+    }
+  }
+  return new Float32Array(out);
 }

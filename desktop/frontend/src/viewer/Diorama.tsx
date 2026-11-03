@@ -19,6 +19,7 @@ import { PixelPass } from "./PixelPass";
 import type { PixelLook } from "./pixelLook";
 import type { PreparedModel } from "./prepareModel";
 import { ToolBridge, ToolOverlays } from "./ToolBridge";
+import { fitZoom, viewExtents } from "./frame";
 
 export const PAD_H = 0.45;
 /** The orbit home: a little lower than Yardline's 37 deg, to see more of the model's side. */
@@ -123,7 +124,7 @@ function Stage({ model, clips, clip, playing, clay, wire, spin, follower, room }
   );
 }
 
-/** Frame the model: ortho zoom is px per world unit; zoomReferenceWidth = canvas width makes cameraZoom exactly that.
+/** Frame the model (./frame.ts): ortho zoom is px per world unit; zoomReferenceWidth = canvas width makes cameraZoom exactly that.
  * Comparing, it fits `frame` (the pane's clear room) instead of the whole canvas. */
 function Framer({ model, frame }: { model: PreparedModel; frame?: { width: number; height: number } }) {
   const size = useThree((s) => s.size);
@@ -132,7 +133,8 @@ function Framer({ model, frame }: { model: PreparedModel; frame?: { width: numbe
   const fh = frame?.height ?? size.height;
   useLayoutEffect(() => {
     if (!size.width || !size.height) return;
-    const zoom = Math.min(fw, fh) / (2 * model.radius * 1.12);
+    // The model's own outline at the home view fills FILL of the frame (#356; the bounding sphere left a pig at 48%).
+    const zoom = fitZoom(viewExtents(model.points, HOME.azimuth, HOME.elevation), fw, fh);
     const home = { cameraZoom: zoom, cameraAzimuth: HOME.azimuth, cameraElevation: HOME.elevation };
     setViewHome(home);
     const camera = first.current ? { ...home, panX: 0, panZ: 0 } : { cameraZoom: zoom }; // a resize keeps the orbit
