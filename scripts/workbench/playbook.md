@@ -21,7 +21,8 @@ a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears,
 b. Read the per-bone numbers (no pictures): edges past 2x per clip and the bones that own them, weight shares, and the pivot check (a leg's root joint over its own leg; over 0.25 of a body length is wrong).
 c. Only for the flagged bones, rig_review heat "flagged" (side/front/q/back, rest and worst frame; temp images).
 d. Diagnose before editing. A weights problem is a bone owning the wrong region or bleed across legs: fix it with POST /rig/<stem>/weights. A thigh above the leg line owns nothing by design; a stretched seam there needs a softer band, not thigh weight. A joint problem is a joint in the wrong place: fix where it goes, check it with rig_preview (seconds, no model), then rig. Leg pivots keep the skin (reuse_skin true); a moved body joint relearns it (about 3 minutes). The sheep's mid-body hind pivot and hips were joint problems that weight edits barely moved.
-e. Show before and after in the app's Compare view (Rig tab), not as image files. The activity feed already shows Stephen each call (Follow Claude), so take no status pictures.
+e. Before showing a rig, rig_scrub any clip that looks off (a frame every 0.2s, one fixed camera): the sampled frames miss a foot sliding or a pose jumping between them.
+f. Show before and after in the app's Compare view (Rig tab), not as image files. The activity feed already shows Stephen each call (Follow Claude), so take no status pictures.
 <!-- /digest -->
 
 ## Why the rules
@@ -128,5 +129,9 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
      the lowest point (a lying sheep's folded hoof held its belly up). A horse clip's turn can move a very different
      share of our mesh (the horse's Eating folded the sheep's chest). Replay the floor pass offline on
      rig/rigged_nofloor.glb (tests/test_rig_floor.py shows how) before a re-rig.
+   - Scrub before showing: `rig_scrub {stem, clip, from, to, step}` (or `rig_render.py --scrub 'Walk@0.5-1.5'`) renders
+     one clip every 0.2 s (step) from one fixed camera with the floor line, as one captioned sheet. rig_review and the
+     rig sheet sample a few frames per clip, so a foot sliding or a pose jumping between them never shows there
+     (#352). Read a scrub of any clip that looks off before showing a rig.
 6. **Show the change in Compare:** the Rig tab's Compare shows an earlier version left and the current one right,
    with one camera and one clip.

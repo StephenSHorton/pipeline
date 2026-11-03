@@ -363,6 +363,58 @@ PINNED_TEXTURE = {"side": "a29543e48c10", "front": "aca337ef43fe", "top": "b8aaf
 
 
 @unittest.skipUnless(rig.blender_path(), "no Blender")
+class Scrub(unittest.TestCase):
+    """--scrub: one clip, a frame every step seconds over a span, one fixed camera, a labelled sheet."""
+
+    def test_frame_times(self):
+        self.assertEqual(rr.scrub_times(1.0), [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        self.assertEqual(rr.scrub_times(1.0, 0.5, 1.0, 0.2), [0.5, 0.7, 0.9, 1.0], "the span's end is shown")
+        self.assertEqual(rr.scrub_times(2.0, 0.3, 0.9, 0.3), [0.3, 0.6, 0.9], "no float drift past the end")
+        self.assertEqual(rr.scrub_times(1.0, -1, 5), rr.scrub_times(1.0), "clamped into the clip")
+        self.assertEqual(rr.scrub_times(1.0, 0.4, 0.4), [0.4])
+        with self.assertRaises(ValueError):
+            rr.scrub_times(1.0, step=0)
+        with self.assertRaises(ValueError):
+            rr.scrub_times(1.0, 0.8, 0.2)
+
+    def test_parse_scrub(self):
+        self.assertEqual(rr.parse_scrub("Walk"), ("Walk", None, None))
+        self.assertEqual(rr.parse_scrub("Walk@0.5-1.5"), ("Walk", 0.5, 1.5))
+        self.assertEqual(rr.parse_scrub("Walk@-1.5"), ("Walk", None, 1.5))
+        with self.assertRaises(ValueError):
+            rr.parse_scrub("Walk@0.5")
+
+    def test_sheet(self):
+        tmp = Path(tempfile.mkdtemp(prefix="rig_scrub_test_"))
+        try:
+            asset = tmp / "stick"
+            asset.mkdir()
+            write_rig(asset / "rigged.glb")
+            res = rr.scrub(asset, "Swing", 0.0, 1.0, 0.25, view="side", size=96, tile=80, cols=3)
+            self.assertEqual([f["t"] for f in res["frames"]], [0.0, 0.25, 0.5, 0.75, 1.0])
+            self.assertEqual([f["frame"] for f in res["frames"]], [0, 8, 15, 23, 30])
+            self.assertEqual((res["rows"], res["cols"]), (2, 3))
+            sheet = Path(res["sheet"])
+            self.assertEqual(sheet.parent, asset / "rig" / "preview" / "scrub")
+            self.assertEqual(sheet.name, "scrub_Swing_0.00-1.00_side_texture.png")
+            with Image.open(sheet) as im:
+                self.assertEqual(im.size, (3 * 80, 2 * (80 + rr.CAP)))
+                a = np.asarray(im.convert("RGB")).astype(int)
+            # the leg swings (+-35 deg about x at 0.25 and 0.75): the side view's first and second tiles differ
+            t0 = a[rr.CAP:rr.CAP + 80, 0:80]
+            t1 = a[rr.CAP:rr.CAP + 80, 80:160]
+            self.assertGreater(np.abs(t0 - t1).sum(), 0)
+            # the foot moves in z, not y, at the swing's peak; the json records it
+            f0, f1 = res["frames"][0], res["frames"][1]
+            self.assertNotEqual(f0["feet_xz"], f1["feet_xz"])
+            js = json.loads(sheet.with_suffix(".json").read_text())
+            self.assertEqual(js["clip"], "Swing")
+            with self.assertRaises(KeyError):
+                rr.scrub(asset, "Nope")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class BlenderParity(unittest.TestCase):
     def test_parity(self):
         tmp = Path(tempfile.mkdtemp(prefix="rig_render_bl_"))

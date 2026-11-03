@@ -484,6 +484,30 @@ class Workbench:
             res["_image"] = str(res["sheet"])
         return {"stem": stem, **res}
 
+    def rig_scrub(self, a: dict) -> dict:
+        """One clip, a frame every step seconds from `from` to `to`, from one fixed camera, as one labelled sheet
+        (rig_render.scrub). Reads the rig the viewer shows; the sheet goes in a temp folder, not out/."""
+        import rig_render
+
+        stem = check_stem(a["stem"])
+        folder = self.folder(stem)
+        glb = next((g for g in (folder / "rig" / "rigged_allclips.glb", folder / "rigged.glb") if g.is_file()), None)
+        if glb is None:
+            raise ToolError(f"{stem} has no rig yet (rig/rigged_allclips.glb or rigged.glb)")
+        try:
+            res = rig_render.scrub(folder, str(a["clip"]), a.get("from"), a.get("to"),
+                                   float(a.get("step") or rig_render.SCRUB_STEP), a.get("view") or "side",
+                                   a.get("mode") or "texture", [str(glb)], cols=int(a.get("cols") or rig_render.SCRUB_COLS),
+                                   out=self.render_dir())
+        except KeyError as e:
+            raise ToolError(str(e).strip("'\"")) from None
+        except ValueError as e:
+            raise ArgError(str(e)) from None
+        frames = [{k: f[k] for k in ("t", "frame", "feet_y_rel") if k in f} for f in res["frames"]]
+        return {"stem": stem, "glb": self.rel(glb), "clip": res["clip"], "duration": res["duration"],
+                "from": res["t0"], "to": res["t1"], "step": res["step"], "view": res["view"], "mode": res["mode"],
+                "frames": frames, "png": res["sheet"], "_image": res["sheet"]}
+
     def rig_preview(self, a: dict) -> dict:
         stem = check_stem(a["stem"])
         self.folder(stem)
@@ -929,6 +953,18 @@ class Workbench:
                        "heat": {"type": ["array", "string"], "items": {"type": "string"}, "minItems": 1, "maxItems": 6,
                                 "description": "bone names, or \"flagged\" (the bones the diagnosis names, at most 4)"},
                        "keep_images": {"type": "boolean"}}, ("stem",)), self.rig_review),
+            Tool("rig_scrub", "One clip close-spaced: a frame every step seconds (default 0.2) from `from` to `to` "
+                 "(seconds; default the whole clip), all from one fixed camera (the rest pose's, floor line in red), "
+                 "as one sheet captioned with each frame's time and frame number. rig_review's numbers and the rig "
+                 "sheet sample a few frames per clip and miss a foot sliding or a pose jumping between them: scrub "
+                 "any clip that looks off before showing a rig. Reads the rig the viewer shows; writes nothing into "
+                 "out/.",
+                 _obj({"stem": STEM, "clip": {"type": "string"},
+                       "from": {"type": "number", "minimum": 0}, "to": {"type": "number", "minimum": 0},
+                       "step": {"type": "number", "minimum": 0.02, "maximum": 2},
+                       "view": {"type": "string", "enum": list(VIEWS)},
+                       "mode": {"type": "string", "enum": ["texture", "sticks", "groups", "texture_px"]},
+                       "cols": {"type": "integer", "minimum": 1, "maximum": 12}}, ("stem", "clip")), self.rig_scrub),
             Tool("review", "Run every check Stephen's critiques taught on an asset (workbench/review.py): head offset, "
                  "mirror, pieces, tris, magenta spill, the --select bake against Hunyuan's paint (a feature in the "
                  "wrong place, patchwork), degraded.json. Writes workbench/review/{review.json,sheet.png} and "
