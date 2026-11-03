@@ -25,6 +25,7 @@ TITLES: dict[str, tuple[str, str]] = {
     "mesh_edit": ("Editing the mesh of", "Edited the mesh of"),
     "bake_photo": ("Baking the photo onto", "Baked the photo onto"),
     "psx": ("Making the PS1 model of", "Made the PS1 model of"),
+    "code_model": ("Building the code model of", "Built the code model of"),
     "draw_views": ("Starting the four-view drawing of", "Started the four-view drawing of"),
     "rig": ("Starting the rig of", "Started the rig of"),
     "rig_review": ("Reviewing the rig of", "Reviewed the rig of"),
@@ -106,7 +107,7 @@ def glb_of(out: dict[str, Any]) -> str | None:
     return None
 
 
-WRITES = frozenset({"clay_mesh", "mesh_edit", "bake_photo", "psx"})
+WRITES = frozenset({"clay_mesh", "mesh_edit", "bake_photo", "psx", "code_model"})
 
 
 class Narrator:

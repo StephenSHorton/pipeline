@@ -1,9 +1,8 @@
 # Playbook: driving the pipeline
 
-How Claude makes, checks and fixes assets through the workbench. Each rule is something that has worked on a real
-asset, with the reason. The part between the digest markers is what the MCP server sends at connect (Claude Code cuts
-server instructions at 4,096 characters); the `playbook` tool returns this whole file. Add to it when a fix proves
-itself; take a rule out when the code stops matching it.
+How Claude makes, checks and fixes assets through the workbench: rules that worked on a real asset, with the reason.
+The digest is what the MCP server sends at connect (Claude Code cuts it at 4,096 characters); the `playbook` tool
+returns the file. Add a fix once it proves itself; drop a rule the code no longer matches.
 
 <!-- digest -->
 Workbench rules (the playbook tool has the full playbook, with the why for each):
@@ -16,6 +15,7 @@ Workbench rules (the playbook tool has the full playbook, with the why for each)
 7. Review before showing: psx returns the review (else call review). Fix what failed, then read the sheet: count the ears and eyes on the painted head row against the grey row. Each new critique becomes a check or a sheet row in review.py CRITIQUES.
 8. Show Stephen in the app, never a PNG: call show (stem, stage, compare = the earlier take for a before and after); the app opens it in the viewer and Compare.
 Mesh: a long animal drawn tall gets its length back from proportion_check. If shape.json's proportion skipped, use mesh_edit stretch on z. For legs or head, use the proportion ops (thicken_legs, shorten_legs, widen_head, trim_belly, tidy_legs). When one refuses, give it the parameter the refusal names (top, head, start, line). For the PS1 cut, use psx with head_weight 2; for legs, tidy_legs then leg_weight. A leg left as its own piece after the cut is pinched, not a crumb: weight it, don't delete it.
+Hard-surface prop: no Hunyuan (#351: beat TRELLIS.2 and GLB-Coder). draw_views, write a Three.js page of primitives from flat/views/*.png (metres, on y = 0, front +Z, flat colours, panels as thin boxes, an Export button) into workbench/code/, then code_model. Each fix to the page is a version.
 Rig, after every rig or weights/joint change:
 a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears, foot slide and problems.
 b. Read the per-bone numbers (no pictures): edges past 2x per clip and the bones that own them, weight shares, and the pivot check (a leg's root joint over its own leg; over 0.25 of a body length is wrong).
@@ -29,46 +29,42 @@ f. Show before and after in the app's Compare view (Rig tab), not as image files
 
 - **One model, then critique.** On the MLG farm list seven makes were chained after the first, every one needed the
   same fixes, and the batch was wasted.
-- **Iterate inside one asset.** asset_info lists a stem's takes; a rig and a weights save make rig takes. A scratch
-  copy goes in `out/_wbtest_*` and is deleted afterwards. Sibling stems filled the library with copies of one model,
-  and the Versions panel and Compare only work within a stem.
+- **Iterate inside one asset.** asset_info lists a stem's takes. A scratch copy goes in `out/_wbtest_*`, deleted
+  after. Sibling stems filled the library with copies; Versions and Compare work only within a stem.
 - **One big model at a time.** Never load a model in a script (no Qwen, Hunyuan, skin-tokens or Ollama). Two big
   models co-loaded ran the 128 GB Mac out of memory, and neither /status nor `ps` shows MLX memory.
 - **The photo is a reference.** The factory passes the drawn views only for `out/<stem>/flat/source.png`
   (views_handoff); any other image is built as one picture and marked degraded `single_view`.
-- **Numbers first.** Numbers compare across takes and cost nothing to keep; pictures fill the context and the disk.
+- **Numbers first.** Numbers compare across takes and cost nothing; pictures fill the context.
 - **Report honestly.** A poor body-plan match is a template problem that no weight edit fixes. Stephen improves the
   pipeline from what you report.
-- **Tell Stephen through the app.** The activity feed shows each call (Follow Claude opens each model as it lands);
-  Compare's left side is an earlier version. He asked for no pictures that aren't needed.
+- **Tell Stephen through the app.** The activity feed shows each call (Follow Claude opens each model as it lands).
+  He asked for no pictures that aren't needed.
 
 ## Review
 
-- **Every model is reviewed before Stephen sees it** (review.py, on every psx cut and at the end of generate.sh, into
+- **Every model is reviewed before Stephen sees it** (review.py, after every psx cut and generate.sh, into
   `workbench/review/`). `paint` compares a `--select` bake with Hunyuan's paint: the pig's ghost-ear bakes scored
-  0.12-0.22, the fixed bake 0.054. The pig had gone to Stephen with two sets of ears and eyes.
-- **The verdict is never a pass.** Count ears and eyes on the painted head row against the grey row (shading only, so
-  a painted ear with no ear under it shows). The ghost ear was skin-coloured and passed every colour check.
+  0.12-0.22, the fixed bake 0.054. The pig had reached Stephen with two sets of ears.
+- **The verdict is never a pass.** Count ears and eyes on the painted head row against the grey (shading-only) row.
+  The ghost ear was skin-coloured and passed every colour check.
 - **A missed critique joins `CRITIQUES`**: a check when a number separates bad from good (give the margin), else a
   sheet row.
 
 ## Viewer and thumbnail defaults
 
-Teardown's checklist (#352), checked in the app in #356. Hold every viewer and thumbnail change to these numbers:
+Teardown's checklist (#352), checked in #356:
 
-- **Glow under 1.0.** No bloom pass, and emissive intensity under 1.0. The diorama has none: it uses Lambert
-  materials with N8AO and NoToneMapping, and `prepareModel` drops emissive. The thumbnail turns emission off.
-- **Near-white parts on a pale ground get an outline.** Mokei's ground is #e9eef8, and the pad and Clay are #f7f9fd.
-  Every model gets a back-face hull of 1.5 CSS px in #3a4568, one game pixel under PS1 (`viewer/frame.ts`). The
-  thumbnail renders on a 0.12 grey ground.
-- **Big glossy surfaces at roughness 0.45 or more, envMapIntensity about 0.5.** The diorama has no specular. The
-  thumbnail is Lambert with black specular: trimesh's OBJ material (Ks 0.4, Ns 1) put a sheen over every thumbnail.
-  The Stack stage's own viewer uses roughness 0.7 and envMapIntensity 0.35.
-- **The model fills 60-70% of the frame** on its limiting side at the orbit home (az 36, el 26), measured on its
-  vertices, not its bounding sphere. The sphere left the pig at about 50%. FILL is 0.68 in `viewer/frame.ts` and
-  `preview-glb.swift`, so a lopsided model lands at about 62%.
-- **The thumbnail shows the model on its own.** `preview-glb` shoots from the orbit home with Y up. Its camera was
-  Z-up and looked at the pig's belly from below. Rig thumbnails are the sheet's Rest cell at q.
+- **Glow under 1.0.** No bloom; emissive under 1.0. The diorama is Lambert with N8AO and NoToneMapping, and
+  `prepareModel` drops emissive. The thumbnail turns emission off.
+- **Outline near-white parts on a pale ground** (Mokei ground #e9eef8; pad and Clay #f7f9fd): a back-face hull of
+  1.5 CSS px in #3a4568 (`viewer/frame.ts`). The thumbnail's ground is 0.12 grey.
+- **Glossy surfaces: roughness 0.45+, envMapIntensity about 0.5** (the Stack viewer 0.7 and 0.35). The thumbnail is
+  Lambert, black specular: trimesh's OBJ material (Ks 0.4, Ns 1) put a sheen on every thumbnail.
+- **The model fills 60-70% of the frame** on its limiting side at the orbit home (az 36, el 26), by its vertices, not
+  its bounding sphere (the pig sat at 50%). FILL 0.68 in `viewer/frame.ts` and `preview-glb.swift`.
+- **The thumbnail shows the model alone**, from the orbit home, Y up (a Z-up camera saw the pig's belly). Rig
+  thumbnails are the sheet's Rest cell at q.
 
 ## Mesh
 

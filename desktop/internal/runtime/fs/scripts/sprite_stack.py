@@ -57,14 +57,14 @@ def pick_glb(asset: Path, explicit: Path | None = None) -> Path:
 
 def _as_mesh(obj) -> trimesh.Trimesh:
     if isinstance(obj, trimesh.Scene):
+        # Each node that draws a geometry, with its world transform. Looking the transform up by the geometry's
+        # name only works when a node shares that name: a Three.js export nests parts under groups whose meshes
+        # are named apart from their nodes, and those parts landed at the origin (#360).
         parts = []
-        for name, geom in obj.geometry.items():
-            g = geom.copy()
-            try:
-                t, _ = obj.graph.get(name)
-                g.apply_transform(t)
-            except Exception:
-                pass
+        for node in obj.graph.nodes_geometry:
+            t, name = obj.graph[node]
+            g = obj.geometry[name].copy()
+            g.apply_transform(t)
             parts.append(g)
         obj = trimesh.util.concatenate(parts)
     if not isinstance(obj, trimesh.Trimesh):

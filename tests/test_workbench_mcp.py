@@ -18,16 +18,19 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 from workbench import mcp_server, tools  # noqa: E402
 from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 PLAN_TOOLS = {"asset_info", "look", "measure", "compare_reference", "clay_get", "clay_set", "clay_edit", "clay_mesh",
               "mesh_edit", "bake_photo", "psx", "draw_views", "generate", "job_status", "cancel", "pick_take",
-              "rig", "rig_review", "rig_scrub", "rig_preview", "playbook", "review", "bake_wrap", "show"}
+              "rig", "rig_review", "rig_scrub", "rig_preview", "playbook", "review", "bake_wrap", "show",
+              "code_model"}
 
 
 class StubFactory(FactoryClient):
@@ -630,6 +633,82 @@ class ToolTests(Base):
         self.assertTrue(self.call("generate", {"image": "out/bale/photo.png", "fill": "swatch"})["isError"])
         res = self.call("generate", {"image": "out/bale/photo.png", "psx": {"facing": "up"}})
         self.assertTrue(res["isError"])
+
+
+class CodeModelTests(Base):
+    """The low-poly code make (#360) with the browser stubbed: what publishing does to the asset."""
+
+    def fake_export(self, mesh: trimesh.Trimesh | trimesh.Scene, fail: str | None = None):
+        import code_model
+
+        seen = []
+
+        def export(page, out, shot=None, timeout_s=60.0, root=None):
+            seen.append({"page": Path(page), "out": Path(out)})
+            if fail:
+                raise code_model.CodeModelError(fail)
+            mesh.export(out)
+            if shot is not None:
+                Image.new("RGB", (8, 8), "grey").save(shot)
+            return {"glb": str(out), "bytes": Path(out).stat().st_size, "errors": ["a warning"],
+                    "three": {"local": None}}
+
+        self.addCleanup(setattr, code_model, "export", code_model.export)
+        code_model.export = export
+        return seen
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.folder = self.root / "out" / "cart"
+        self.asset("cart", quadruped(), "textured.glb")  # an older make's model, to be kept then replaced
+        (self.folder / "degraded.json").write_text('{"degraded": [{"code": "single_view"}]}')
+        page = self.folder / "draft.html"
+        page.write_text("<button>Export</button>")
+        self.page = "out/cart/draft.html"
+
+    def test_publishes_the_page_as_the_model(self) -> None:
+        from test_nested_glb import nested_scene
+
+        self.fake_export(nested_scene())
+        out, _ = self.ok("code_model", {"stem": "cart", "page": self.page, "note": "code try 1"})
+        f = self.folder
+        # The model there before was kept as a version first, then the new one: two snapshots, in that order.
+        notes = [c[2]["note"] for c in self.factory.snapshots()]
+        self.assertEqual(notes, ["kept before the code model", "code try 1"])
+        self.assertTrue(out["take"]["ok"])
+        # The older make's files are gone from the live folder; the page rides along in the version.
+        self.assertFalse((f / "textured.glb").exists())
+        self.assertFalse((f / "degraded.json").exists())
+        self.assertEqual((f / "workbench" / "code" / "model.html").read_text(), "<button>Export</button>")
+        self.assertTrue((f / "workbench" / "code" / "page.png").is_file())
+        self.assertEqual(out["glb"], "out/cart/psx.glb")
+        self.assertEqual((f / "psx.glb").read_bytes(), (f / "mesh.glb").read_bytes())
+        # Both nested parts counted and placed (24 triangles, the crate's top at 3.5).
+        self.assertEqual(out["inspect"]["faces"], 24)
+        self.assertAlmostEqual(out["psx"]["height"], 4.0, places=4)
+        self.assertEqual(out["psx"]["source"], "workbench/code/model.html")
+        doc = json.loads((f / "lods.json").read_text())
+        self.assertEqual([x["id"] for x in doc["lods"]], ["psx"])
+        self.assertEqual(doc["lods"][0]["faces"], 24)
+        self.assertEqual(out["page_errors"], ["a warning"])
+        self.assertIn("verdict", out["review"])
+        self.assertTrue((f / "workbench" / "review" / "sheet.png").is_file())
+
+    def test_a_page_that_exports_nothing_changes_nothing(self) -> None:
+        self.fake_export(quadruped(), fail="the page has no Export button")
+        res = self.call("code_model", {"stem": "cart", "page": self.page})
+        self.assertTrue(res["isError"])
+        self.assertIn("no Export button", res["content"][0]["text"])
+        self.assertTrue((self.folder / "textured.glb").is_file())
+        self.assertEqual(self.factory.snapshots(), [])
+
+    def test_refused_without_the_factory(self) -> None:
+        self.fake_export(quadruped())
+        self.factory.down = True
+        res = self.call("code_model", {"stem": "cart", "page": self.page})
+        self.assertTrue(res["isError"])
+        self.assertIn("factory is not running", res["content"][0]["text"])
+        self.assertTrue((self.folder / "textured.glb").is_file())
 
 
 class BusyStemTests(Base):

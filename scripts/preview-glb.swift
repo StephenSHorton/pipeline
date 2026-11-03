@@ -70,6 +70,8 @@ scene.rootNode.enumerateChildNodes { node, _ in
         m.lightingModel = .lambert
         m.specular.contents = NSColor.black
         m.emission.contents = NSColor.black
+        // OBJ carries no doubleSided flag, so a one-sided panel (a Three.js tray side, #360) was culled from behind.
+        m.isDoubleSided = true
     }
 }
 
