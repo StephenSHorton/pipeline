@@ -28,6 +28,7 @@ TITLES: dict[str, tuple[str, str]] = {
     "draw_views": ("Starting the four-view drawing of", "Started the four-view drawing of"),
     "rig": ("Starting the rig of", "Started the rig of"),
     "rig_review": ("Reviewing the rig of", "Reviewed the rig of"),
+    "rig_scrub": ("Scrubbing a clip of", "Scrubbed a clip of"),
     "playbook": ("Reading the playbook", "Read the playbook"),
     "generate": ("Starting the 3D build of", "Started the 3D build of"),
     "cancel": ("Stopping the job", "Stopped the job"),
@@ -69,6 +70,10 @@ def detail_of(tool: str, out: dict[str, Any]) -> str:
         blobs = out.get("blobs")
         if isinstance(blobs, list):
             bits.append(f"{len(blobs)} blob{'s' if len(blobs) != 1 else ''}")
+    elif tool == "rig_scrub":
+        a, b, st = (_num(out.get(k), ".2f") for k in ("from", "to", "step"))
+        if out.get("clip") and a is not None and b is not None:
+            bits.append(f"{out['clip']} {a}-{b}s every {st}s")
     elif tool == "rig_review":
         clips = out.get("clips") if isinstance(out.get("clips"), dict) else {}
         worst = max(clips, key=lambda c: clips[c].get("over", 0), default=None)

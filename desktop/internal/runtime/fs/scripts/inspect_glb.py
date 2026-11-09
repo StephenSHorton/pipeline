@@ -70,6 +70,9 @@ def inspect(path: str) -> dict:
             if indices is not None and 0 <= indices < len(accessors):
                 count = accessors[indices].count or 0
                 faces += count // 3
+            elif pos is not None and 0 <= pos < len(accessors) and prim.mode in (None, 4):
+                # Not indexed: every three vertices are a triangle (Three.js exports some geometry so, #360).
+                faces += (accessors[pos].count or 0) // 3
     out["primitives"] = prims
     out["vertices"] = verts
     out["faces"] = faces

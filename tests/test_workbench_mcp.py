@@ -18,16 +18,18 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 from workbench import mcp_server, tools  # noqa: E402
 from workbench.factory_client import FactoryClient, FactoryDown  # noqa: E402
 
 PLAN_TOOLS = {"asset_info", "look", "measure", "compare_reference", "clay_get", "clay_set", "clay_edit", "clay_mesh",
               "mesh_edit", "bake_photo", "psx", "draw_views", "generate", "job_status", "cancel", "pick_take",
-              "rig", "rig_review", "rig_preview", "playbook", "review", "bake_wrap", "show"}
+              "rig", "rig_review", "rig_scrub", "rig_preview", "playbook", "review", "bake_wrap", "show"}
 
 
 class StubFactory(FactoryClient):

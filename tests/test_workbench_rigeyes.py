@@ -277,6 +277,22 @@ class Tools(Creature):
         self.assertTrue(none["isError"])
         self.assertIn("no rig yet", none["content"][0]["text"])
 
+    def test_rig_scrub_tool(self) -> None:
+        folder = self.asset("sheepish", 0.2)
+        before = files(folder)
+        out = self.bench.call("rig_scrub", {"stem": "sheepish", "clip": "Walk", "from": 0, "to": 0.4, "step": 0.2})
+        self.assertEqual(out["glb"], "out/sheepish/rig/rigged_allclips.glb")
+        self.assertEqual([f["t"] for f in out["frames"]], [0.0, 0.2, 0.4])
+        self.assertTrue(Path(out["png"]).is_file())  # the narrator puts it in the app's activity feed
+        self.assertEqual(out["png"], out["_image"])
+        self.assertEqual(files(folder), before, "nothing written into out/<stem>")
+        bad = mcp_server.call_tool(self.bench, {"name": "rig_scrub", "arguments": {"stem": "sheepish", "clip": "Nope"}})
+        self.assertTrue(bad["isError"])
+        self.assertIn("no clip 'Nope'", bad["content"][0]["text"])
+        back = mcp_server.call_tool(self.bench, {"name": "rig_scrub",
+                                                 "arguments": {"stem": "sheepish", "clip": "Walk", "from": 0.4, "to": 0.1}})
+        self.assertTrue(back["isError"])
+
     def test_rig_preview_runs_apart_and_answers(self) -> None:
         self.asset("sheepish", 0.2)
         done = mock.Mock(stdout='{"joints": {"hips": [0, 0.5, -0.3]}, "body": null}', stderr="", returncode=0)

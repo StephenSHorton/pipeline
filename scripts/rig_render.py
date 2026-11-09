@@ -4,6 +4,7 @@
     .venv/bin/python scripts/rig_render.py --stem psx-cow --clips auto
     .venv/bin/python scripts/rig_render.py --stem S --views side,front,q --modes texture,sticks --clips 'Walk@0.25,0.5;Peck@0.15'
     .venv/bin/python scripts/rig_render.py --asset /path/to/copy/of/out/S --clips auto --blender
+    .venv/bin/python scripts/rig_render.py --stem S --scrub 'Walk@0.5-1.5' --step 0.2   # one clip, close-spaced
 
 CPU path (the default), numpy and PIL only:
 - linear-blend skinning with rig_motion.world_mats and rig_metrics.skin_frames;
@@ -31,6 +32,10 @@ VIEW_RIGHT gives the world vector of image right per view.
 
 Outputs (under <asset>/rig/preview/): <clip>_<frac>_<view>_<mode>.png, contact_sheet.png (rows Rest then every clip,
 columns side, front, q) and frames.json (per frame: height_rel, tilt, min_y_rel, max_disp_rel, stance-foot y, beak y).
+
+--scrub renders one clip every --step seconds (default 0.2) over a span, from one fixed camera (default side,
+texture), into rig/preview/scrub/scrub_<clip>_<t0>-<t1>_<view>_<mode>.png with a .json beside it. The sampled
+frames above can miss a foot sliding or a pose jumping between them; a scrub shows it.
 
 --blender renders the same job through Blender Workbench (scripts/blender/rig_render_bl.py) into rig/preview/blender/,
 for a parity cross-check only.
@@ -707,6 +712,94 @@ def render(asset, job: dict | None = None) -> dict:
     return result
 
 
+# ---------------------------------------------------------------- scrub (one clip, close-spaced frames)
+
+SCRUB_STEP = 0.2  # seconds between scrub frames
+SCRUB_COLS = 6
+
+
+def scrub_times(dur: float, t0: float | None = None, t1: float | None = None, step: float = SCRUB_STEP) -> list[float]:
+    """Frame times for a scrub of a clip `dur` seconds long: t0, t0 + step, ... up to t1 (both default to the whole
+    clip and are clamped into it). t1 itself is the last frame when the last step falls short of it by over 1 ms, so
+    the end of the span is always shown."""
+    if step <= 0:
+        raise ValueError(f"scrub step must be > 0 (got {step})")
+    a = 0.0 if t0 is None else min(max(float(t0), 0.0), dur)
+    b = dur if t1 is None else min(max(float(t1), 0.0), dur)
+    if b < a:
+        raise ValueError(f"scrub span {a:.3f}-{b:.3f}s runs backwards")
+    n = int(np.floor((b - a) / step + 1e-6))
+    ts = [round(a + k * step, 4) for k in range(n + 1)]
+    if b - ts[-1] > 1e-3:
+        ts.append(round(b, 4))
+    return ts
+
+
+def parse_scrub(spec: str) -> tuple[str, float | None, float | None]:
+    """'Walk' (the whole clip) | 'Walk@0.5-1.5' (seconds) -> (clip, t0, t1)."""
+    name, _, span = spec.partition("@")
+    name = name.strip()
+    if not name:
+        raise ValueError(f"scrub needs a clip name: {spec!r}")
+    if not span.strip():
+        return name, None, None
+    a, sep, b = span.partition("-")
+    if not sep:
+        raise ValueError(f"scrub span is from-to in seconds, e.g. Walk@0.5-1.5: {spec!r}")
+    return name, (float(a) if a.strip() else None), (float(b) if b.strip() else None)
+
+
+def scrub(asset, clip: str, t0: float | None = None, t1: float | None = None, step: float = SCRUB_STEP,
+          view: str = "side", mode: str = "texture", glbs=None, size: int = 384, tile: int = 256,
+          cols: int = SCRUB_COLS, floor: bool = True, out=None, partmap: dict | None = None) -> dict:
+    """One clip, a frame every `step` seconds from t0 to t1, all from one fixed camera (the rest-pose camera
+    render() uses, so a sliding foot or a jumping pose shows against the floor line and the frame edges). Writes
+    <out>/scrub_<clip>_<t0>-<t1>_<view>_<mode>.png, a contact sheet captioned with each frame's time and frame
+    number, and a matching .json with per-frame times and feet heights. Default out: <asset>/rig/preview/scrub."""
+    A = asset_dir(asset)
+    paths = [Path(g) if Path(g).is_absolute() else A / g for g in (glbs or ["rigged.glb"])]
+    paths = [g for g in paths if g.is_file()]
+    if not paths:
+        raise FileNotFoundError(f"nothing to render in {A} (glbs {glbs})")
+    basis(view)
+    items = [Item(g, partmap) for g in paths]
+    prim = next((it for it in items if any(m["skinned"] for m in it.meshes)), next((it for it in items if it.meshes), items[0]))
+    if clip not in prim.clips:
+        raise KeyError(f"no clip {clip!r} in {prim.path.name}; clips: {', '.join(prim.clips)}")
+    dur = float(prim.clips[clip][0])
+    ts = scrub_times(dur, t0, t1, step)
+    rest = [it.pose(None, 0.0) for it in items]
+    allpts = np.concatenate([np.concatenate(Vs + [jp]) for Vs, jp in rest])
+    V0 = np.concatenate(rest[items.index(prim)][0]) if prim.meshes else rest[items.index(prim)][1]
+    H = float(np.ptp(V0[:, 1])) if len(V0) else 1.0
+    cam = camera(allpts, int(size))
+    feet, _ = feet_and_beak(prim)
+    o = Path(out) if out else A / "rig" / "preview" / "scrub"
+    o.mkdir(parents=True, exist_ok=True)
+    ims, caps, frames = [], [], []
+    for t in ts:
+        posed = [it.pose(clip, t) for it in items]
+        f = int(np.floor(t * FPS + 0.5))
+        ims.append(draw(items, posed, view, mode, cam, floor))
+        caps.append(f"{clip} {t:.2f}s f{f}")
+        rec = {"t": t, "frame": f}
+        if feet:
+            jp = posed[items.index(prim)][1]
+            rec["feet_y_rel"] = {prim.names[k]: round(float(jp[k, 1] / H), 4) for k in feet}
+            rec["feet_xz"] = {prim.names[k]: [round(float(jp[k, 0]), 4), round(float(jp[k, 2]), 4)] for k in feet}
+        frames.append(rec)
+    c = max(1, min(int(cols), len(ims)))
+    rows = -(-len(ims) // c)
+    name = f"scrub_{_safe(clip)}_{ts[0]:.2f}-{ts[-1]:.2f}_{view}_{mode_tag(mode)}"
+    sheet = o / f"{name}.png"
+    contact_sheet(ims, rows, c, caps, sheet, tile=int(tile))
+    res = {"asset": str(A), "glb": str(prim.path), "clip": clip, "duration": round(dur, 4), "t0": ts[0], "t1": ts[-1],
+           "step": step, "view": view, "mode": mode, "camera": cam, "H": round(H, 6), "sheet": str(sheet),
+           "cols": c, "rows": rows, "frames": frames}
+    (o / f"{name}.json").write_text(json.dumps(res, indent=1))
+    return res
+
+
 # ---------------------------------------------------------------- textured views (facing)
 
 def textured_views(glb, views=("side", "xside", "front", "back"), size: int = 384, out_dir=None,
@@ -795,7 +888,20 @@ def main() -> int:
     ap.add_argument("--no-floor", action="store_true")
     ap.add_argument("--out", help="output directory (default <asset>/rig/preview)")
     ap.add_argument("--blender", action="store_true", help="also render through Blender Workbench (parity)")
+    ap.add_argument("--scrub", help="one clip, close-spaced: 'Walk' or 'Walk@0.5-1.5' (seconds); first of --views, "
+                    "first of --modes")
+    ap.add_argument("--step", type=float, default=SCRUB_STEP, help="seconds between scrub frames")
+    ap.add_argument("--cols", type=int, default=SCRUB_COLS, help="scrub sheet columns")
     a = ap.parse_args()
+    if a.scrub:
+        clip, t0, t1 = parse_scrub(a.scrub)
+        views = [v for v in a.views.split(",") if v] if a.views != ",".join(DEFAULT_JOB["views"]) else ["side"]
+        modes = [m for m in a.modes.split(",") if m] if a.modes != ",".join(DEFAULT_JOB["modes"]) else ["texture"]
+        res = scrub(a.asset or a.stem, clip, t0, t1, a.step, views[0], modes[0],
+                    [x for x in a.glbs.split(",") if x], a.size, cols=a.cols, floor=not a.no_floor, out=a.out)
+        print(json.dumps({k: res[k] for k in ("sheet", "clip", "duration", "t0", "t1", "step", "view", "mode",
+                                              "rows", "cols")} | {"frames": len(res["frames"])}, indent=1))
+        return 0
     job = {"views": [v for v in a.views.split(",") if v], "modes": [m for m in a.modes.split(",") if m],
            "frames": parse_clips(a.clips), "glbs": [x for x in a.glbs.split(",") if x], "size": a.size,
            "floor": not a.no_floor, "blender": a.blender}

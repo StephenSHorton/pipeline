@@ -1,9 +1,8 @@
 # Playbook: driving the pipeline
 
-How Claude makes, checks and fixes assets through the workbench. Each rule is something that has worked on a real
-asset, with the reason. The part between the digest markers is what the MCP server sends at connect (Claude Code cuts
-server instructions at 4,096 characters); the `playbook` tool returns this whole file. Add to it when a fix proves
-itself; take a rule out when the code stops matching it.
+How Claude makes, checks and fixes assets through the workbench: rules that worked on a real asset, with the reason.
+The digest is what the MCP server sends at connect (Claude Code cuts it at 4,096 characters); the `playbook` tool
+returns the file. Add a fix once it proves itself; drop a rule the code no longer matches.
 
 <!-- digest -->
 Workbench rules (the playbook tool has the full playbook, with the why for each):
@@ -21,35 +20,50 @@ a. rig_review the stem. Read the check line, each clip's stretch p99/max, tears,
 b. Read the per-bone numbers (no pictures): edges past 2x per clip and the bones that own them, weight shares, and the pivot check (a leg's root joint over its own leg; over 0.25 of a body length is wrong).
 c. Only for the flagged bones, rig_review heat "flagged" (side/front/q/back, rest and worst frame; temp images).
 d. Diagnose before editing. A weights problem is a bone owning the wrong region or bleed across legs: fix it with POST /rig/<stem>/weights. A thigh above the leg line owns nothing by design; a stretched seam there needs a softer band, not thigh weight. A joint problem is a joint in the wrong place: fix where it goes, check it with rig_preview (seconds, no model), then rig. Leg pivots keep the skin (reuse_skin true); a moved body joint relearns it (about 3 minutes). The sheep's mid-body hind pivot and hips were joint problems that weight edits barely moved.
-e. Show before and after in the app's Compare view (Rig tab), not as image files. The activity feed already shows Stephen each call (Follow Claude), so take no status pictures.
+e. Before showing a rig, rig_scrub any clip that looks off (a frame every 0.2s, one fixed camera): the sampled frames miss a foot sliding or a pose jumping between them.
+f. Show before and after in the app's Compare view (Rig tab), not as image files. The activity feed already shows Stephen each call (Follow Claude), so take no status pictures.
 <!-- /digest -->
 
 ## Why the rules
 
 - **One model, then critique.** On the MLG farm list seven makes were chained after the first, every one needed the
   same fixes, and the batch was wasted.
-- **Iterate inside one asset.** asset_info lists a stem's takes; a rig and a weights save make rig takes. A scratch
-  copy goes in `out/_wbtest_*` and is deleted afterwards. Sibling stems filled the library with copies of one model,
-  and the Versions panel and Compare only work within a stem.
+- **Iterate inside one asset.** asset_info lists a stem's takes. A scratch copy goes in `out/_wbtest_*`, deleted
+  after. Sibling stems filled the library with copies; Versions and Compare work only within a stem.
 - **One big model at a time.** Never load a model in a script (no Qwen, Hunyuan, skin-tokens or Ollama). Two big
   models co-loaded ran the 128 GB Mac out of memory, and neither /status nor `ps` shows MLX memory.
 - **The photo is a reference.** The factory passes the drawn views only for `out/<stem>/flat/source.png`
   (views_handoff); any other image is built as one picture and marked degraded `single_view`.
-- **Numbers first.** Numbers compare across takes and cost nothing to keep; pictures fill the context and the disk.
+- **Numbers first.** Numbers compare across takes and cost nothing; pictures fill the context.
 - **Report honestly.** A poor body-plan match is a template problem that no weight edit fixes. Stephen improves the
   pipeline from what you report.
-- **Tell Stephen through the app.** The activity feed shows each call (Follow Claude opens each model as it lands);
-  Compare's left side is an earlier version. He asked for no pictures that aren't needed.
+- **Tell Stephen through the app.** The activity feed shows each call (Follow Claude opens each model as it lands).
+  He asked for no pictures that aren't needed.
 
 ## Review
 
-- **Every model is reviewed before Stephen sees it** (review.py, on every psx cut and at the end of generate.sh, into
+- **Every model is reviewed before Stephen sees it** (review.py, after every psx cut and generate.sh, into
   `workbench/review/`). `paint` compares a `--select` bake with Hunyuan's paint: the pig's ghost-ear bakes scored
-  0.12-0.22, the fixed bake 0.054. The pig had gone to Stephen with two sets of ears and eyes.
-- **The verdict is never a pass.** Count ears and eyes on the painted head row against the grey row (shading only, so
-  a painted ear with no ear under it shows). The ghost ear was skin-coloured and passed every colour check.
+  0.12-0.22, the fixed bake 0.054. The pig had reached Stephen with two sets of ears.
+- **The verdict is never a pass.** Count ears and eyes on the painted head row against the grey (shading-only) row.
+  The ghost ear was skin-coloured and passed every colour check.
 - **A missed critique joins `CRITIQUES`**: a check when a number separates bad from good (give the margin), else a
   sheet row.
+
+## Viewer and thumbnail defaults
+
+Teardown's checklist (#352), checked in #356:
+
+- **Glow under 1.0.** No bloom; emissive under 1.0. The diorama is Lambert with N8AO and NoToneMapping, and
+  `prepareModel` drops emissive. The thumbnail turns emission off.
+- **Outline near-white parts on a pale ground** (Mokei ground #e9eef8; pad and Clay #f7f9fd): a back-face hull of
+  1.5 CSS px in #3a4568 (`viewer/frame.ts`). The thumbnail's ground is 0.12 grey.
+- **Glossy surfaces: roughness 0.45+, envMapIntensity about 0.5** (the Stack viewer 0.7 and 0.35). The thumbnail is
+  Lambert, black specular: trimesh's OBJ material (Ks 0.4, Ns 1) put a sheen on every thumbnail.
+- **The model fills 60-70% of the frame** on its limiting side at the orbit home (az 36, el 26), by its vertices, not
+  its bounding sphere (the pig sat at 50%). FILL 0.68 in `viewer/frame.ts` and `preview-glb.swift`.
+- **The thumbnail shows the model alone**, from the orbit home, Y up (a Z-up camera saw the pig's belly). Rig
+  thumbnails are the sheet's Rest cell at q.
 
 ## Mesh
 
@@ -128,5 +142,9 @@ e. Show before and after in the app's Compare view (Rig tab), not as image files
      the lowest point (a lying sheep's folded hoof held its belly up). A horse clip's turn can move a very different
      share of our mesh (the horse's Eating folded the sheep's chest). Replay the floor pass offline on
      rig/rigged_nofloor.glb (tests/test_rig_floor.py shows how) before a re-rig.
+   - Scrub before showing: `rig_scrub {stem, clip, from, to, step}` (or `rig_render.py --scrub 'Walk@0.5-1.5'`) renders
+     one clip every 0.2 s (step) from one fixed camera with the floor line, as one captioned sheet. rig_review and the
+     rig sheet sample a few frames per clip, so a foot sliding or a pose jumping between them never shows there
+     (#352). Read a scrub of any clip that looks off before showing a rig.
 6. **Show the change in Compare:** the Rig tab's Compare shows an earlier version left and the current one right,
    with one camera and one clip.
