@@ -824,52 +824,6 @@ class Workbench:
 
         return self.write(stem, "workbench psx", run)
 
-    def code_model(self, a: dict) -> dict:
-        """The low-poly code make (#360, scripts/code_model.py): the page Claude wrote from the drawn views, exported
-        headlessly to a GLB and published as the asset's model, then reviewed. No shape or paint model loads."""
-        import code_model
-
-        stem = check_stem(a["stem"])
-        page = self.path(a["page"], (".html", ".htm"))
-        folder = self.folder(stem)
-        if self.factory.writing(stem) is None:
-            # Publishing replaces the mesh stage's live files; only the factory can keep them as a version first.
-            raise ToolError("the factory is not running, so the current model cannot be kept as a version before "
-                            "the code model replaces it. Start the app (or .venv/bin/python scripts/factory_http.py)")
-        html = page.read_bytes()
-        tmp = Path(tempfile.mkdtemp(prefix="code_model_"))
-        try:
-            try:
-                exp = code_model.export(page, tmp / "model.glb", tmp / "page.png", root=self.root)
-            except code_model.CodeModelError as e:
-                raise ToolError(f"code_model: {e}") from None
-
-            def run() -> dict:
-                # The model there now stays a version: the code model replaces every live mesh-stage file.
-                if flow.stage_files(folder, "mesh"):
-                    try:
-                        self.factory.snapshot(stem, "mesh", "kept before the code model")
-                    except FactoryDown as e:
-                        raise ToolError(f"could not keep the current model as a version first: {e}") from None
-                try:
-                    pub = code_model.publish(folder, stem, html, tmp / "model.glb", tmp / "page.png", self.root)
-                except code_model.CodeModelError as e:
-                    raise ToolError(f"code_model: {e}") from None
-                try:
-                    rev = self._review(folder)
-                except Exception as e:  # noqa: BLE001 - a failed review must not lose the published model
-                    rev = {"verdict": "review failed", "error": error_text(e)}
-                out = {"stem": stem, "page": self.rel(folder / code_model.PAGE), "glb": self.rel(folder / "psx.glb"),
-                       "page_errors": exp["errors"], "three": exp["three"], **pub,
-                       "review": {k: v for k, v in rev.items() if k != "_image"}}
-                if rev.get("_image"):
-                    out["_image"] = rev["_image"]
-                return out
-
-            return self.write(stem, a.get("note") or "workbench code_model", run)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-
     # ------------------------------------------------------------ factory jobs
 
     def draw_views(self, a: dict) -> dict:
@@ -1134,18 +1088,6 @@ class Workbench:
                        "leg_scale": {"type": "number", "minimum": 0.25, "maximum": 4},
                        "leg_taper": {"type": "number", "minimum": 0.2, "maximum": 2},
                        "name": {"type": "string"}}, ("stem", "glb", "height", "facing")), self.psx),
-            Tool("code_model", "The low-poly code make for hard-surface props (scripts/code_model.py): page is a "
-                 "standalone Three.js HTML page you wrote from the drawn views (out/<stem>/flat/views/*.png) that "
-                 "builds the prop from primitives (metres, Y up, on y = 0, front toward +Z, centred on x = 0, "
-                 "flat-shaded material colours) and has a button labelled Export that downloads a binary GLB "
-                 "(GLTFExporter, binary true). It is opened in headless Chrome, Export is pressed, and the GLB "
-                 "becomes the asset's model: psx.glb and mesh.glb, the page kept as workbench/code/model.html, "
-                 "inspect, thumbnail, a mesh version (the model there before is kept as a version first), then the "
-                 "review. No image-to-3D model, so no Hunyuan. Needs the factory running. Returns page_errors (the "
-                 "page's console errors), the triangle count and the review.",
-                 _obj({"stem": STEM, "page": {"type": "string", "description": "the .html page, relative to the repo"},
-                       "note": {"type": "string", "description": "the version's note"}}, ("stem", "page")),
-                 self.code_model),
             Tool("draw_views", "Factory job (loads the draw model): draw the four turnaround views from a photo as "
                  "a reference (POST /2d/draw). Returns a job_id for job_status.",
                  _obj({"stem": STEM, "image": {"type": "string"}, "prompt": {"type": "string"},

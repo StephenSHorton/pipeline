@@ -9,5 +9,3 @@ huggingface_hub>=0.26
 xatlas
 rtree
 scipy
-# The code make (scripts/code_model.py): headless Chrome presses a Three.js page's Export.
-playwright

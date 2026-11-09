@@ -45,8 +45,6 @@ HTTP (loopback, curl): `.venv/bin/python scripts/factory_http.py` then the copy-
 
 MCP: the agent workbench, where Claude makes, measures and fixes assets, lives in `scripts/workbench/` as its own server on `:8768`, a client of the factory: `.venv/bin/python scripts/workbench/mcp_server.py`, then `claude mcp add --transport http workbench http://127.0.0.1:8768/mcp`. Tools and a walkthrough: **[examples/workbench.md](examples/workbench.md)**.
 
-Hard-surface props (#360): Claude writes a Three.js page from the four drawn views and the workbench's `code_model` turns it into the model (`scripts/code_model.py export page.html out.glb`: headless Chrome presses its Export). No image-to-3D model, so no Hunyuan; needs `playwright` in `.venv` and Google Chrome (or `python -m playwright install chromium`).
-
 ## Layout
 
 | path | what |
