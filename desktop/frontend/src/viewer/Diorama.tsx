@@ -3,19 +3,31 @@
 //
 // ClayCameraRig always looks at (pan.x, 0, pan.z): the whole diorama is lowered by half the model's height so
 // the camera centres on the model, not its feet. The look store is global: every mount re-frames it.
+//
+// Compare draws a second diorama, the follower (an earlier version, screens/viewer/CompareSide.tsx). Its camera rig
+// reads the same look store, so orbit, zoom and pan move both; it never frames the store, never registers with the
+// tool API or the clip player, and takes its spin angle and clip time from the current side.
+//
+// Comparing, each pane fills half the viewer under the HUD, and `room` centres its model where no card covers it: the
+// camera's view offset moves the picture by `shift` px, and the current side frames the model to `frame`, not the canvas.
 import { useFrame, useThree } from "@react-three/fiber";
 import { ClayCameraRig, ClayGround, Lights, PostFX, RoundCyl, SceneCanvas, applyLook, lookDefaults, setViewHome, useLook } from "mokei/clay";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { AnimationMixer, LoopOnce, LoopRepeat, type AnimationAction, type AnimationClip, type Group } from "three";
+import { clipTime, setClipPlayer } from "./clipSeek";
 import { PixelPass } from "./PixelPass";
 import type { PixelLook } from "./pixelLook";
 import type { PreparedModel } from "./prepareModel";
+import { ToolBridge, ToolOverlays } from "./ToolBridge";
+import { fitZoom, viewExtents } from "./frame";
 
 export const PAD_H = 0.45;
 /** The orbit home: a little lower than Yardline's 37 deg, to see more of the model's side. */
 export const HOME = { azimuth: 36, elevation: 26 };
 /** One-shot clips hold their last frame instead of looping. */
 const ONCE = /^(death|die|dead)$/i;
+/** The current side's spin angle, for a follower to copy (one Spin turns both). */
+const turned = { y: 0 };
 
 export interface DioramaProps {
   model: PreparedModel | null;
@@ -26,6 +38,15 @@ export interface DioramaProps {
   wire: boolean;
   spin: boolean;
   pixel: PixelLook;
+  /** Compare's left side: follows the current diorama (see the top of this file). */
+  follower?: boolean;
+  /** Comparing: where in this pane the model goes (see the top of this file). */
+  room?: Room;
+}
+
+export interface Room {
+  shift: { x: number; y: number };
+  frame: { width: number; height: number };
 }
 
 export function Diorama(props: DioramaProps) {
@@ -34,9 +55,12 @@ export function Diorama(props: DioramaProps) {
     <SceneCanvas quality="high" className="!absolute inset-0" style={{ background: ground }}>
       <color attach="background" args={[ground]} />
       <NoPointerEvents />
+      {props.follower ? null : <ToolBridge />}
       <ClayCameraRig home={{ x: 0, z: 0 }} />
+      <ViewShift x={props.room?.shift.x ?? 0} y={props.room?.shift.y ?? 0} />
       <Lights />
       <Stage {...props} />
+      {props.follower ? null : <ToolOverlays />}
       {props.pixel.on ? <PixelPass look={props.pixel} /> : <PostFX />}
     </SceneCanvas>
   );
@@ -44,7 +68,8 @@ export function Diorama(props: DioramaProps) {
 
 /**
  * The page drives the orbit from the DOM (left-drag turns, right-drag pans, wheel zooms through the rig), so
- * R3F pointer events are off: ClayGround's own left-drag pan would fight the orbit.
+ * R3F pointer events are off: ClayGround's own left-drag pan would fight the orbit. An armed panel tool gets the
+ * pointer from the same DOM surface and raycasts itself (./tools.ts raycastAt).
  */
 function NoPointerEvents() {
   const setEvents = useThree((s) => s.setEvents);
@@ -52,13 +77,30 @@ function NoPointerEvents() {
   return null;
 }
 
-function Stage({ model, clips, clip, playing, clay, wire, spin }: DioramaProps) {
+/** Move the picture by (x, y) px, +y down: the projection's window moves the other way (three's setViewOffset). */
+function ViewShift({ x, y }: { x: number; y: number }) {
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  useLayoutEffect(() => {
+    if (x || y) camera.setViewOffset(size.width, size.height, -x, -y, size.width, size.height);
+    else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+  }, [camera, size.width, size.height, x, y]);
+  return null;
+}
+
+function Stage({ model, clips, clip, playing, clay, wire, spin, follower, room }: DioramaProps) {
   const turn = useRef<Group>(null);
   const height = model?.height ?? 4;
   const padR = Math.max(4.2, (model?.footprint ?? 3) * 1.25 + 0.6);
 
   useFrame((_, dt) => {
-    if (spin && turn.current) turn.current.rotation.y += dt * 0.21; // the legacy autoRotateSpeed 0.7
+    if (!turn.current) return;
+    if (follower) turn.current.rotation.y = turned.y;
+    else {
+      if (spin) turn.current.rotation.y += dt * 0.21; // the legacy autoRotateSpeed 0.7
+      turned.y = turn.current.rotation.y;
+    }
   });
 
   useEffect(() => {
@@ -76,29 +118,40 @@ function Stage({ model, clips, clip, playing, clay, wire, spin }: DioramaProps) 
       </group>
       <RoundCyl radius={padR} height={PAD_H} fillet={0.18} material="base" position={[0, -PAD_H / 2, 0]} cast={false} segments={64} />
       <group ref={turn}>{model ? <primitive object={model.root} /> : null}</group>
-      {model ? <Framer model={model} /> : null}
-      {model && clips.length ? <Animator model={model} clips={clips} clip={clip} playing={playing} /> : null}
+      {model && !follower ? <Framer model={model} frame={room?.frame} /> : null}
+      {model && clips.length ? <Animator model={model} clips={clips} clip={clip} playing={playing} follower={follower} /> : null}
     </group>
   );
 }
 
-/** Frame the model: ortho zoom is px per world unit; zoomReferenceWidth = canvas width makes cameraZoom exactly that. */
-function Framer({ model }: { model: PreparedModel }) {
+/** Frame the model (./frame.ts): ortho zoom is px per world unit; zoomReferenceWidth = canvas width makes cameraZoom exactly that.
+ * Comparing, it fits `frame` (the pane's clear room) instead of the whole canvas. */
+function Framer({ model, frame }: { model: PreparedModel; frame?: { width: number; height: number } }) {
   const size = useThree((s) => s.size);
   const first = useRef(true);
+  const fw = frame?.width ?? size.width;
+  const fh = frame?.height ?? size.height;
   useLayoutEffect(() => {
     if (!size.width || !size.height) return;
-    const zoom = Math.min(size.width, size.height) / (2 * model.radius * 1.12);
+    // The model's own outline at the home view fills FILL of the frame (#356; the bounding sphere left a pig at 48%).
+    const zoom = fitZoom(viewExtents(model.points, HOME.azimuth, HOME.elevation), fw, fh);
     const home = { cameraZoom: zoom, cameraAzimuth: HOME.azimuth, cameraElevation: HOME.elevation };
     setViewHome(home);
     const camera = first.current ? { ...home, panX: 0, panZ: 0 } : { cameraZoom: zoom }; // a resize keeps the orbit
     first.current = false;
     applyLook({ ...camera, zoomReferenceWidth: size.width, zoomMin: zoom * 0.35, zoomMax: zoom * 5 });
-  }, [model, size.width, size.height]);
+  }, [model, size.width, size.height, fw, fh]);
   return null;
 }
 
-function Animator({ model, clips, clip, playing }: { model: PreparedModel; clips: AnimationClip[]; clip: string | null; playing: boolean }) {
+/** Fade out every clip but `keep` that still shows. Not only the running ones: a play-once clip (Death) that finished
+ * holds its last pose with full weight but reports not running, and left in, it kept the model tipped over under the
+ * next clip. */
+export function fadeOthers(all: Record<string, AnimationAction>, keep: string): void {
+  for (const [name, a] of Object.entries(all)) if (name !== keep && a.getEffectiveWeight() > 0) a.fadeOut(0.2);
+}
+
+function Animator({ model, clips, clip, playing, follower }: { model: PreparedModel; clips: AnimationClip[]; clip: string | null; playing: boolean; follower?: boolean }) {
   const mixer = useRef<AnimationMixer | null>(null);
   const actions = useRef<Record<string, AnimationAction>>({});
   const current = useRef<string | null>(null);
@@ -116,19 +169,23 @@ function Animator({ model, clips, clip, playing }: { model: PreparedModel; clips
       actions.current[c.name] = a;
     }
     current.current = null;
+    // The Rig check holds a clip still at its worst moment (./clipSeek.ts). Not a follower's: it copies the time.
+    if (!follower) setClipPlayer({ mixer: m, actions: actions.current });
     return () => {
+      if (!follower) setClipPlayer(null);
       m.stopAllAction();
       m.uncacheRoot(model.scene);
       mixer.current = null;
       current.current = null;
     };
-  }, [model, clips]);
+  }, [model, clips, follower]);
 
   useEffect(() => {
     const all = actions.current;
-    const next = clip ? all[clip] : undefined;
+    if (!clip) return;
+    const next = all[clip];
     if (!next || current.current === clip) return;
-    for (const [name, a] of Object.entries(all)) if (name !== clip && a.isRunning()) a.fadeOut(0.2);
+    fadeOthers(all, clip);
     next.reset().fadeIn(current.current ? 0.2 : 0).play();
     current.current = clip;
   }, [clip, clips, model]);
@@ -138,7 +195,17 @@ function Animator({ model, clips, clip, playing }: { model: PreparedModel; clips
   }, [playing, clip, clips, model]);
 
   useFrame((_, dt) => {
-    mixer.current?.update(playing ? dt : 0);
+    const m = mixer.current;
+    if (!m) return;
+    m.update(playing ? dt : 0);
+    // A follower runs its fades on its own clock and holds its clip at the current side's time (held still there by
+    // the Rig check too). A clip of another length loops (or stops, play-once) at its own end.
+    const a = follower && clip ? actions.current[clip] : undefined;
+    const t = a && clip ? clipTime(clip) : null;
+    if (!a || t === null) return;
+    const d = a.getClip().duration;
+    a.time = ONCE.test(clip!) ? Math.min(t, d) : d > 0 ? t % d : 0;
+    m.update(0);
   });
   return null;
 }

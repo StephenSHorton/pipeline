@@ -3,8 +3,16 @@
 #
 # No 3D without a picture: a missing or non-image --image, --ref or turnaround view stops here (exit 2).
 # Turnaround views (--views-json, written by the 2D draw) drive the multi-view shape (Hunyuan3D-2mv) and the
-# photo bake. Anything that falls back prints 'DEGRADED <stage> <code>: <message>' and lands in
-# out/<stem>/degraded.json and inspect.json's "degraded".
+# photo bake. When the views were drawn from a photo (views.json sheet.reference), that photo bakes over them.
+# --mesh <glb> takes the shape from a mesh made elsewhere (the workbench's clay) instead of hy3d; --paint off
+# unwraps the mesh instead of painting it, so a supplied mesh with --paint off loads no model at all.
+# --fill photo gives every texel the photo: a front-on (or back-on) photo is also mirrored onto the opposite end
+# (--mirror-ends off keeps it to the one end), and scripts/workbench/fill.py paints a swatch of the photo's own
+# subject onto whatever the bake still did not reach. Off by default: a make without it is as before.
+# --delight on takes the photo's own lighting out before the bake (scripts/delight.py, retexture --delight and the
+# fill's swatch): a side in shadow in the picture does not bake in as a dark patch. Off by default, as before.
+# Anything that falls back prints 'DEGRADED <stage> <code>: <message>' and lands in out/<stem>/degraded.json and
+# inspect.json's "degraded".
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,12 +39,17 @@ FACING_SET=0
 PSX_HEIGHT=48
 PSX_FACES=1200
 PSX_ATLAS=256
-PSX_UP="z"
+PSX_UP="y"
 PSX_NAME=""
+MESH_IN=""
+PAINT="on"
+FILL="none"
+MIRROR_ENDS=""
+DELIGHT="off"
 NO_PICTURE="3D needs a picture. Draw or add one first."
 
 usage() {
-  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N]" >&2
+  echo "usage: generate.sh --image <path> [--views-json <views.json>] [--degraded '<stage> <code>: <message>' ...] [--ref <path> ...] [--prompt text] [--quality draft|textured|pbr|stack|psx] [--poly high|medium|low|hero|lookdev|game|proxy] [--octree N] [--faces N] [--seed N] [--stem name] [--stack-res N] [--no-stack] [--remesh N] [--mesh <glb>] [--paint on|off|trellis] [--fill photo|none] [--mirror-ends on|off] [--delight on|off]" >&2
   echo "       psx: [--facing camera|right|left|away] [--psx-height N] [--psx-faces N] [--psx-atlas N] [--psx-up z|y] [--psx-name name]" >&2
   exit 2
 }
@@ -63,6 +76,11 @@ while [[ $# -gt 0 ]]; do
     --psx-atlas) PSX_ATLAS="$2"; shift 2 ;;
     --psx-up) PSX_UP="$2"; shift 2 ;;
     --psx-name) PSX_NAME="$2"; shift 2 ;;
+    --mesh) MESH_IN="$2"; shift 2 ;;
+    --paint) PAINT="$2"; shift 2 ;;
+    --fill) FILL="$2"; shift 2 ;;
+    --mirror-ends) MIRROR_ENDS="$2"; shift 2 ;;
+    --delight) DELIGHT="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -108,6 +126,40 @@ esac
 if [[ -n "$REMESH" && ! "$REMESH" =~ ^[0-9]+$ ]]; then
   echo "generate: --remesh takes a quad count" >&2; exit 2
 fi
+case "$PAINT" in
+  on|off|trellis) ;;
+  *) echo "generate: unknown --paint $PAINT (on|off|trellis)" >&2; exit 2 ;;
+esac
+if [[ "$PAINT" != "on" && "$QUALITY" == "pbr" ]]; then
+  echo "generate: --quality pbr needs hy3d's PBR paint; --paint $PAINT has none" >&2; exit 2
+fi
+# --paint trellis: TRELLIS.2's texturing paints the mesh instead of hy3d (MIT; vendor/trellis-mac/texture_runner.py).
+TRELLIS_PY="$ROOT/vendor/trellis-mac/.venv/bin/python"
+TRELLIS_PAINT="$ROOT/vendor/trellis-mac/texture_runner.py"
+if [[ "$PAINT" == "trellis" && ( ! -x "$TRELLIS_PY" || ! -f "$TRELLIS_PAINT" ) ]]; then
+  echo "generate: --paint trellis needs vendor/trellis-mac (its .venv and texture_runner.py)" >&2; exit 1
+fi
+case "$FILL" in
+  photo|none) ;;
+  *) echo "generate: unknown --fill $FILL (photo|none)" >&2; exit 2 ;;
+esac
+case "$MIRROR_ENDS" in
+  "") [[ "$FILL" == "photo" ]] && MIRROR_ENDS="on" || MIRROR_ENDS="off" ;;
+  on|off) ;;
+  *) echo "generate: unknown --mirror-ends $MIRROR_ENDS (on|off)" >&2; exit 2 ;;
+esac
+case "$DELIGHT" in
+  on|off) ;;
+  *) echo "generate: unknown --delight $DELIGHT (on|off)" >&2; exit 2 ;;
+esac
+FILL_CLI="$ROOT/scripts/workbench/fill.py"
+if [[ "$FILL" == "photo" && ! -f "$FILL_CLI" ]]; then
+  echo "generate: --fill photo runs scripts/workbench/fill.py, which is missing" >&2; exit 1
+fi
+UNWRAP_CLI="$ROOT/scripts/workbench/unwrap_cli.py"
+if [[ "$PAINT" == "off" && "$QUALITY" == "textured" && ! -f "$UNWRAP_CLI" ]]; then
+  echo "generate: --paint off unwraps with scripts/workbench/unwrap_cli.py, which is missing" >&2; exit 1
+fi
 
 PYTHON="$(factory_python)"
 
@@ -151,10 +203,12 @@ VIEWS_CANON=""
 VIEWS_FACING=""
 VIEWS_CONSISTENT=1
 VIEWS_NOTE=""
+PHOTO=""
+PHOTO_NOTE=""
 if [[ -n "$VIEWS_JSON" ]]; then
   [[ -f "$VIEWS_JSON" ]] || refuse_picture "$VIEWS_JSON (--views-json)"
-  VROWS="$("$PYTHON" - "$VIEWS_JSON" <<'PY'
-import json, sys
+  VROWS="$("$PYTHON" - "$VIEWS_JSON" "$ROOT" <<'PY'
+import hashlib, json, sys
 from pathlib import Path
 src = Path(sys.argv[1]).resolve()
 try:
@@ -185,6 +239,17 @@ print(f"consistent\t{0 if data.get('consistent') is False else 1}")
 flaws = data.get("flaws") or []
 if flaws:
     print("flaws\t" + "; ".join(str(x) for x in flaws)[:300])
+# A photo draw records the photo it drew from (root-relative); a photo replaced since is not that subject.
+ref = (data.get("sheet") or {}).get("reference") or {}
+if isinstance(ref, dict) and ref.get("file"):
+    p = (Path(sys.argv[2]) / str(ref["file"])).resolve()
+    want = str(ref.get("sha256") or "").lower()
+    if not p.is_file():
+        print(f"photo_note\tthe views' photo {ref['file']} is gone; the drawn views bake alone")
+    elif want and hashlib.sha256(p.read_bytes()).hexdigest() != want:
+        print(f"photo_note\tthe views' photo {ref['file']} changed since the draw; the drawn views bake alone")
+    else:
+        print(f"photo\t{p}")
 PY
 )"
   while IFS=$'\t' read -r kind a b; do
@@ -195,6 +260,8 @@ PY
       facing) VIEWS_FACING="$a" ;;
       consistent) VIEWS_CONSISTENT="$a" ;;
       flaws) VIEWS_NOTE="$a" ;;
+      photo) PHOTO="$a" ;;
+      photo_note) PHOTO_NOTE="$a" ;;
     esac
   done <<< "$VROWS"
   ((${#VIEW_IDS[@]})) || refuse_picture "$VIEWS_JSON (no views listed)"
@@ -205,6 +272,18 @@ CHECK=("$IMAGE")
 ((${#VIEW_FILES[@]})) && CHECK+=("${VIEW_FILES[@]}")
 BAD="$(not_pictures "${CHECK[@]}")"
 [[ -z "$BAD" ]] || refuse_picture "$(printf '%s' "$BAD" | head -1)"
+# The supplied mesh must be a binary glTF: the shape stage takes it as it is.
+if [[ -n "$MESH_IN" ]]; then
+  MESH_EXT="$(printf '%s' "${MESH_IN##*.}" | tr '[:upper:]' '[:lower:]')"  # bash 3.2: no ${x,,}
+  if [[ ! -f "$MESH_IN" || "$MESH_EXT" != "glb" || "$(head -c 4 "$MESH_IN")" != "glTF" ]]; then
+    echo "generate: --mesh wants a .glb file: $MESH_IN" >&2; exit 2
+  fi
+fi
+# The photo the views were drawn from: one that no longer decodes leaves the drawn views to bake alone.
+if [[ -n "$PHOTO" && -n "$(not_pictures "$PHOTO")" ]]; then
+  PHOTO_NOTE="the views' photo $PHOTO is not a picture; the drawn views bake alone"
+  PHOTO=""
+fi
 # ------------------------------------------------------------------------------------------------------------
 
 abspath() { printf '%s/%s\n' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")"; }
@@ -237,6 +316,14 @@ mkdir -p "$OUT"
 EXT="${IMAGE##*.}"
 # A rebuild from this asset's own input.* must not copy the file onto itself.
 [[ "$IMAGE" -ef "$OUT/input.$EXT" ]] || cp "$IMAGE" "$OUT/input.$EXT"
+HERO="$OUT/mesh_hero.glb"
+MESH="$OUT/mesh.glb"
+# The supplied mesh becomes the hero here, before the clean-up below could remove it (it may be a product of the
+# last run, such as textured_photo.glb) and before isolate replaces views/.
+if [[ -n "$MESH_IN" ]]; then
+  MESH_IN="$(abspath "$MESH_IN")"
+  [[ "$MESH_IN" -ef "$HERO" ]] || cp "$MESH_IN" "$HERO"
+fi
 if [[ -n "$PROMPT" ]]; then
   printf '%s\n' "$PROMPT" > "$OUT/prompt.txt"
 fi
@@ -303,8 +390,10 @@ done
 
 # A rebuild starts clean: products of the last run must not sit next to a new shape.
 rm -f "$OUT/shape.json" "$OUT/textured.glb" "$OUT/pbr.glb" "$OUT/textured_photo.glb" "$OUT/textured_photo.albedo.png" \
-  "$OUT/textured_photo.fit.json" "$OUT/textured_game.glb" "$OUT/lod_textured_game.json" "$OUT/mesh_quad.glb" \
+  "$OUT/textured_photo.fit.json" "$OUT/textured_photo.cover.png" "$OUT/textured_photo.fill.json" "$OUT/textured_game.glb" "$OUT/lod_textured_game.json" "$OUT/mesh_quad.glb" \
   "$OUT/psx.glb" "$OUT/mesh_mv.glb"
+# Game / proxy LODs are no longer made; a remake of an older asset drops them so no stale copy outlives its shape.
+rm -f "$OUT/mesh_game.glb" "$OUT/lod_game.json" "$OUT/mesh_proxy.glb" "$OUT/lod_proxy.json"
 
 USE_MV=0
 if ((${#VIEW_IDS[@]})); then
@@ -316,7 +405,8 @@ fi
 # Progress for the app: one STAGES line with the plan, then "STAGE <key> <label>" as each one starts.
 PLAN="isolate shape reduce"
 if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
-  PLAN="$PLAN paint retexture"
+  PLAN="$PLAN $([[ "$PAINT" == "off" ]] && echo unwrap || echo paint) retexture"
+  [[ "$FILL" == "photo" ]] && PLAN="$PLAN fill"
   [[ "$WANT_PSX" -eq 1 ]] && PLAN="$PLAN psx"
   PLAN="$PLAN lods"
 fi
@@ -337,6 +427,23 @@ echo "generate: root=$ROOT"
 echo "generate: image=$IMAGE"
 echo "generate: python=$PYTHON"
 echo "generate: quality=$QUALITY psx=$WANT_PSX poly=$POLY_IN ($POLY) octree=$OCTREE faces=${FACES:-keep} seed=$SEED stack=$WANT_STACK stack-res=$STACK_RES facing=$FACING out=$OUT"
+if [[ -n "$MESH_IN" ]]; then
+  echo "generate: mesh=$MESH_IN (no shape model)"
+fi
+if [[ "$PAINT" == "off" ]]; then
+  echo "generate: paint=off (unwrap, then the photo bake)"
+fi
+if [[ -n "$PHOTO" ]]; then
+  echo "generate: photo=$PHOTO (the views were drawn from it)"
+fi
+if [[ -n "$PHOTO_NOTE" ]]; then
+  # Only a multi-view bake would have used the photo; there, baking without it is a fallback like any other.
+  if [[ "$USE_MV" -eq 1 && "$QUALITY" != "draft" ]]; then
+    degrade retexture photo_skipped "$PHOTO_NOTE"
+  else
+    echo "generate: $PHOTO_NOTE"
+  fi
+fi
 if [[ -n "$PROMPT" ]]; then
   echo "generate: prompt=$PROMPT"
 fi
@@ -347,7 +454,12 @@ if ((${#REFS[@]})); then
   echo "generate: refs=${#REFS[@]}"
 fi
 
-if [[ ! -x "$BIN/hy3d" || ! -x "$BIN/lift-subject" || ! -f "$BIN/mlx.metallib" ]]; then
+# hy3d only when it shapes or paints: a supplied mesh that is not painted needs just the cut-out.
+NEED_HY3D=1
+if [[ -n "$MESH_IN" && ( "$QUALITY" == "draft" || "$PAINT" != "on" ) ]]; then
+  NEED_HY3D=0
+fi
+if [[ ! -x "$BIN/lift-subject" || ( "$NEED_HY3D" -eq 1 && ( ! -x "$BIN/hy3d" || ! -f "$BIN/mlx.metallib" ) ) ]]; then
   echo "generate: factory binaries missing: run scripts/bootstrap.sh $QUALITY" >&2
   exit 1
 fi
@@ -380,6 +492,13 @@ while (( i < ${#VIEW_IDS[@]} )); do
   ROWS_JSON+=("$vid|views/$vid.$vext|shape")
   i=$((i + 1))
 done
+# The views' photo, cut out for the bake. Multi-view only: with one picture, lifted.png is what bakes.
+if [[ -n "$PHOTO" && "$USE_MV" -eq 1 && "$QUALITY" != "draft" ]]; then
+  pext="${PHOTO##*.}"
+  cp "$PHOTO" "$NEWV/photo.$pext"
+  "$BIN/lift-subject" "$PHOTO" "$NEWV/lifted/photo.png"
+  ROWS_JSON+=("photo|views/photo.$pext|reference")
+fi
 idx=0
 if ((${#REFS[@]})); then
   for REF in "${REFS[@]}"; do
@@ -458,9 +577,11 @@ else
   rm -rf "$NEWV" "$OUT/views.json"
 fi
 
-stage shape "Building the shape"
-HERO="$OUT/mesh_hero.glb"
-MESH="$OUT/mesh.glb"
+if [[ -n "$MESH_IN" ]]; then
+  stage shape "Taking the supplied mesh"
+else
+  stage shape "Building the shape"
+fi
 export SHAPE_OCTREE="$OCTREE"
 export SHAPE_SEED="$SEED"
 SHAPE_T0="$(date +%s)"
@@ -468,7 +589,19 @@ SHAPE_MODEL=""
 SHAPE_STEPS=""
 ORIENT_VIEWS=()
 
-if [[ "$USE_MV" -eq 1 ]]; then
+if [[ -n "$MESH_IN" ]]; then
+  # Copied to the hero above. A supplied mesh is a choice, not a fallback: no single_view row.
+  SHAPE_MODEL="supplied"
+  SHAPE_STEPS=0
+  if [[ "$USE_MV" -eq 1 ]]; then
+    for v in front left back right; do
+      [[ -f "$OUT/views/lifted/$v.png" ]] && ORIENT_VIEWS+=(--view "$v=$OUT/views/lifted/$v.png")
+    done
+  else
+    ORIENT_VIEWS=(--view "$(view_of "$FACING")=$LIFTED")
+  fi
+  echo "generate: shape from $MESH_IN"
+elif [[ "$USE_MV" -eq 1 ]]; then
   set +e
   "$ROOT/scripts/shape_mv.sh" "$STEM" "$HERO" 2>&1 | tee "$OUT/shape_mv.log"
   MV_RC=${PIPESTATUS[0]}
@@ -492,7 +625,7 @@ elif [[ "$PRE_SINGLE" -eq 0 ]]; then
   degrade shape single_view "one picture"
 fi
 
-if [[ "$USE_MV" -eq 0 ]]; then
+if [[ -z "$MESH_IN" && "$USE_MV" -eq 0 ]]; then
   # Single-image shape: Hunyuan3D-2 v2-0 (30 steps), then shape-large (8 steps) if hy3d cannot load it.
   # Steps go with the weights set.
   V20="$ROOT/weights/tencent/Hunyuan3D-2/hunyuan3d-dit-v2-0"
@@ -515,18 +648,24 @@ fi
 ls -lh "$HERO" || ls -l "$HERO"
 
 # Turn a multi-view shape so the canonical view sits at az 0 (where paint, retexture and psx expect the picture);
-# a single-image shape is already there and only gets its silhouette IoU recorded.
+# a single-image shape is already there and only gets its silhouette IoU recorded. So does a supplied mesh: it
+# was made (and measured) in the frame it is in, and turning it would undo that.
 ORIENT_CANON="$VIEWS_CANON"
 ORIENT_FLAGS=()
+SHAPE_MODE="$([[ "$USE_MV" -eq 1 ]] && echo multiview || echo single)"
 if [[ "$USE_MV" -eq 0 ]]; then
   ORIENT_CANON="$(view_of "$FACING")"
   ORIENT_FLAGS=(--no-turn --min-iou 0)
+fi
+if [[ -n "$MESH_IN" ]]; then
+  ORIENT_FLAGS=(--no-turn --min-iou 0 --meta "source=$MESH_IN")
+  SHAPE_MODE="supplied"
 fi
 set +e
 "$PYTHON" "$ROOT/scripts/mv_orient.py" "$HERO" --canonical "$ORIENT_CANON" "${ORIENT_VIEWS[@]}" \
   ${ORIENT_FLAGS[@]+"${ORIENT_FLAGS[@]}"} --json "$OUT/shape.json" \
   --meta "model=$SHAPE_MODEL" --meta "steps=$SHAPE_STEPS" --meta "octree=$OCTREE" --meta "seed=$SEED" \
-  --meta "mode=$([[ "$USE_MV" -eq 1 ]] && echo multiview || echo single)" \
+  --meta "mode=$SHAPE_MODE" \
   --meta "seconds=$(( $(date +%s) - SHAPE_T0 ))"
 ORC=$?
 set -e
@@ -535,6 +674,26 @@ if [[ $ORC -eq 3 ]]; then
   degrade shape orient_low_iou "the shape's silhouettes match the views poorly (IoU $IOU < 0.5)"
 elif [[ $ORC -ne 0 ]]; then
   degrade shape orient_failed "mv_orient.py exited $ORC; the shape was left as generated"
+fi
+# A turned multi-view shape has its canonical view looking from az 0, so its front faces az 0 (a front-canonical
+# prop) or 90 (a side-on creature, canonical right): the photo bake's first camera is searched around that.
+FRONT_AZ=""
+if [[ $ORC -eq 0 && -f "$OUT/shape.json" ]]; then
+  FRONT_AZ="$("$PYTHON" -c 'import json,sys
+o = json.load(open(sys.argv[1])).get("orient") or {}
+az = {"front": 0, "right": 90, "back": 180, "left": 270}.get(o.get("canonical"))
+print(az if o.get("turned") and az is not None else "")' "$OUT/shape.json" 2>/dev/null || true)"
+fi
+
+# The drawn turnaround can squash a long animal (each view drawn in a square quarter of one sheet): a side-on
+# photo's height/length puts the length back. Only a multi-view shape with the views' photo, turned (orient ran,
+# ORC 0 or 3), and not a supplied mesh (made and measured in its own frame). A front-on or 3/4 photo, or a length
+# already within 5%, leaves the hero alone; the reason lands in shape.json "proportion".
+if [[ -z "$MESH_IN" && "$USE_MV" -eq 1 && -f "$OUT/views/lifted/photo.png" && ( $ORC -eq 0 || $ORC -eq 3 ) ]]; then
+  if ! "$PYTHON" "$ROOT/scripts/proportion_check.py" "$HERO" --photo "$OUT/views/lifted/photo.png" \
+       --canonical "$ORIENT_CANON" --json "$OUT/shape.json"; then
+    degrade shape proportion_failed "the photo's proportion check failed; the shape keeps the drawn length"
+  fi
 fi
 
 stage reduce "Reducing the mesh"
@@ -545,7 +704,7 @@ if [[ -n "$FACES" ]]; then
 else
   "$PYTHON" "$ROOT/scripts/reduce_mesh.py" "$HERO" -o "$MESH" --min-piece 0.02
 fi
-echo "generate: reduce LODs"
+echo "generate: lookdev mesh"
 "$ROOT/scripts/reduce.sh" "$STEM"
 
 FINAL="$MESH"
@@ -557,7 +716,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
     PAINT_MODEL="pbr"
     PAINT_UNET="$PAINT_WEIGHTS/hunyuan3d-paintpbr-v2-1/unet/diffusion_pytorch_model.safetensors"
   fi
-  if [[ ! -f "$PAINT_UNET" ]]; then
+  if [[ "$PAINT" == "on" && ! -f "$PAINT_UNET" ]]; then
     echo "generate: paint weights missing ($PAINT_UNET): run scripts/bootstrap.sh $QUALITY" >&2
     exit 1
   fi
@@ -579,9 +738,20 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   fi
   TEXTURED="$OUT/textured.glb"
   [[ "$PAINT_MODEL" == "pbr" ]] && TEXTURED="$OUT/pbr.glb"
-  stage paint "Painting the texture"
-  echo "generate: hy3d paint ($PAINT_MODEL) on $(basename "$LOD")"
-  "$BIN/hy3d" paint "$LOD" "$LIFTED" -o "$TEXTURED" --weights "$PAINT_WEIGHTS" --model "$PAINT_MODEL"
+  if [[ "$PAINT" == "off" ]]; then
+    # No paint model: UVs and a plain atlas, which the photo bake below fills.
+    stage unwrap "Unwrapping the mesh"
+    echo "generate: unwrap $(basename "$LOD") (no paint)"
+    "$PYTHON" "$UNWRAP_CLI" "$LOD" -o "$TEXTURED" --texture 1024
+  elif [[ "$PAINT" == "trellis" ]]; then
+    stage paint "Painting the texture"
+    echo "generate: TRELLIS.2 paint on $(basename "$LOD")"
+    "$TRELLIS_PY" "$TRELLIS_PAINT" "$LOD" "$LIFTED" "$TEXTURED"
+  else
+    stage paint "Painting the texture"
+    echo "generate: hy3d paint ($PAINT_MODEL) on $(basename "$LOD")"
+    "$BIN/hy3d" paint "$LOD" "$LIFTED" -o "$TEXTURED" --weights "$PAINT_WEIGHTS" --model "$PAINT_MODEL"
+  fi
   FINAL="$TEXTURED"
   if [[ "$PAINT_MODEL" == "pbr" && -f "$TEXTURED" ]]; then
     cp "$TEXTURED" "$OUT/textured.glb"
@@ -591,11 +761,20 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   stage retexture "Baking the photo on"
   # Every named view, canonical first, then the refs. --first-facing says where the first one looks;
   # --mirror only when a side-on picture has no real opposite view.
+  # The views' photo goes before them all, with --first-wins: retexture averages the views it bakes, so only that
+  # flag lets the real photo win where it reaches while the drawn views fill what it never saw. Its angle is
+  # unknown (the sheet is drawn in the kind's canonical turnaround, whatever the photo shows), so no --first-facing:
+  # retexture searches it within 50 degrees of the drawn view it looks most like, anchored on a drawn side view.
   VIEW_ARGS=()
   NAMED=()
   FIRST_FACING="$FACING"
+  PHOTO_VIEW=""
   if [[ "$USE_MV" -eq 1 ]]; then
     FIRST_FACING="$(facing_of "$VIEWS_CANON")"
+    if [[ -f "$OUT/views/lifted/photo.png" ]]; then
+      PHOTO_VIEW="$OUT/views/lifted/photo.png"
+      VIEW_ARGS+=(--view "$PHOTO_VIEW" --first-wins)
+    fi
     VIEW_ARGS+=(--view "$OUT/views/lifted/$VIEWS_CANON.png")
     NAMED+=("$VIEWS_CANON")
     for v in front right back left; do
@@ -610,19 +789,52 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   for v in "$OUT/views/lifted"/ref-*.png; do
     [[ -f "$v" ]] && VIEW_ARGS+=(--view "$v")
   done
-  VIEW_ARGS+=(--first-facing "$FIRST_FACING")
+  [[ -n "$PHOTO_VIEW" ]] || VIEW_ARGS+=(--first-facing "$FIRST_FACING")
+  [[ "$USE_MV" -eq 1 && -n "$FRONT_AZ" ]] && VIEW_ARGS+=(--front-az "$FRONT_AZ")
+  # Drawn views never agree exactly, so averaged they showed as patches (the pig): one view per triangle, colours
+  # evened out, seams levelled, the paint under what no view sees (scripts/seam_bake.py).
+  [[ "$USE_MV" -eq 1 ]] && VIEW_ARGS+=(--select)
+  # TRELLIS.2's paint is plain colour: the drawings give the eyes, snout and ear insides, not the paint.
+  [[ "$USE_MV" -eq 1 && "$PAINT" == "trellis" ]] && VIEW_ARGS+=(--flat-paint)
+  # The paint takes the key's maroon in hollows the drawings don't reach (the hen's back, the pig's back stripe).
+  [[ "$USE_MV" -eq 1 && -n "${KEY_RGB:-}" ]] && VIEW_ARGS+=(--key "$KEY_RGB")
   OPPOSITE=""
+  ENDS=0
   case "$FIRST_FACING" in right) OPPOSITE=left ;; left) OPPOSITE=right ;; esac
+  # --fill photo: a front-on or back-on picture with no real view of the other end mirrors onto it too.
+  # --mirror-ends tells retexture to reflect such views across their line of sight; only then, so a plain
+  # --mirror bake (a side-on make without --fill) reflects every view through z exactly as it always did.
+  if [[ "$MIRROR_ENDS" == "on" ]]; then
+    case "$FIRST_FACING" in camera) OPPOSITE=back; ENDS=1 ;; away) OPPOSITE=front; ENDS=1 ;; esac
+  fi
   if [[ -n "$OPPOSITE" && " ${NAMED[*]} " != *" $OPPOSITE "* ]]; then
     VIEW_ARGS+=(--mirror)
+    [[ "$ENDS" -eq 1 ]] && VIEW_ARGS+=(--mirror-ends)
   fi
   # Drop the cutout's edge ring at PS1 sizes.
   [[ "$WANT_PSX" -eq 1 ]] && VIEW_ARGS+=(--erode 0.008)
-  echo "generate: retexture with ${NAMED[*]}${OPPOSITE:+ (mirror: $([[ " ${VIEW_ARGS[*]} " == *" --mirror "* ]] && echo on || echo off))}"
+  # Every view de-lit before it bakes (last: the fill below reads the first picture at VIEW_ARGS[1]).
+  DELIGHT_ARGS=()
+  [[ "$DELIGHT" == "on" ]] && DELIGHT_ARGS=(--delight 1)
+  VIEW_ARGS+=(${DELIGHT_ARGS[@]+"${DELIGHT_ARGS[@]}"})
+  echo "generate: retexture with ${PHOTO_VIEW:+the photo (wins), then }${NAMED[*]}${OPPOSITE:+ (mirror: $([[ " ${VIEW_ARGS[*]} " == *" --mirror "* ]] && echo on || echo off))}"
   if "$PYTHON" "$ROOT/scripts/retexture.py" "$TEXTURED" -o "$OUT/textured_photo.glb" "${VIEW_ARGS[@]}"; then
     [[ -f "$OUT/textured_photo.glb" ]] && FINAL="$OUT/textured_photo.glb"
   else
     degrade retexture failed "the photo bake failed; the painted texture is used as is"
+  fi
+  if [[ "$FILL" == "photo" ]]; then
+    stage fill "Filling what the photo missed"
+    # The picture the bake put first (VIEW_ARGS[1]): the views' photo, else the main cut-out or the canonical view.
+    FILL_PHOTO="${VIEW_ARGS[1]}"
+    if [[ "$FINAL" != "$OUT/textured_photo.glb" ]]; then
+      degrade fill skipped "no photo bake to fill; the texture is used as is"
+    elif "$PYTHON" "$FILL_CLI" "$OUT/textured_photo.glb" -o "$OUT/textured_photo.glb" --photo "$FILL_PHOTO" \
+         --cover "$OUT/textured_photo.cover.png" ${DELIGHT_ARGS[@]+"${DELIGHT_ARGS[@]}"}; then
+      echo "generate: filled the texels the photo missed from $(basename "$FILL_PHOTO")"
+    else
+      degrade fill failed "filling what the photo missed failed; those texels keep the base texture"
+    fi
   fi
 
   if [[ "$WANT_PSX" -eq 1 ]]; then
@@ -633,9 +845,11 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
       --facing "$FACING" --faces "$PSX_FACES" --atlas "$PSX_ATLAS" --up "$PSX_UP" --glb "$OUT/psx.glb"
     FINAL="$OUT/psx.glb"
   fi
-  stage lods "Writing detail levels"
-  echo "generate: refresh LODs with textured game"
-  "$ROOT/scripts/reduce.sh" "$STEM"
+  # The photo bake and the PS1 model exist only now, so list them; reduce.sh above listed what was there before
+  # paint. Just the list: the meshes are already cut (no more game / proxy copies to re-make).
+  stage lods "Listing the finished models"
+  echo "generate: list the finished models"
+  "$PYTHON" "$ROOT/scripts/lods.py" "$OUT"
 fi
 
 INSPECT="$OUT/inspect.json"
@@ -643,6 +857,11 @@ stage inspect "Checking the model"
 echo "generate: inspecting $FINAL"
 "$PYTHON" "$ROOT/scripts/inspect_glb.py" "$FINAL" "$INSPECT"
 merge_degraded "$INSPECT"
+# The review (scripts/workbench/review.py): the checks every critique so far taught, and the sheet to read before
+# anyone sees the model. It reports; it never fails a make.
+echo "generate: review"
+"$PYTHON" "$ROOT/scripts/workbench/review.py" "$OUT" --glb "$FINAL" > /dev/null \
+  || echo "generate: the review failed; the model is unaffected"
 
 if [[ "$WANT_STACK" -eq 1 ]]; then
   stage stack "Slicing the sprite stack"
@@ -669,5 +888,8 @@ if [[ -f "$OUT/psx/psx.json" ]]; then
 fi
 if [[ -f "$OUT/stack/stack.json" ]]; then
   echo "STACK_RESULT $OUT/stack/stack.json"
+fi
+if [[ -f "$OUT/workbench/review/review.json" ]]; then
+  echo "REVIEW_RESULT $OUT/workbench/review/review.json"
 fi
 cat "$INSPECT"

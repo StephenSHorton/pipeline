@@ -1,13 +1,8 @@
 // Opening an asset: the asset screen picks its stage (Ideas, Concept, 2D, 3D, ...) from the flow.
-import { legacyUrl } from "@/lib/api";
 import type { Stage } from "@/lib/flow";
 import { useJobs, type Job } from "@/lib/jobs";
 import { openStem } from "@/screens/asset/stage";
 import { navigate } from "./router";
-
-export function classicUrl(stem: string): string {
-  return legacyUrl({ asset: stem });
-}
 
 /** Open a stem; `stage` forces its stage (a rig job opens on Rig, a 2D job on its sheet). */
 export function openAsset(stem: string, stage?: Stage): void {

@@ -46,6 +46,11 @@ MIN_PIECE = 0.02
 # on every saved hero mesh: crumbs reach 0.13 at most; qmv-new-lantern-r2's dropped side rod was 0.38 (1.5% area).
 MIN_EXTENT = 0.25
 MIN_LONG_AREA = 0.002
+# A piece touching the biggest one (within this share of its largest side) is a part of it the generator meshed on
+# its own, not a crumb floating off it: TRELLIS.2's pig tail came as five such pieces (0.07% to 0.4% of the area,
+# gap 0) and the cut dropped them all. From MIN_TOUCH_AREA up it stays.
+TOUCH_GAP = 0.005
+MIN_TOUCH_AREA = 0.0005
 
 
 def drop_small_pieces(mesh: trimesh.Trimesh, share: float = MIN_PIECE) -> tuple[trimesh.Trimesh, dict]:
@@ -75,7 +80,18 @@ def drop_small_pieces(mesh: trimesh.Trimesh, share: float = MIN_PIECE) -> tuple[
     long_ = ((hi - lo).max(1) >= MIN_EXTENT * size) & (area >= MIN_LONG_AREA * area.sum())
     info["kept_long"] = int((long_ & ~keep).sum())
     keep |= long_
-    keep[int(np.argmax(area))] = True
+    big = int(np.argmax(area))
+    keep[big] = True
+    cand = np.where(~keep & (area >= MIN_TOUCH_AREA * area.sum()))[0]
+    if len(cand):
+        from scipy.spatial import cKDTree
+        main = cKDTree(welded.vertices[np.unique(welded.faces[labels == big])])
+        # vertex to vertex, so at least an edge apart: a coarse body's nearest vertex can be that far from the seam
+        gap = max(TOUCH_GAP * size, float(welded.edges_unique_length.mean()))
+        touch = [c for c in cand if main.query(welded.vertices[np.unique(welded.faces[labels == c])],
+                                                distance_upper_bound=gap)[0].min() <= gap]
+        keep[touch] = True
+        info["kept_touching"] = len(touch)
     mask = keep[labels]
     info["kept"] = int(keep.sum())
     info["dropped_faces"] = int((~mask).sum())
@@ -165,10 +181,40 @@ def rebake(high: trimesh.Trimesh, texture: Image.Image, low: trimesh.Trimesh, at
     return trimesh.Trimesh(vertices=verts, faces=faces, visual=visual, process=False)
 
 
+WELD = 1e-4  # near-duplicate vertices closer than this share of the mesh size are one vertex before decimating
+NUDGES = (1e-6, 1e-5, 1e-4, 1e-3)  # retry nudges, as shares of the mesh size; 1e-3 of a 20 in TV is 0.02 in
+
+
+def simplify(mesh: trimesh.Trimesh, target: int) -> trimesh.Trimesh:
+    """Quadric decimation to about target faces. Two things stall the decimator well above target:
+    - near-duplicate vertices along creases (the CRT: 379 pairs under 1e-4 of its size) leave sliver triangles its
+      flip and degenerate tests refuse to collapse, so it stopped at 650 whether asked for 450 or 340. They are
+      welded first.
+    - exactly flat areas (a clay cylinder's caps) give every edge zero error. A retry with the vertices nudged
+      (seeded, so repeatable) breaks the tie; the nudge grows until the count lands within 1.1x of target (a
+      millionth of the size alone never cleared the CRT's slivers), and the closest result is kept."""
+    scale = float(mesh.scale or 1.0)
+    welded = mesh.copy()
+    welded.merge_vertices(digits_vertex=max(0, int(-np.floor(np.log10(WELD * scale)))))
+    welded.update_faces(welded.nondegenerate_faces())
+    welded.remove_unreferenced_vertices()
+    best = welded.simplify_quadric_decimation(face_count=target)
+    rng = np.random.default_rng(0)
+    for k in NUDGES:
+        if len(best.faces) <= 1.1 * target:
+            break
+        nudged = welded.copy()
+        nudged.vertices = welded.vertices + rng.normal(scale=k * scale, size=welded.vertices.shape)
+        low = nudged.simplify_quadric_decimation(face_count=target)
+        if abs(len(low.faces) - target) < abs(len(best.faces) - target):
+            best = low
+    return best
+
+
 def reduce_mesh(mesh: trimesh.Trimesh, target: int) -> trimesh.Trimesh:
     if target <= 0 or len(mesh.faces) <= target:
         return mesh
-    return mesh.simplify_quadric_decimation(face_count=target)
+    return simplify(mesh, target)
 
 
 def main() -> int:

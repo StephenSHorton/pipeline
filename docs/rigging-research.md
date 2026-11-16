@@ -7,8 +7,9 @@ How to read the citations:
 
 - `rr/` means the scratch folder
   `/private/tmp/claude-501/-Users-stephenhorton/57bc55f1-4326-4edc-94ae-25e4359ff405/scratchpad/rr/`. The raw numbers,
-  logs, tools and every render are there. It is a temp folder, so the images that matter most are copied into
-  [`rigging-research/`](rigging-research/).
+  logs, tools and every render are there. It is a temp folder. The renders of
+  Hunyuan3D meshes were removed from this doc because the Hunyuan licence restricts showing its output outside its
+  Territory; their captions remain.
 - `rig.py:NNN` line numbers refer to the code **before** the fixes (commit dd2fa05), because that is the code that
   broke. The fixes are commits 41db319 (E2) and 7cfd243 (E3).
 - H means the model's height. Distances are given as a fraction of it, for example 0.12H.
@@ -32,7 +33,7 @@ How to read the citations:
 5. **The checks said "warn: No tears · worst stretch 29.5×".** The only warning was "Right wing 0.97 m off"
    (`takes/rig/t1/rig/summary.json`). Stretch had no fail level, and the tear check could not fail.
 
-![Chicken: top row is the rig you saw, middle is E2, bottom is E3 (shipped)](rigging-research/01_chicken_current_e2_e3.jpg)
+*(Render removed: Chicken: top row is the rig you saw, middle is E2, bottom is E3 (shipped).)*
 
 *Top row: the old rig (t1). Idle and Walk are fine; Flap 0.48 and Glide 0.32 are the flat slab with blade legs. Middle
 row: E2, which fits the template before skinning. Walk is good, and the flight clips are still a flight pose, so they
@@ -81,7 +82,7 @@ Two things to note:
   extent. So flight clips need stretch_p99 as a second gate. This is now in the code (rig.py at the
   `if trial:` B2/stretch gate, around line 1276 on 7cfd243).
 
-![After a correct bind, Flap still lies in a flight pose](rigging-research/07_e2_correct_bind_flap_still_slab.jpg)
+*(Render removed: After a correct bind, Flap still lies in a flight pose.)*
 
 *E2 run a+b+c+d (`rr/e2/img/v_chABCD.png`). The bind is right: comb on head bones, legs on leg bones, Walk steps
 cleanly. But Flap and Glide still put the body into the seagull's horizontal pose, and the yfront frames show the
@@ -144,15 +145,15 @@ body sides spread into a wide slab. This is why Flap and Glide are not shipped o
      *bone*, and always keeps the top bone. So a foot whose 4 influences are all wing bones keeps them.
    - It matters only when the fit is wrong. In E2, fixing it changed A2 by less than 0.0033 once the fit was right.
 
-![The source picture: the chicken faces left, but intent.json says "right"](rigging-research/02_lifted_faces_left.jpg)
+*(Render removed: The source picture: the chicken faces left, but intent.json says "right".)*
 
 *`out/a-ps1-style-graphics-of-a-chicken-2/lifted.png` (copy: `rr/census/chicken_lifted_small.png`).*
 
-![The posed template over the chicken: head bones (pink, far left) behind the tail; tail bones (green) out past the beak; wing bones (orange) through the body](rigging-research/03_template_backwards.jpg)
+*(Render removed: The posed template over the chicken: head bones (pink, far left) behind the tail; tail bones (green) out past the beak; wing bones (orange) through the body.)*
 
 *`rr/chicken/img/02_posed_over_psx_side.png`.*
 
-![Weights by group: tail colours on the comb, orange wing weight on the body and legs](rigging-research/04_weights_by_group_current.jpg)
+*(Render removed: Weights by group: tail colours on the comb, orange wing weight on the body and legs.)*
 
 *`rr/chicken/img/05b_weights_group_skel_side.png`. Measured shares (`rr/chicken/tools/parts.py`):*
 
@@ -162,9 +163,7 @@ body sides spread into a wide slab. This is why Flap and Glide are not shipped o
 
 *The raw skinner output has the same shares, so cleanup did not cause this.*
 
-| Learned skinner (shipped then) | Blender bone heat, same bad skeleton |
-|---|---|
-| ![](rigging-research/05_flap_learned_skinner.jpg) | ![](rigging-research/06_flap_bone_heat.jpg) |
+*(Render removed: side by side, the learned skinner (shipped then) and Blender bone heat on the same bad skeleton.)*
 
 *Flap t=0.48, from `rr/skinres/img/st_asis_*` and `heat_asis_*`. Bone heat removes the blade legs (A2 0.159 → 0.020,
 FOOT 0.564 → 0), but the bird is still thrown into a flight pose (B2 share 16.7%). Changing the skinner does not fix a
@@ -281,11 +280,11 @@ It predicts its own skeleton and weights. Source: `rr/e1/`, `res/table.json`.
 - **Verdict:** a great *fitting target*, not ready as the shipped rig. Bones are unnamed, its clips would come only
   from our own chain mapping, and the cow results are worse.
 
-![skin-tokens' own predicted chicken skeleton: tail (green), neck/head (pink), legs (blue), all inside the body](rigging-research/08_predicted_skeleton.jpg)
+*(Render removed: skin-tokens' own predicted chicken skeleton: tail (green), neck/head (pink), legs (blue), all inside the body.)*
 
 *`rr/research-academic/img/01_chicken_pred_skel_side.png`.*
 
-![E1 spider, operator, props](rigging-research/13_e1_spider_operator_props.jpg)
+*(Render removed: E1 spider, operator, props.)*
 
 *`rr/e1/img/cs_spider_ops.png`. Top row: the spider's 8 predicted legs inside the mesh, and the mapped Walk. Bottom
 row: the operator's weights, the operator's hand pose, and the small radio and hat skeletons (both refused).*
@@ -392,18 +391,18 @@ learned skinner is about 70–120 s of each run, and its time barely depends on 
   linear-blend skinning (`rr/e3/tools_stretchwho.py`).
 - Foot sliding was not measured.
 
-![Template fitted to the predicted chicken skeleton (E3)](rigging-research/09_e3_template_fitted.jpg)
-![E3 weights by group: head (pink), tail (green), wings folded on the sides (orange), legs (blue)](rigging-research/10_e3_weights_by_group.jpg)
+*(Render removed: Template fitted to the predicted chicken skeleton (E3).)*
+*(Render removed: E3 weights by group: head (pink), tail (green), wings folded on the sides (orange), legs (blue).)*
 
 *`rr/e3/img/chE3skin_posed_side.png`, `chE3skin_groups_side.png`.*
 
-![Cow: old rig, E2, E3 (shipped), E3 before the floor pass](rigging-research/11_cow_current_e2_e3.jpg)
+*(Render removed: Cow: old rig, E2, E3 (shipped), E3 before the floor pass.)*
 
 *`rr/e3/img/sheet_cow_3way.png`. Rows: old rig, E2, shipped, shipped without the floor pass. On the old rig and E2,
 Eating puts the head through the floor line, and Sleep and Death hang in the air. In the shipped row (third), the head,
 hooves and lying body sit on the line.*
 
-![Operator: old, E2, E3, E3 before floor](rigging-research/12_operator_current_e2_e3.jpg)
+*(Render removed: Operator: old, E2, E3, E3 before floor.)*
 
 *`rr/e3/img/sheet_operator_3way.png`. Walk is identical across all four. Death_D sits lower after the floor pass. The
 grey line here is at the origin, not the operator's floor, so read it only as a reference.*

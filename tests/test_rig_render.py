@@ -113,6 +113,34 @@ def write_rig(path: Path) -> None:
     g.write(path)
 
 
+CHECKER = 8  # cells a side in the quad's texture
+
+
+def write_quad(path: Path) -> None:
+    """A static 2 x 2 quad in the XY plane facing +Z (two triangles), UVs over the whole of a black-and-white
+    checker texture: per-face sampling gives each triangle one colour, per-pixel sampling the checker."""
+    P = np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], "<f4")
+    UV = np.array([[0, 1], [1, 1], [1, 0], [0, 0]], "<f4")  # glTF v runs down the image: the top edge is v = 0
+    F = np.array([[0, 1, 2], [0, 2, 3]], "<u4")
+    cells = (np.indices((CHECKER, CHECKER)).sum(0) % 2).astype(np.uint8) * 255
+    tex = np.repeat(np.repeat(cells, 16, 0), 16, 1)
+    buf = io.BytesIO()
+    Image.fromarray(np.stack([tex] * 3, -1)).save(buf, "PNG")
+    g = rig.GlbWriter()
+    d = g.doc
+    d["images"] = [{"bufferView": g.blob(buf.getvalue()), "mimeType": "image/png"}]
+    d["samplers"] = [{"magFilter": 9728, "minFilter": 9728}]
+    d["textures"] = [{"source": 0, "sampler": 0}]
+    d["materials"] = [{"name": "m", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0}}]
+    attrs = {"POSITION": g.array(P, "VEC3", 34962, minmax=True), "TEXCOORD_0": g.array(UV, "VEC2", 34962)}
+    d["meshes"] = [{"name": "Quad", "primitives": [{"attributes": attrs, "indices": g.array(F.reshape(-1), "SCALAR",
+                                                                                            34963), "material": 0}]}]
+    d["nodes"] = [{"name": "Quad", "mesh": 0}]
+    d["scenes"] = [{"nodes": [0]}]
+    d["scene"] = 0
+    g.write(path)
+
+
 def non_bg(img: Image.Image) -> np.ndarray:
     a = np.asarray(img.convert("RGB")).astype(int)
     return np.abs(a - np.array(rr.BG)).sum(2) > 30
@@ -200,6 +228,12 @@ class CPURender(unittest.TestCase):
         self.assertEqual(self.res["sheet_cols"], ["side", "front", "q"])
         self.assertEqual(len(self.res["sheet_rows"]), 2)
 
+    def test_thumbnail_is_the_rest_cell_at_three_quarters(self):
+        sheet = Image.open(self.res["sheet"]).convert("RGB")
+        thumb = Image.open(self.out / rr.THUMB).convert("RGB")
+        self.assertEqual(thumb.size, (120, 120))
+        self.assertEqual(thumb.tobytes(), sheet.crop((240, rr.CAP, 360, rr.CAP + 120)).tobytes())
+
     def test_contact_sheet_function(self):
         a = self.out / "Rest_0.00_side_texture.png"
         im = rr.contact_sheet([a, None, a, "-", a], rows=2, cols=3, captions=["x", "", "y", "", "z"], tile=50)
@@ -263,7 +297,124 @@ class Conventions(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TextureSampling(unittest.TestCase):
+    """texture (one texel a face, unchanged) against texture_px (per pixel) on the checker quad."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="rig_render_px_"))
+        write_quad(cls.tmp / "quad.glb")
+        write_rig(cls.tmp / "rig.glb")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def front(self, mode: str, size: int = 128) -> np.ndarray:
+        it = rr.Item(self.tmp / "quad.glb")
+        Vs, jp = it.pose(None, 0.0)
+        return np.asarray(rr.draw([it], [(Vs, jp)], "front", mode, rr.camera(np.concatenate(Vs), size), False))
+
+    def cell_values(self, img: np.ndarray) -> np.ndarray:
+        """Grey level at each checker cell's centre, rows top to bottom, read off the quad's pixel box."""
+        ys, xs = np.nonzero(np.abs(img.astype(int) - np.array(rr.BG)).sum(2) > 30)
+        x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+        c = (np.arange(CHECKER) + 0.5) / CHECKER
+        return img[(y0 + c * (y1 - y0)).astype(int)[:, None], (x0 + c * (x1 - x0)).astype(int)[None], 0].astype(int)
+
+    def test_per_pixel_shows_the_checker(self):
+        g = self.cell_values(self.front("texture_px:unlit"))
+        want = (np.indices((CHECKER, CHECKER)).sum(0) % 2) * 255
+        np.testing.assert_array_equal(g, want)
+        shaded = self.cell_values(self.front("texture_px"))
+        self.assertTrue(((shaded > 100) == (want > 0)).all())  # Lambert darkens the white cells, keeps the pattern
+        self.assertTrue((shaded[want > 0] < 255).all() and (shaded[want == 0] == 0).all())
+
+    def test_per_face_is_one_colour_a_triangle(self):
+        img = self.front("texture")
+        hit = np.abs(img.astype(int) - np.array(rr.BG)).sum(2) > 30
+        self.assertLessEqual(len(np.unique(img[hit].reshape(-1, 3), axis=0)), 2)
+
+    def test_texture_mode_unchanged(self):
+        # Pixels of the stick rig's texture renders, pinned when texture_px was added: the rig sheets and the facing
+        # VLM's views must not move. (Checked against the renderer before the change: 133 rig and bale PNGs equal.)
+        import hashlib
+        res = rr.textured_views(self.tmp / "rig.glb", ("side", "front", "top", "q"), 96, self.tmp / "v")
+        got = {v: hashlib.md5(np.asarray(Image.open(p).convert("RGB")).tobytes()).hexdigest()[:12]
+               for v, p in res.items()}
+        self.assertEqual(got, PINNED_TEXTURE)
+
+    def test_bottom_view(self):
+        cam = rr.camera(np.array([[-1, 0, -1], [1, 1, 1.0]]), 100)
+        c = 50
+        self.assertGreater(rr.project(np.array([[1.0, 0.5, 0]]), "bottom", cam)[0, 0], c)  # +X right, like top
+        self.assertLess(rr.project(np.array([[0, 0.5, 1.0]]), "bottom", cam)[0, 1], c)  # +Z up the image
+        res = rr.textured_views(self.tmp / "rig.glb", ("top", "bottom"), 96, self.tmp / "tb", mode="texture_px")
+        a, b = non_bg(Image.open(res["top"])), non_bg(Image.open(res["bottom"]))
+        self.assertGreater(int(b.sum()), 50)
+        self.assertGreater((a & b[::-1]).sum() / max((a | b[::-1]).sum(), 1), 0.85)  # top flipped upside down
+
+    def test_bad_mode(self):
+        with self.assertRaises(ValueError):
+            rr.textured_views(self.tmp / "quad.glb", ("front",), 32, self.tmp / "bad", mode="groups")
+
+
+PINNED_TEXTURE = {"side": "a29543e48c10", "front": "aca337ef43fe", "top": "b8aaf87f59ea", "q": "5ee0700fe150"}
+
+
 @unittest.skipUnless(rig.blender_path(), "no Blender")
+class Scrub(unittest.TestCase):
+    """--scrub: one clip, a frame every step seconds over a span, one fixed camera, a labelled sheet."""
+
+    def test_frame_times(self):
+        self.assertEqual(rr.scrub_times(1.0), [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        self.assertEqual(rr.scrub_times(1.0, 0.5, 1.0, 0.2), [0.5, 0.7, 0.9, 1.0], "the span's end is shown")
+        self.assertEqual(rr.scrub_times(2.0, 0.3, 0.9, 0.3), [0.3, 0.6, 0.9], "no float drift past the end")
+        self.assertEqual(rr.scrub_times(1.0, -1, 5), rr.scrub_times(1.0), "clamped into the clip")
+        self.assertEqual(rr.scrub_times(1.0, 0.4, 0.4), [0.4])
+        with self.assertRaises(ValueError):
+            rr.scrub_times(1.0, step=0)
+        with self.assertRaises(ValueError):
+            rr.scrub_times(1.0, 0.8, 0.2)
+
+    def test_parse_scrub(self):
+        self.assertEqual(rr.parse_scrub("Walk"), ("Walk", None, None))
+        self.assertEqual(rr.parse_scrub("Walk@0.5-1.5"), ("Walk", 0.5, 1.5))
+        self.assertEqual(rr.parse_scrub("Walk@-1.5"), ("Walk", None, 1.5))
+        with self.assertRaises(ValueError):
+            rr.parse_scrub("Walk@0.5")
+
+    def test_sheet(self):
+        tmp = Path(tempfile.mkdtemp(prefix="rig_scrub_test_"))
+        try:
+            asset = tmp / "stick"
+            asset.mkdir()
+            write_rig(asset / "rigged.glb")
+            res = rr.scrub(asset, "Swing", 0.0, 1.0, 0.25, view="side", size=96, tile=80, cols=3)
+            self.assertEqual([f["t"] for f in res["frames"]], [0.0, 0.25, 0.5, 0.75, 1.0])
+            self.assertEqual([f["frame"] for f in res["frames"]], [0, 8, 15, 23, 30])
+            self.assertEqual((res["rows"], res["cols"]), (2, 3))
+            sheet = Path(res["sheet"])
+            self.assertEqual(sheet.parent, asset / "rig" / "preview" / "scrub")
+            self.assertEqual(sheet.name, "scrub_Swing_0.00-1.00_side_texture.png")
+            with Image.open(sheet) as im:
+                self.assertEqual(im.size, (3 * 80, 2 * (80 + rr.CAP)))
+                a = np.asarray(im.convert("RGB")).astype(int)
+            # the leg swings (+-35 deg about x at 0.25 and 0.75): the side view's first and second tiles differ
+            t0 = a[rr.CAP:rr.CAP + 80, 0:80]
+            t1 = a[rr.CAP:rr.CAP + 80, 80:160]
+            self.assertGreater(np.abs(t0 - t1).sum(), 0)
+            # the foot moves in z, not y, at the swing's peak; the json records it
+            f0, f1 = res["frames"][0], res["frames"][1]
+            self.assertNotEqual(f0["feet_xz"], f1["feet_xz"])
+            js = json.loads(sheet.with_suffix(".json").read_text())
+            self.assertEqual(js["clip"], "Swing")
+            with self.assertRaises(KeyError):
+                rr.scrub(asset, "Nope")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class BlenderParity(unittest.TestCase):
     def test_parity(self):
         tmp = Path(tempfile.mkdtemp(prefix="rig_render_bl_"))

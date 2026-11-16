@@ -212,6 +212,37 @@ class FactoryEnvTests(unittest.TestCase):
         )
         self.assertIn("stack", argv)
 
+    def test_generate_argv_mesh_and_paint_off(self) -> None:
+        image = ROOT / "in" / "radio-concept.jpg"
+        mesh = ROOT / "out" / "radio" / "workbench" / "clay.glb"
+        argv = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium", mesh=mesh,
+                                         paint=False)
+        self.assertEqual(argv[argv.index("--mesh") + 1], str(mesh))
+        self.assertEqual(argv[argv.index("--paint") + 1], "off")
+        trellis = factory_env.generate_argv(ROOT, image=image, quality="textured", stem="radio", poly="medium",
+                                            mesh=mesh, paint="trellis")
+        self.assertEqual(trellis[trellis.index("--paint") + 1], "trellis")
+        # The defaults add neither flag: a plain make's argv is as it was.
+        plain = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium")
+        self.assertNotIn("--mesh", plain)
+        self.assertNotIn("--paint", plain)
+        # fill: only "photo" reaches generate.sh; mirror_ends only when stated.
+        self.assertNotIn("--fill", plain)
+        self.assertNotIn("--mirror-ends", plain)
+        none = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium", fill="none")
+        self.assertEqual(none, plain)
+        filled = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium",
+                                           fill="photo", mirror_ends=False)
+        self.assertEqual(filled[filled.index("--fill") + 1], "photo")
+        self.assertEqual(filled[filled.index("--mirror-ends") + 1], "off")
+        # delight: only when stated, on or off.
+        self.assertNotIn("--delight", plain)
+        delit = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium",
+                                          fill="photo", delight=True)
+        self.assertEqual(delit[delit.index("--delight") + 1], "on")
+        off = factory_env.generate_argv(ROOT, image=image, quality="psx", stem="radio", poly="medium", delight=False)
+        self.assertEqual(off[off.index("--delight") + 1], "off")
+
     def test_inspect_glb_function_on_triangle(self) -> None:
         import tempfile
 
@@ -398,9 +429,40 @@ class FactoryHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload.get("deleted"))
         self.assertFalse((self.root / "out" / "radio").exists())
+        trashed = self.root / payload["trashed"]
+        self.assertTrue(trashed.is_dir())
+        self.assertEqual(trashed.parent, self.root / "out" / ".trash")
         status, payload = http_json(self.base + "/assets")
         ids = [a["id"] for a in payload.get("assets") or []]
         self.assertNotIn("radio", ids)
+        self.assertNotIn(".trash", ids)
+
+    def test_refuses_other_web_pages(self) -> None:
+        def call(method: str, headers: dict) -> tuple[int, dict]:
+            req = urllib.request.Request(self.base + "/assets/radio" if method == "DELETE" else self.base + "/health",
+                                         method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status, dict(resp.headers)
+            except urllib.error.HTTPError as e:
+                return e.code, dict(e.headers)
+
+        status, _ = call("DELETE", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        self.assertTrue((self.root / "out" / "radio").is_dir())
+        status, _ = call("GET", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        status, _ = call("GET", {"Host": "evil.example:8766"})
+        self.assertEqual(status, 403)
+        status, _ = call("OPTIONS", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        for ok_origin in ("wails://wails", "http://wails.localhost", "http://127.0.0.1:8766", "http://localhost:5173"):
+            status, headers = call("GET", {"Origin": ok_origin})
+            self.assertEqual(status, 200, ok_origin)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), ok_origin)
+        status, headers = call("GET", {})
+        self.assertEqual(status, 200)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
 
     def test_list_mesh_preview_png(self) -> None:
         folder = self.root / "out" / "spider-mech"
@@ -537,6 +599,72 @@ class FactoryHttpTests(unittest.TestCase):
             data={"stem": "new-name"},
         )
         self.assertEqual(status, 404)
+
+    def test_projects_routes(self) -> None:
+        write_triangle_glb(self.root / "out" / "lamp" / "mesh.glb")
+        status, payload = http_json(self.base + "/projects")
+        self.assertEqual((status, payload), (200, {"ok": True, "projects": []}))
+        status, payload = http_json(self.base + "/projects", method="POST", data={"name": "  "})
+        self.assertEqual((status, payload.get("ok")), (400, False))
+        status, payload = http_json(self.base + "/projects", method="POST", data={"name": "Rust Belt", "assets": ["radio"]})
+        self.assertEqual(status, 200)
+        self.assertEqual((payload["project"]["id"], payload["project"]["assets"]), ("rust-belt", ["radio"]))
+        status, payload = http_json(self.base + "/projects", method="POST", data={"name": "rust belt"})
+        self.assertEqual((status, payload["project"]["id"]), (200, "rust-belt-2"))
+        status, payload = http_json(self.base + "/projects", method="POST", data={"name": "Attic", "assets": ["../x"]})
+        self.assertEqual(status, 400)
+        self.assertFalse((self.root / "out" / ".projects" / "attic").exists())
+        # Move: radio leaves rust-belt for rust-belt-2; a stem with no folder yet is kept but not listed.
+        status, payload = http_json(self.base + "/projects/rust-belt-2/assets", method="POST", data={"stem": "radio"})
+        self.assertEqual((status, payload["stem"], payload["project"]["assets"]), (200, "radio", ["radio"]))
+        status, payload = http_json(self.base + "/projects/rust-belt-2/assets", method="POST", data={"stem": "coming-soon"})
+        self.assertEqual((status, payload["project"]["assets"]), (200, ["radio"]))
+        status, payload = http_json(self.base + "/projects/rust-belt-2/assets", method="POST", data={"stem": "../x"})
+        self.assertEqual(status, 400)
+        status, payload = http_json(self.base + "/projects/nope/assets", method="POST", data={"stem": "lamp"})
+        self.assertEqual(status, 404)
+        status, payload = http_json(self.base + "/projects/_unsorted")
+        self.assertEqual(status, 400)
+        status, payload = http_json(self.base + "/projects")
+        self.assertEqual([(p["name"], p["assets"]) for p in payload["projects"]], [("Rust Belt", []), ("rust belt", ["radio"])])
+        status, payload = http_json(self.base + "/projects/rust-belt-2", method="PATCH", data={"name": "Attic"})
+        self.assertEqual((status, payload["project"]["id"], payload["project"]["name"]), (200, "rust-belt-2", "Attic"))
+        status, payload = http_json(self.base + "/projects/rust-belt-2/assets/radio", method="DELETE")
+        self.assertEqual((status, payload["stem"], payload["project"]["assets"]), (200, "radio", []))
+        status, payload = http_json(self.base + "/assets")
+        self.assertEqual({a["id"]: a["project"] for a in payload["assets"]}, {"radio": None, "lamp": None})
+        http_json(self.base + "/projects/rust-belt/assets", method="POST", data={"stem": "lamp"})
+        status, payload = http_json(self.base + "/assets")
+        self.assertEqual({a["id"]: a["project"] for a in payload["assets"]}, {"radio": None, "lamp": "rust-belt"})
+        status, payload = http_json(self.base + "/projects/rust-belt", method="DELETE")
+        self.assertEqual((status, payload), (200, {"ok": True, "deleted": "rust-belt"}))
+        self.assertTrue((self.root / "out" / "lamp" / "mesh.glb").is_file())
+        status, payload = http_json(self.base + "/projects/rust-belt", method="DELETE")
+        self.assertEqual(status, 404)
+        status, payload = http_json(self.base + "/")
+        self.assertIn("POST /projects/<id>/assets", payload["routes"])
+
+    def test_asset_rename_and_delete_keep_membership(self) -> None:
+        http_json(self.base + "/projects", method="POST", data={"name": "World", "assets": ["radio"]})
+        status, payload = http_json(self.base + "/assets/radio", method="PATCH", data={"name": "Brass Lantern"})
+        self.assertEqual(status, 200)
+        status, payload = http_json(self.base + "/projects")
+        self.assertEqual(payload["projects"][0]["assets"], ["brass-lantern"])
+        status, payload = http_json(self.base + "/assets")
+        self.assertEqual({a["id"]: a["project"] for a in payload["assets"]}, {"brass-lantern": "world"})
+        status, payload = http_json(self.base + "/assets/brass-lantern", method="DELETE")
+        self.assertEqual(status, 200)
+        manifest = json.loads((self.root / "out" / ".projects" / "world" / "project.json").read_text())
+        self.assertEqual(manifest["assets"], [])
+
+    def test_bad_project_manifest_never_breaks_assets(self) -> None:
+        bad = self.root / "out" / ".projects" / "broken"
+        bad.mkdir(parents=True)
+        (bad / "project.json").write_text("{nope")
+        status, payload = http_json(self.base + "/assets")
+        self.assertEqual((status, [a["project"] for a in payload["assets"]]), (200, [None]))
+        status, payload = http_json(self.base + "/assets/radio", method="PATCH", data={"stem": "lamp"})
+        self.assertEqual((status, payload.get("renamed")), (200, True))
 
     def test_generate_unknown_poly_400(self) -> None:
         status, payload = http_json(
@@ -861,6 +989,22 @@ class FactoryHttpTests(unittest.TestCase):
                                           data={"image": "out/hen/flat/source.png", "stem": "hen"}))
         self.assertEqual(self.factory._snapshot()["job_id"], before)
 
+    def test_only_the_sides_off_builds_from_front_and_back(self) -> None:
+        vj = self.make_views("farmer", consistent=False)
+        doc = json.loads(vj.read_text())
+        doc.update(flaws=["side"], canonical="front")
+        vj.write_text(json.dumps(doc))
+        seen, last = self.run_generate({"image": "out/farmer/flat/source.png", "stem": "farmer"})
+        kept = json.loads(Path(seen["views_json"]).read_text())
+        self.assertEqual([v["id"] for v in kept["views"]], ["front", "back"])
+        self.assertTrue(kept["consistent"])
+        self.assertEqual([(d["stage"], d["code"]) for d in last["degraded"]], [("views", "sides_dropped")])
+        # a side-on creature's canonical view is a side: dropping the sides would lose it, so one picture
+        doc.update(canonical="right")
+        vj.write_text(json.dumps(doc))
+        seen, last = self.run_generate({"image": "out/farmer/flat/source.png", "stem": "farmer"})
+        self.assertIsNone(seen["views_json"])
+
     def test_rig_and_draw_sidecars_feed_degraded(self) -> None:
         folder = self.root / "out" / "radio"
         (folder / "rig").mkdir()
@@ -955,6 +1099,115 @@ class FactoryHttpTests(unittest.TestCase):
             for proc in procs:
                 if proc.poll() is None:
                     proc.kill()
+
+    # -- A supplied mesh and no paint (the workbench) -------------------------------------------------------------
+
+    def test_generate_takes_a_mesh_under_the_asset_and_paint_off(self) -> None:
+        clay = self.root / "out" / "radio" / "workbench" / "clay.glb"
+        write_triangle_glb(clay)
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "mesh": "out/radio/workbench/clay.glb",
+                                        "paint": False, "quality": "psx"})
+        self.assertEqual(seen["stem"], "radio")  # the mesh's asset, when no stem is given
+        self.assertEqual(seen["mesh"], str(clay.resolve()))
+        self.assertIs(seen["paint"], False)
+        # The shape never ran from one picture: no "one picture" fallback for it.
+        self.assertFalse([d for d in last["degraded"] if d["code"] == "single_view"], last["degraded"])
+        argv = factory_env.generate_argv(self.root, image=Path(seen["image"]), quality="psx", stem=seen["stem"],
+                                         poly="medium", mesh=Path(seen["mesh"]), paint=seen["paint"])
+        self.assertEqual(argv[argv.index("--mesh") + 1], str(clay.resolve()))
+        self.assertIn("off", argv)
+        # Without them a make is as before: paint on, no mesh. The query string's "false" is paint off too.
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "plain"})
+        self.assertIsNone(seen["mesh"])
+        self.assertIs(seen["paint"], True)
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "q", "paint": "false"})
+        self.assertIs(seen["paint"], False)
+
+    def test_generate_takes_fill_and_mirror_ends(self) -> None:
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "quality": "textured",
+                                        "fill": "photo"})
+        self.assertEqual(seen["fill"], "photo")
+        self.assertIsNone(seen["mirror_ends"])
+        self.assertEqual(last.get("fill"), "photo")
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "fill": "photo",
+                                     "mirror_ends": "off"})
+        self.assertIs(seen["mirror_ends"], False)
+        # Absent or "none": as before.
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f"})
+        self.assertEqual(seen["fill"], "none")
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "fill": "none"})
+        self.assertEqual(seen["fill"], "none")
+
+    def test_generate_takes_delight(self) -> None:
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "quality": "textured"})
+        self.assertIsNone(seen["delight"])
+        seen, last = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "quality": "textured",
+                                        "fill": "photo", "delight": True})
+        self.assertIs(seen["delight"], True)
+        self.assertIs(last.get("delight"), True)
+        argv = factory_env.generate_argv(self.root, image=Path(seen["image"]), quality="textured", stem="f",
+                                         poly="medium", delight=seen["delight"])
+        self.assertEqual(argv[argv.index("--delight") + 1], "on")
+        # The query string's "off" is false.
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "delight": "off"})
+        self.assertIs(seen["delight"], False)
+
+    def test_generate_refuses_a_bad_fill(self) -> None:
+        for body, word in (
+            ({"fill": "swatch"}, "fill"),
+            ({"fill": ["photo"]}, "fill"),
+            ({"fill": "photo", "quality": "draft"}, "draft"),
+            ({"fill": "photo", "mirror_ends": "maybe"}, "mirror_ends"),
+            ({"fill": "photo", "mirror_ends": 1}, "mirror_ends"),
+            ({"delight": "maybe"}, "delight"),
+            ({"delight": 1}, "delight"),
+            ({"delight": [True]}, "delight"),
+        ):
+            with self.subTest(body=body):
+                status, payload = http_json(self.base + "/generate", method="POST",
+                                            data={"image": "in/radio-concept.jpg", "stem": "f", **body})
+                self.assertEqual(status, 400, payload)
+                self.assertIn(word, payload.get("error") or "")
+        _, idle = http_json(self.base + "/status")
+        self.assertEqual(idle.get("state"), "idle")
+
+    def test_fill_is_a_labelled_stage(self) -> None:
+        prog = factory_http.parse_progress("STAGES isolate shape reduce unwrap retexture fill lods inspect\n"
+                                           "STAGE fill x\n")
+        self.assertEqual(prog["stages"][5], {"key": "fill", "label": "Fill what the photo missed"})
+        self.assertEqual(prog["stage_index"], 5)
+
+    def test_generate_refuses_a_mesh_outside_the_asset(self) -> None:
+        write_triangle_glb(self.root / "in" / "loose.glb")
+        write_triangle_glb(self.root / "out" / "other" / "mesh.glb")
+        write_triangle_glb(self.root.parent / f"{self.root.name}-outside.glb")
+        (self.root / "out" / "radio" / "notes.txt").write_text("x")
+        for body, word in (
+            ({"mesh": f"../{self.root.name}-outside.glb"}, "escapes"),
+            ({"mesh": str(self.root.parent / f"{self.root.name}-outside.glb")}, "escapes"),
+            ({"mesh": "in/loose.glb"}, "out/<stem>/"),
+            ({"mesh": "out/mesh.glb"}, "out/<stem>/"),
+            ({"mesh": "out/radio/notes.txt"}, ".glb"),
+            ({"mesh": "out/other/mesh.glb", "stem": "radio"}, "out/radio/"),
+            ({"mesh": "out/radio/missing.glb"}, "no mesh"),
+            ({"mesh": ["out/radio/mesh.glb"]}, "mesh"),
+            ({"mesh": "out/radio/mesh.glb", "paint": "maybe"}, "paint"),
+            ({"mesh": "out/radio/mesh.glb", "paint": False, "quality": "pbr"}, "pbr"),
+            # The picture is still required: isolate and the photo bake read it.
+            ({"mesh": "out/radio/mesh.glb", "image": ""}, "picture"),
+        ):
+            with self.subTest(body=body):
+                status, payload = http_json(self.base + "/generate", method="POST",
+                                            data={"image": "in/radio-concept.jpg", **body})
+                self.assertEqual(status, 400, payload)
+                self.assertIn(word, payload.get("error") or "")
+        _, idle = http_json(self.base + "/status")
+        self.assertEqual(idle.get("state"), "idle")
+
+    def test_unwrap_is_a_labelled_stage(self) -> None:
+        prog = factory_http.parse_progress("STAGES isolate shape reduce unwrap retexture inspect\nSTAGE unwrap x\n")
+        self.assertEqual(prog["stages"][3], {"key": "unwrap", "label": "Unwrap the mesh"})
+        self.assertEqual(prog["stage_index"], 3)
 
     def test_reap_without_a_running_job_does_nothing(self) -> None:
         self.factory.reap()

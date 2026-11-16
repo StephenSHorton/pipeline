@@ -173,6 +173,27 @@ class BuildTests(unittest.TestCase):
         fc = rig_build.facing_check(m, None, None, legs, 0.0, prior={**prior, "votes": {"toes": 0, "vlm": 0}})
         self.assertEqual(fc["cues"]["psx"]["vote"], 0)  # a check with no votes behind it says nothing
 
+    def test_canonical_draw_outweighs_two_weak_cues(self) -> None:
+        # the chicken: a top that leans back and toes that read backwards; the views were drawn facing +Z
+        class M:
+            pass
+        rng = np.random.default_rng(0)
+        m = M()
+        m.V = rng.uniform([-0.2, 0, -0.3], [0.2, 1.0, 0.3], (800, 3))
+        m.V[m.V[:, 1] > 0.9, 2] -= 0.2
+        m.V[m.V[:, 1] < 0.05, 2] -= 0.15
+        m.y0, m.H = 0.0, 1.0
+        legs = [np.array([0.1, 0.0]), np.array([-0.1, 0.0])]
+        self.assertFalse(rig_build.facing_check(m, None, None, legs, 0.0)["agrees"])
+        fc = rig_build.facing_check(m, None, None, legs, 0.0, canonical=True)
+        self.assertEqual(fc["cues"]["drawn"]["vote"], 1)
+        self.assertTrue(fc["agrees"])
+        # a psx check that ran speaks for itself; the draw is not counted twice
+        fc = rig_build.facing_check(m, None, None, legs, 0.0, canonical=True,
+                                    prior={"head_axis": "-Z", "votes": {"toes": -1, "vlm": -1}})
+        self.assertNotIn("drawn", fc["cues"])
+        self.assertFalse(fc["agrees"])
+
     def test_no_prediction_builds_from_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             fx = synth_bird.write(Path(t))

@@ -67,6 +67,15 @@ class ReducePiecesTests(unittest.TestCase):
         self.assertEqual((info["pieces"], info["kept"], info["kept_long"]), (2, 2, 1))
         self.assertGreater(out.bounds[1][0], 1.2)
 
+    def test_keeps_a_small_piece_touching_the_body(self) -> None:
+        # TRELLIS.2's pig tail: a piece of its own, well under 2% of the area, but on the rump, not floating.
+        main = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+        tail = trimesh.creation.icosphere(subdivisions=1, radius=0.1)
+        tail.apply_translation([1.08, 0, 0])
+        out, info = reduce_mesh.drop_small_pieces(trimesh.util.concatenate([main, tail]))
+        self.assertEqual((info["kept"], info["kept_touching"]), (2, 1))
+        self.assertGreater(out.bounds[1][0], 1.1)
+
     def test_uv_seams_do_not_split_a_piece(self) -> None:
         mesh = trimesh.creation.icosphere(subdivisions=3)
         # Unshared corners: every face is its own island by index, one piece by position.

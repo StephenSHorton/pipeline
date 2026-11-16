@@ -67,6 +67,10 @@ FILES: dict[str, tuple[str, ...]] = {
     "mesh": (
         "mesh*.glb",
         "textured*.glb",
+        # the photo bake's sidecars (select report, camera fits, fill, albedo, cover): a pick that left a newer
+        # bake's select.json beside an older bake made the review judge the old bake by it
+        "textured*.json",
+        "textured*.png",
         "pbr.glb",
         "pixel.glb",
         "psx.glb",
@@ -81,10 +85,15 @@ FILES: dict[str, tuple[str, ...]] = {
         "shape.json",
         "degraded.json",
         "views/lifted/*",
+        # The agent workbench's products (scripts/workbench/): clay, its mesh, edits, the scene.
+        "workbench/*",
+        "workbench/**/*",
     ),
-    # rig/template/* is a template built for this model (rig.glb, clips.glb, its reports); of rig/preview/ only the
-    # contact sheet and frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be rendered again.
-    "rig": ("rigged.glb", "rig/*", "rig/template/*", "rig/preview/contact_sheet.png", "rig/preview/frames.json"),
+    # rig/template/* is a template built for this model (rig.glb, clips.glb, its reports); rig/source/ the animated
+    # model the clips came from (rig.py motion_source); of rig/preview/ only the contact sheet, its thumbnail and
+    # frames.json (rig_render.py): the per-frame pictures (hundreds a rig) can be rendered again.
+    "rig": ("rigged.glb", "rig/*", "rig/template/*", "rig/source/*", "rig/preview/contact_sheet.png",
+            "rig/preview/thumb.png", "rig/preview/frames.json"),
     "stack": ("stack/*",),
     "export": ("export/**/*",),
 }

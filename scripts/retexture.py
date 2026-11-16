@@ -4,12 +4,23 @@
 Hunyuan/AniGen paint is a hallucination in a fragmented atlas. This pass overwrites
 texels the camera actually saw with the input photo. Occluded texels keep the
 generated atlas. Multiple --view images (front/back/top) stack. --mirror also bakes a side-on
-photo, flipped, onto the far side.
+photo, flipped, onto the far side; with --mirror-ends a front-on (or back-on) one goes onto the opposite end. --first-wins puts the first --view (a real photo) over the
+others instead of averaging it in: the rest (drawn views) fill only where it did not reach.
+
+--delight [strength] takes the photo's own lighting out of every --view before it is baked (scripts/delight.py: the
+shade lifted toward the lit level), drawn views as well as the photo; off, the bake is as before. The silhouette fit
+and the bake mask come from the untouched alpha, so the cameras are the same. Deep shade that needed a lift near
+delight's cap (sky-lit, grey-blue once brightened) splats with its trust as weight, so where it is all the photo had
+the texel's coverage drops below --keep and fill.py paints the material there instead.
+
+Next to the albedo it writes <out>.cover.png: each texel's photo confidence (splat weight, mirror included, clipped
+to 1) as 0..255, so a later pass (workbench/fill.py) knows which texels no photo reached (below --keep * 255).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +28,10 @@ import numpy as np
 import trimesh
 from PIL import Image
 from scipy import ndimage
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import delight as _delight  # noqa: E402
+import seam_bake  # noqa: E402
 
 
 def look_at(eye, target, up=np.array([0.0, 1.0, 0.0], dtype=np.float32)):
@@ -90,8 +105,8 @@ def iou(a, b):
     return float(inter) / float(union + 1e-8)
 
 
-def sample_surface(mesh, n):
-    pts, fid = trimesh.sample.sample_surface(mesh, n)
+def sample_surface(mesh, n, with_fid: bool = False):
+    pts, fid = trimesh.sample.sample_surface(mesh, n, seed=0) if with_fid else trimesh.sample.sample_surface(mesh, n)
     faces = mesh.faces[fid]
     tri = mesh.vertices[faces]
     v0 = tri[:, 1] - tri[:, 0]
@@ -110,16 +125,31 @@ def sample_surface(mesh, n):
     bary = np.stack([u, v, w], axis=1)
     nrm = np.cross(v0, v1)
     nrm /= np.linalg.norm(nrm, axis=1, keepdims=True) + 1e-8
+    if with_fid:
+        return pts.astype(np.float32), faces, bary.astype(np.float32), nrm.astype(np.float32), fid
     return pts.astype(np.float32), faces, bary.astype(np.float32), nrm.astype(np.float32)
 
 
-def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None, el_range=None):
+def aspect(mask) -> float:
+    """A silhouette box's width over height."""
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return 1.0
+    return float(xs.max() - xs.min() + 1) / float(ys.max() - ys.min() + 1)
+
+
+def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None, el_range=None, ref_aspect=None,
+               spread=50):
+    """(score, az, el, radius). Silhouettes are compared cropped and stretched square, so a camera turned away
+    from a side view (the body foreshortened) can score almost as well; ref_aspect (the photo silhouette's
+    width / height) scales the score by how well the box shapes agree, which tells those apart."""
     sh = sw = 256
     best = (-1.0, 40.0, 15.0, radius)
     if az_hint is None:
         azs = list(range(0, 360, 20))
     else:
-        azs = [((az_hint + d) % 360) for d in range(-50, 51, 10)]
+        step = 10 if spread > 20 else 5
+        azs = [((az_hint + d) % 360) for d in range(-spread, spread + 1, step)]
     els = el_range if el_range is not None else [-10, 5, 18, 32, 48]
     for az in azs:
         for el in els:
@@ -130,10 +160,13 @@ def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None
             if inb.any():
                 sil[py[inb], px[inb]] = 1
             score = iou(pack_sil(sil), ref_sil)
+            if ref_aspect is not None and inb.any():
+                score *= min(aspect(sil), ref_aspect) / max(aspect(sil), ref_aspect)
             if score > best[0]:
                 best = (score, float(az), float(el), radius)
     az0, el0 = best[1], best[2]
-    for az in np.linspace(az0 - 16, az0 + 16, 7):
+    reach = 16 if spread > 20 else 8
+    for az in np.linspace(az0 - reach, az0 + reach, 7):
         for el in np.linspace(el0 - 10, el0 + 10, 5):
             for rad in (radius * 0.85, radius, radius * 1.2):
                 eye = eye_on_sphere(center, rad, az, el)
@@ -143,12 +176,17 @@ def fit_camera(pts, center, radius, ref_sil, fovy=np.deg2rad(40.0), az_hint=None
                 if inb.any():
                     sil[py[inb], px[inb]] = 1
                 score = iou(pack_sil(sil), ref_sil)
+                if ref_aspect is not None and inb.any():
+                    score *= min(aspect(sil), ref_aspect) / max(aspect(sil), ref_aspect)
                 if score > best[0]:
                     best = (score, float(az), float(el), float(rad))
     return best
 
 
-def load_photo(path):
+def load_photo(path, delight: float | None = None, with_trust: bool = False):
+    """(rgb, alpha_fit, alpha_bake) of a cut-out. delight > 0: rgb with the photo's shading taken out (delight.py);
+    both masks still come from the photo as it is, so the fit and the bake mask are the same as without.
+    with_trust: a fourth item, delight's per-pixel trust (all ones without delight)."""
     im = Image.open(path).convert("RGBA")
     arr = np.array(im)
     rgb = arr[:, :, :3].astype(np.float32)
@@ -161,6 +199,13 @@ def load_photo(path):
     ring = max(2, int(round(0.008 * max(a.shape))))
     rim = solid & ~ndimage.binary_erosion(solid, iterations=ring)
     alpha_bake = solid & ~(rim & (luma >= 245))
+    trust = np.ones(a.shape, np.float32)
+    if delight:
+        # After the masks: a lifted shadow on the rim must not read as the white halo dropped above.
+        out, _, trust = _delight.delight_full(arr, strength=float(delight), report=False)
+        rgb = out[:, :, :3].astype(np.float32)
+    if with_trust:
+        return rgb, alpha_fit, alpha_bake, trust
     return rgb, alpha_fit, alpha_bake
 
 
@@ -186,8 +231,119 @@ def register(pts, vp, alpha_fit):
     return px, py, ndc[:, 2], inb
 
 
-def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, name):
-    """Project one photo from one camera into the atlas accumulators. Returns visible sample count."""
+def bold_features(rgb, alpha, grow: int = 3, depth: float = 48.0, max_share: float = 0.002):
+    """Small dark features (eyes, nostrils, hoof clefts) grown by grow px in a drawing, so they still read once
+    the bake lands on a 256 px PS1 atlas: the pig's drawn eye is 8 px across and came out as one pale texel. A
+    feature is a blob at least depth darker than its 21 px median, off the cut-out's rim, at most max_share of the
+    subject (shading and big dark patches stay as drawn). Returns (rgb, how many features)."""
+    lum = rgb.mean(axis=2)
+    inner = ndimage.binary_erosion(alpha, iterations=4)
+    dark = inner & (lum < ndimage.median_filter(lum, size=21) - depth)
+    # not the rim of a big dark area (a dark patch's edge is darker than its median too)
+    big, nb = ndimage.label(inner & (lum < np.median(lum[alpha]) - depth))
+    if nb:
+        size = ndimage.sum(np.ones_like(lum), big, index=np.arange(1, nb + 1))
+        dark &= ~np.concatenate([[False], size > max_share * alpha.sum()])[big]
+    lab, n = ndimage.label(dark)
+    if n == 0:
+        return rgb, 0
+    area = ndimage.sum(np.ones_like(lum), lab, index=np.arange(1, n + 1))
+    keep = np.zeros(n + 1, bool)
+    keep[1:] = (area >= 3) & (area <= max_share * alpha.sum())
+    region = ndimage.binary_dilation(keep[lab], iterations=grow) & alpha
+    out = rgb.copy()
+    for c in range(3):
+        out[..., c][region] = np.minimum(rgb[..., c], ndimage.grey_erosion(rgb[..., c], size=2 * grow + 1))[region]
+    return out, int(keep[1:].sum())
+
+
+def fit_head(px, py, inb, head, alpha):
+    """A side view's head moved onto the mesh's. register() fits the whole silhouette's box, so the nose tip and
+    the ear tops already meet; what lies between does not when the drawn head is shaped unlike the mesh's (the
+    pig's drawn snout is shorter than TRELLIS.2's, so its eye landed on the cheek). The ear tip is the landmark
+    between: the mesh's and the drawing's (the top of each silhouette past the same neck column) are matched,
+    the neck and nose stay where they are, and the columns between stretch piecewise. Returns the new (px, py);
+    fit_head.report says how far the ear moved."""
+    h = head & inb
+    fit_head.report = {"moved": False}
+    if h.sum() < 100:
+        return px, py
+    hx, hy = px[h].astype(np.float64), py[h].astype(np.float64)
+    right = hx.mean() > px[inb].mean()  # which way the nose points in the picture
+    x0 = hx.min() if right else hx.max()
+    xm = hx.max() if right else hx.min()
+    yb = hy.max()
+    top = hy <= hy.min() + 2
+    ear_m = float(np.median(hx[top]))
+    ys, xs = np.nonzero(alpha)
+    sel = ((xs >= x0) if right else (xs <= x0)) & (ys <= yb)
+    if sel.sum() < 100 or abs(xm - x0) < 8:
+        return px, py
+    ys, xs = ys[sel], xs[sel]
+    ear_d = float(np.median(xs[ys <= ys.min() + 2]))
+    # the ear tip must sit strictly between the neck and the nose on both
+    lo, hi = min(x0, xm), max(x0, xm)
+    if not (lo < ear_m < hi and lo < ear_d < hi):
+        return px, py
+    knots_m = np.array(sorted([x0, ear_m, xm]))
+    knots_d = np.array([x0, ear_d, xm])[np.argsort([x0, ear_m, xm])]
+    ph, pw = alpha.shape
+    out_x = px.copy()
+    out_x[h] = np.clip(np.round(np.interp(hx, knots_m, knots_d)), 0, pw - 1).astype(np.int32)
+    fit_head.report = {"moved": True, "ear_px": round(float(ear_d - ear_m), 1), "head_px": round(float(abs(xm - x0)), 1)}
+    return out_x, py
+
+
+def nostrils(rgb, alpha, depth: float = 30.0, min_area: int = 100):
+    """A front view's nostrils: the lower of the two biggest pairs of dark spots in the face (the other is the
+    eyes), side by side about the middle of the figure in its top 60%. (x, y) of the pair's middle, or None."""
+    lum = rgb.mean(axis=2)
+    inner = ndimage.binary_erosion(alpha, iterations=4)
+    lab, n = ndimage.label(inner & (lum < ndimage.median_filter(lum, 21) - depth))
+    if n < 2:
+        return None
+    area = np.bincount(lab.ravel(), minlength=n + 1)
+    ids = [i for i in range(1, n + 1) if area[i] >= min_area]
+    cm = dict(zip(ids, ndimage.center_of_mass(lab > 0, lab, ids)))
+    ys, xs = np.where(alpha)
+    width, mid, low = float(np.ptp(xs)), (xs.min() + xs.max()) / 2.0, ys.min() + 0.6 * np.ptp(ys)
+    pairs = []
+    for a in ids:
+        for b in ids:
+            (ya, xa), (yb, xb) = cm[a], cm[b]
+            if xa < xb and abs(ya - yb) < 0.03 * width and 0.05 * width < xb - xa < 0.4 * width \
+                    and abs((xa + xb) / 2 - mid) < 0.1 * width and max(ya, yb) < low:
+                pairs.append((area[a] + area[b], (xa + xb) / 2, (ya + yb) / 2))
+    pairs = sorted(pairs, reverse=True)[:2]
+    if not pairs:
+        return None
+    _, x, y = max(pairs, key=lambda p: p[2])
+    return float(x), float(y)
+
+
+def fit_snout(px, py, inb, pts, eye, center, rgb, alpha):
+    """A front view's face fitted to the mesh's: the snout tip (the samples nearest the camera) onto the drawn
+    nostrils, y only, piecewise between the figure's top and bottom. TRELLIS.2's pig landed its snout tip 60 px
+    above the drawn snout, between the eyes, and the nose painted on the face above it. Unmoved without nostrils."""
+    fit_snout.report = {"moved": False}
+    found = nostrils(rgb, alpha)
+    fwd = (eye - center) / max(float(np.linalg.norm(eye - center)), 1e-9)
+    s = (pts - center) @ fwd
+    tip = inb & (s >= np.percentile(s[inb], 99.7)) if inb.any() else inb
+    if found is None or not tip.any():
+        return px, py
+    ys = np.where(alpha)[0]
+    y0, y1, ym, yd = float(ys.min()), float(ys.max()), float(np.median(py[tip])), found[1]
+    if not y0 < ym < y1 or not y0 < yd < y1:
+        return px, py
+    out = np.round(np.interp(py, [y0, ym, y1], [y0, yd, y1])).astype(np.int32)
+    fit_snout.report = {"moved": True, "tip_px": round(ym, 1), "nostrils_px": round(yd, 1)}
+    return px, out
+
+
+def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, name, trust=None):
+    """Project one photo from one camera into the atlas accumulators. Returns visible sample count. trust (per photo
+    pixel, 0..1, from delight) scales each sample's weight."""
     th, tw = weight.shape
     ph, pw = rgb.shape[:2]
     vp = perspective(np.deg2rad(40.0), 1.0, 0.05, 40.0) @ look_at(eye, center)
@@ -214,6 +370,8 @@ def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weig
     tx = tx.astype(np.int32)
     ty = ty.astype(np.int32)
     conf = np.clip((ndotv[winners] - 0.12) / 0.55, 0.0, 1.0)
+    if trust is not None:
+        conf = conf * trust[py[winners], px[winners]]
     col = rgb[py[winners], px[winners]]
     for ox in range(-2, 3):
         for oy in range(-2, 3):
@@ -226,6 +384,21 @@ def splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weig
             np.add.at(accum, (y, x, 2), col[:, 2] * w)
             np.add.at(weight, (y, x), w)
     return len(winners)
+
+
+def splat_colours(uv_pts, col, accum, weight):
+    """Splat ready colours (one per surface sample, full weight) into the atlas accumulators (retexture --select)."""
+    th, tw = weight.shape
+    tx = (np.clip(uv_pts[:, 0], 0, 1) * (tw - 1)).astype(np.int32)
+    ty = (np.clip(1.0 - uv_pts[:, 1], 0, 1) * (th - 1)).astype(np.int32)
+    for ox in range(-2, 3):
+        for oy in range(-2, 3):
+            w = float(np.exp(-0.35 * (ox * ox + oy * oy)))
+            x = np.clip(tx + ox, 0, tw - 1)
+            y = np.clip(ty + oy, 0, th - 1)
+            for ch in range(3):
+                np.add.at(accum, (y, x, ch), col[:, ch] * w)
+            np.add.at(weight, (y, x), w)
 
 
 def blend(base, accum, weight, keep):
@@ -250,6 +423,54 @@ def blend(base, accum, weight, keep):
 FACING_OFFSET = {"camera": 0.0, "right": -90.0, "away": 180.0, "left": 90.0}
 
 
+def _thumb(path, size: int = 32) -> tuple[np.ndarray, np.ndarray]:
+    """The cutout cropped to its subject and fitted, aspect kept, centred in a size square: its mask and its colours
+    on grey. The aspect is half the clue: a profile is wide where a front view is narrow."""
+    rgb, alpha, _ = load_photo(path)
+    m = np.zeros((size, size), bool)
+    c = np.full((size, size, 3), 128.0, np.float32)
+    ys, xs = np.where(alpha)
+    if len(xs) == 0:
+        return m, c
+    box = (slice(ys.min(), ys.max() + 1), slice(xs.min(), xs.max() + 1))
+    h, w = alpha[box].shape
+    k = size / max(h, w)
+    th, tw = max(1, round(h * k)), max(1, round(w * k))
+    y0, x0 = (size - th) // 2, (size - tw) // 2
+    a = np.array(Image.fromarray(alpha[box].astype(np.uint8) * 255).resize((tw, th), Image.BILINEAR)) > 127
+    col = np.where(alpha[box][..., None], rgb[box], 128.0).astype(np.uint8)
+    m[y0:y0 + th, x0:x0 + tw] = a
+    c[y0:y0 + th, x0:x0 + tw] = np.asarray(Image.fromarray(col).resize((tw, th), Image.BILINEAR), np.float32)
+    return m, c
+
+
+def photo_offset(photo, named: list[tuple[str, float]]) -> tuple[float, str]:
+    """The offset of the named view (path, offset) the photo looks most like: outline (which way the head points)
+    plus colour (a face from a rump, where front and back outlines mirror). The views were drawn from this photo,
+    so the nearest one is roughly its angle; the fit then searches within 50 degrees of it."""
+    m, c = _thumb(photo)
+    best = None
+    for path, off in named:
+        vm, vc = _thumb(path)
+        score = (1.0 - iou(m, vm)) + float(np.abs(c - vc).mean()) / 255.0
+        if best is None or score < best[0]:
+            best = (score, off, path)
+    return best[1], best[2]
+
+
+def mirror_az(az: float, off: float | None, ends: bool = False) -> float:
+    """Azimuth of the camera reflected through the mid-plane that --mirror bakes across (elevation and radius stay).
+
+    Without ends (plain --mirror, as it always was): the glTF z mid-plane for every view, the sagittal plane of a
+    subject standing along x. With ends (--mirror-ends): side-on views (offset +-90) still use z; any other view
+    the axis-aligned vertical mid-plane most across its line of sight, z when the camera looks mostly along z (az
+    near 0 or 180), else x. Reflecting through z maps az to 180 - az, through x to -az."""
+    if not ends or (off is not None and abs(off) == 90.0):
+        return (180.0 - az) % 360
+    a = np.deg2rad(az)
+    return (180.0 - az) % 360 if abs(np.cos(a)) >= abs(np.sin(a)) else (-az) % 360
+
+
 def view_offset(stem: str) -> float | None:
     if "front" in stem:
         return FACING_OFFSET["camera"]
@@ -272,21 +493,54 @@ def main() -> int:
     ap.add_argument("--samples", type=int, default=280_000)
     ap.add_argument("--keep", type=float, default=0.18, help="leave generated albedo where photo confidence is below this")
     ap.add_argument("--mirror", action="store_true",
-                    help="side-on photo: also bake it flipped onto the far side (through the glTF z mid-plane)")
+                    help="also bake each photo flipped onto the side it cannot see: through the glTF z mid-plane, "
+                         "the far side of a side-on one")
+    # Its own flag so a plain --mirror bake (generate.sh without --fill photo) stays byte-identical: the end rule
+    # reflects a view that looks along x through x, where --mirror alone always reflected through z.
+    ap.add_argument("--mirror-ends", action="store_true",
+                    help="with --mirror: a view that is not side-on mirrors through the vertical mid-plane across "
+                         "its line of sight instead, so a front-on or back-on photo lands on the opposite end")
     ap.add_argument("--erode", type=float, default=0.0,
                     help="pull the bake mask in by this fraction of the photo's longer side (drops cutout halos)")
     ap.add_argument("--first-facing", choices=sorted(FACING_OFFSET), default=None,
                     help="which way the subject faces in the first --view when its name does not say "
                          "(camera = front view; right/left = side-on, head toward image right/left; away = back)")
+    ap.add_argument("--front-az", type=float, default=None, metavar="DEG",
+                    help="where the mesh's front faces (camera azimuth, degrees) when the shape step knows it "
+                         "(mv_orient turned the multi-view shape so its canonical view looks from az 0): the anchor "
+                         "is searched around it instead of all the way round")
+    ap.add_argument("--first-wins", action="store_true",
+                    help="the first --view bakes over the others, which fill only where it did not land "
+                         "(a real photo over drawn views); a weak camera fit for it is averaged in as usual")
+    ap.add_argument("--delight", type=float, nargs="?", const=1.0, default=None, metavar="STRENGTH",
+                    help="take the photo's lighting out of every --view before baking it (delight.py; 1 when given "
+                         "bare, 0 or absent: off): its shade comes up to the lit level instead of baking in as a "
+                         "dark patch, and shade too deep to lift splats with less weight (fill.py covers it). The "
+                         "fit and bake mask use the untouched alpha, so the cameras do not change")
+    ap.add_argument("--flat-paint", action="store_true",
+                    help="with --select: the paint under the views has no eyes, nostrils or ear insides of its own "
+                         "(TRELLIS.2's): a side-on creature's side views paint the head too, each fitted to the "
+                         "mesh's head on its own (fit_head), nothing a view draws is dropped for disagreeing "
+                         "with the paint, no view is aligned to it, and small dark features are drawn bolder (bold_features). Without it those come from the paint, as Hunyuan's drew them")
+    ap.add_argument("--select", action="store_true",
+                    help="photogrammetry bake (scripts/seam_bake.py): each triangle takes the one view that sees it "
+                         "best, seams placed where the views agree, every view's colour evened out to the others "
+                         "and the seams levelled; the base texture (the paint) takes what no view sees well, "
+                         "colour-matched to the views. Off: every view averaged in wherever it lands")
+    ap.add_argument("--key", help="R,G,B of the drawing sheet's key (flat/key.json): with --select, paint that "
+                                  "colour where no view lands is the key leaking in and takes the colour around it")
     args = ap.parse_args()
     # Each view's azimuth offset from the front camera (None: unknown). The anchor (fitted freely) is the first
     # side-on view: its silhouette shows which way the head points, while front and back silhouettes are a
     # coin-flip, so a front-first free fit can land on the back. Splats accumulate, so order only moves fit.json.
+    # A --first-wins photo of unknown angle is searched around the named view it looks most like (photo_offset):
+    # fitted all the way round, a front photo of a left/right symmetric subject matches the back as well.
     offsets = [view_offset(Path(v).stem.lower()) for v in args.view]
     if args.first_facing is not None:
         offsets[0] = FACING_OFFSET[args.first_facing]
     side = next((i for i, o in enumerate(offsets) if o is not None and abs(o) == 90.0), 0)
     order = [side] + [i for i in range(len(args.view)) if i != side]
+    top = order.index(0) if args.first_wins else -1  # where the first --view landed in the fit order
     views = [args.view[i] for i in order]
     offsets = [offsets[i] for i in order]
     first_off = offsets[0] or 0.0
@@ -315,7 +569,7 @@ def main() -> int:
     radius0 = diag * 1.45
 
     print(f"retexture: sampling {args.samples} surface points")
-    pts, faces, bary, nrm = sample_surface(mesh, args.samples)
+    pts, faces, bary, nrm, fid = sample_surface(mesh, args.samples, with_fid=True)
     uv_pts = (
         bary[:, 0:1] * uvs[faces[:, 0]]
         + bary[:, 1:2] * uvs[faces[:, 1]]
@@ -326,10 +580,20 @@ def main() -> int:
     weight = np.zeros((th, tw), dtype=np.float32)
     accum_m = np.zeros_like(albedo)
     weight_m = np.zeros((th, tw), dtype=np.float32)
+    accum_t = np.zeros_like(albedo)
+    weight_t = np.zeros((th, tw), dtype=np.float32)
     reports = []
+    observed = []  # --select: what each view saw, baked together after the loop
+    side_on = args.select and args.first_facing in ("right", "left")  # a creature's turnaround
+    base_col = seam_bake.sample_atlas(albedo, uv_pts) if args.select else None
+    tol = 0.02 * diag
 
-    for view, off in zip(views, offsets):
-        rgb, alpha_fit, alpha_bake = load_photo(view)
+    for i, (view, off) in enumerate(zip(views, offsets)):
+        rgb, alpha_fit, alpha_bake, trust = load_photo(view, args.delight, with_trust=True)
+        if args.flat_paint:
+            rgb, n_feat = bold_features(rgb, alpha_bake)
+            print(f"retexture: {Path(view).name} {n_feat} small dark features made bolder")
+        trust = trust if args.delight else None
         ph, pw = rgb.shape[:2]
         if args.erode > 0:
             r = max(1, int(round(args.erode * max(ph, pw))))
@@ -337,45 +601,165 @@ def main() -> int:
         ref_sil = pack_sil(alpha_fit)
         stem = Path(view).stem.lower()
         az_hint, el_range = None, None
+        if not reports and args.front_az is not None:
+            # a flat subject's side silhouette fits as well from behind: free, the scarecrow's right view landed at
+            # az 75 and its front texture went on its back (front at 175 where the oriented shape's front is 0)
+            az_hint = (args.front_az + first_off) % 360
         if reports:
             # Hints are offsets from the FRONT camera, found from the anchor's fit and its known offset
             # (its name, or --first-facing for the pipeline's unnamed lifted.png).
             front_az = (reports[0]["az"] - first_off) % 360
+            if off is None and i == top:
+                named = [(v, o) for v, o in zip(views, offsets) if o is not None]
+                if named:
+                    off, like = photo_offset(view, named)
+                    print(f"retexture: {Path(view).name} looks most like {Path(like).name}; searched around it")
             if off is not None:
                 az_hint = (front_az + off) % 360
         if "top" in stem:
             el_range = [60, 72, 82, 88]
-        score, az, el, rad = fit_camera(pts, center, radius0, ref_sil, az_hint=az_hint, el_range=el_range)
+        # --select (drawn turnaround views on a shape the shape step oriented): every view's angle is known up to
+        # a few degrees, so the search stays near it and the box shape counts (a 40 degree turn fit 0.87 before)
+        tight = args.select and args.front_az is not None and az_hint is not None
+        score, az, el, rad = fit_camera(pts, center, radius0, ref_sil, az_hint=az_hint, el_range=el_range,
+                                        ref_aspect=aspect(alpha_fit) if args.select else None,
+                                        spread=15 if tight else 50)
         print(f"retexture: {Path(view).name}  IoU={score:.3f}  az={az:.1f} el={el:.1f} r={rad:.3f}")
         reports.append({"view": view, "iou": score, "az": az, "el": el, "radius": rad})
+        on_top = i == top
         if score < 0.25:
             print("retexture: weak camera fit, still projecting")
+            if on_top:
+                # A photo the shape does not match would paste a wrong-angle picture over everything.
+                print("retexture: weak fit for the first view: averaged in, not on top")
+                on_top = False
+        if args.first_wins:
+            reports[-1]["on_top"] = on_top
 
         eye = eye_on_sphere(center, rad, az, el)
-        splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, accum, weight, Path(view).name)
+        if args.select:
+            head = None
+            if side_on and off is not None and abs(off) == 90.0:
+                front_dir = eye_on_sphere(center, 1.0, (az - off) % 360, 0.0) - center
+                front_dir[1] = 0.0
+                front_dir /= np.linalg.norm(front_dir) + 1e-9
+                along = (pts - center) @ front_dir
+                t = (along - along.min()) / max(float(np.ptp(along)), 1e-9)
+                y = (pts[:, 1] - pts[:, 1].min()) / max(float(np.ptp(pts[:, 1])), 1e-9)
+                head = seam_bake.head_zone(t, y, float(np.ptp(along)), float(np.ptp(pts[:, 1])))
+
+            def look(eye_, rgb_, fit_, bake_, trust_, name_, boost, head_=None, snout_=False):
+                vp = perspective(np.deg2rad(40.0), 1.0, 0.05, 40.0) @ look_at(eye_, center)
+                px, py, _, inb = register(pts, vp, fit_)
+                # observe's tol is world units (2% of the diagonal): its depth must be too. NDC z moved 0.014 over
+                # 2 m at this camera, so a 0.046 tol hid nothing: the back view "saw" the snout through the body.
+                depth = np.linalg.norm(pts - eye_, axis=1).astype(np.float32)
+                if head_ is not None:
+                    px, py = fit_head(px, py, inb, head_, fit_)
+                    print(f"retexture: {name_} head fitted {fit_head.report}")
+                if snout_:
+                    px, py = fit_snout(px, py, inb, pts, eye_, center, rgb_, fit_)
+                    print(f"retexture: {name_} snout fitted {fit_snout.report}")
+                seen, ndotv = seam_bake.observe(pts, nrm, px, py, depth, inb, eye_, bake_, tol)
+                stray = None
+                # --flat-paint: nothing to align to (the paint has no ears or eyes); it smeared a drawn ear on the neck
+                if os.environ.get("RETEXTURE_ALIGN", "1") != "0" and not args.flat_paint:
+                    # nudge the picture onto the mesh: the paint (which sits on the mesh exactly) as this camera
+                    # sees it is the target, so a drawn ear lands on the mesh's ear, not on the neck behind it
+                    front = inb & (ndotv > 0)
+                    zb_seen, _ = seam_bake.observe(pts, nrm, px, py, depth, front, eye_, np.ones_like(bake_), tol)
+                    ren, rmask = seam_bake.render_base(px, py, zb_seen, base_col, bake_.shape)
+                    dy, dx = seam_bake.align(ren, rmask, rgb_, fit_)
+                    print(f"retexture: aligned {name_} {seam_bake.align.report}")
+                    cy, cx = np.clip(py, 0, ph - 1), np.clip(px, 0, pw - 1)
+                    px = np.clip(np.round(px + dx[cy, cx]), 0, pw - 1).astype(np.int32)
+                    py = np.clip(np.round(py + dy[cy, cx]), 0, ph - 1).astype(np.int32)
+                    seen = zb_seen & (ndotv > seam_bake.ANGLE_MIN) & bake_[py, px]
+                    stray = seam_bake.stray_contours(rgb_, fit_, ren, rmask, cx, cy, px, py)
+                    print(f"retexture: {int((stray & seen).sum())} samples of {name_} draw a contour the mesh lacks")
+                conf = seam_bake.confidence(ndotv, px, py, bake_, seam_bake.fit_quality(score), trust_)
+                col = rgb_[np.clip(py, 0, ph - 1), np.clip(px, 0, pw - 1)].astype(np.float64)
+                print(f"retexture: {int(seen.sum())} samples seen from {name_}")
+                observed.append({"name": name_, "seen": seen, "conf": conf, "colour": col, "boost": boost,
+                                 "anchor": boost >= 1.0, "stray": stray})
+            look(eye, rgb, alpha_fit, alpha_bake, trust, Path(view).name, 3.0 if on_top else 1.0,
+                 head if args.flat_paint else None, args.flat_paint and side_on and off == 0.0)
+            if head is not None and not args.flat_paint:
+                # A side-on creature's side views never put the head where the mesh has it (the pig's ears and
+                # eyes 20-40 px off, beyond what align can move): they keep off the head, which the front view
+                # and the paint (one set of eyes and ears, on the mesh's own) cover.
+                observed[-1]["seen"] = observed[-1]["seen"] & ~head
+                print(f"retexture: {Path(view).name} keeps off the head ({int(head.sum())} samples)")
+            if args.mirror:
+                meye = eye_on_sphere(center, rad, mirror_az(az, off, args.mirror_ends), el)
+                look(meye, rgb[:, ::-1].copy(), alpha_fit[:, ::-1].copy(), alpha_bake[:, ::-1].copy(),
+                     None if trust is None else trust[:, ::-1].copy(), Path(view).name + " (mirrored)", 0.6)
+            continue
+        acc, wgt = (accum_t, weight_t) if on_top else (accum, weight)
+        splat(pts, nrm, uv_pts, eye, center, rgb, alpha_fit, alpha_bake, acc, wgt, Path(view).name, trust)
         if args.mirror:
             # Side-on photo of a near-symmetric subject: the far side is the near side reflected through the
             # sagittal plane (glTF z = centre), so the reflected camera sees it as the photo flipped left-right.
-            meye = eye_on_sphere(center, rad, (180.0 - az) % 360, el)
+            # A front-on or back-on photo: the far END is the near one reflected through the mid-plane across the
+            # line of sight (a bale's two round ends, a crate's front and back), the same flipped photo.
+            meye = eye_on_sphere(center, rad, mirror_az(az, off, args.mirror_ends), el)
             splat(pts, nrm, uv_pts, meye, center, rgb[:, ::-1].copy(), alpha_fit[:, ::-1].copy(),
                   alpha_bake[:, ::-1].copy(),
-                  accum_m, weight_m, Path(view).name + " (mirrored)")
+                  accum_m, weight_m, Path(view).name + " (mirrored)",
+                  None if trust is None else trust[:, ::-1].copy())
 
     base = albedo
-    if args.mirror:
+    if args.select:
+        mfaces, nv = seam_bake.merged_faces(np.asarray(mesh.vertices), np.asarray(mesh.faces))
+        key = [float(c) for c in args.key.split(",")] if args.key else None
+        res = seam_bake.bake(observed, albedo, uv_pts, fid, bary, mfaces, nv, key=key, consistency=side_on and not args.flat_paint)
+        print(f"retexture: select {json.dumps(res['report'])}")
+        if os.environ.get("RETEXTURE_LABELS"):  # debug: paint each face its label's colour
+            pal = np.array([[230, 60, 60], [60, 200, 60], [60, 90, 230], [230, 200, 40], [170, 170, 170],
+                            [200, 60, 200], [60, 200, 200]], np.float32)
+            res["colour"] = pal[np.minimum(res["label"][fid], len(pal) - 1)]
+        splat_colours(uv_pts, res["colour"], accum, weight)
+        # texels between samples (an atlas finer than the samples): the colour around them, not the paint
+        # underneath, which showed as dark specks
+        thin = weight < 4.0 * args.keep
+        acc_b = np.stack([ndimage.gaussian_filter(accum[:, :, ch], 2.0) for ch in range(3)], axis=2)
+        wgt_b = ndimage.gaussian_filter(weight, 2.0)
+        near = thin & (wgt_b > 1e-3)
+        accum[near] += acc_b[near] / wgt_b[near, None] * (4.0 * args.keep - weight[near, None])
+        weight[near] = 4.0 * args.keep
+        base = res["base"]
+        # every face has a source now (the paint where no view sees it): the whole atlas counts as covered
+        weight_m[:] = 0.0
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).with_suffix(".select.json").write_text(json.dumps(res["report"], indent=2) + "\n")
+    elif args.mirror:
         # Mirrored texels only where the real photo did not land; the real view wins everywhere it reached.
         base, _ = blend(albedo, accum_m, weight_m, args.keep)
     out, hit = blend(base, accum, weight, args.keep)
+    if weight_t.any():
+        # The first view over everything: the views under it show only where it did not land.
+        out, hit_t = blend(out, accum_t, weight_t, args.keep)
+        hit |= hit_t
 
     locked = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+    # Confidence the photo (or its mirror) reached each texel: what fill.py reads to find the texels left as base.
+    cover = np.maximum(np.maximum(weight, weight_m), weight_t)
     vis.material.baseColorTexture = locked
     vis.material.image = locked
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    mesh.export(args.out)
     sidecar = Path(args.out).with_suffix(".albedo.png")
     locked.save(sidecar)
+    Image.fromarray(np.rint(np.clip(cover, 0.0, 1.0) * 255.0).astype(np.uint8), "L").save(
+        Path(args.out).with_suffix(".cover.png"))
     Path(args.out).with_suffix(".fit.json").write_text(json.dumps(reports, indent=2) + "\n")
+    # The GLB last, under a hidden name and renamed into place: whoever reads it (generate.sh --mesh, a take) gets
+    # the old file or the whole new one, and its sidecars are already there.
+    tmp = Path(args.out).with_name(f".{Path(args.out).name}.tmp")
+    mesh.export(tmp, file_type=Path(args.out).suffix.lstrip(".").lower() or "glb")
+    os.replace(tmp, args.out)
     print(f"retexture: wrote {args.out}  covered {hit.mean()*100:.1f}% of atlas")
+    if args.mirror:
+        print(f"retexture: with the mirror {(cover > args.keep).mean()*100:.1f}% of atlas")
     return 0
 
 

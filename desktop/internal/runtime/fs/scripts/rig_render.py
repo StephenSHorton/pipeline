@@ -4,6 +4,7 @@
     .venv/bin/python scripts/rig_render.py --stem psx-cow --clips auto
     .venv/bin/python scripts/rig_render.py --stem S --views side,front,q --modes texture,sticks --clips 'Walk@0.25,0.5;Peck@0.15'
     .venv/bin/python scripts/rig_render.py --asset /path/to/copy/of/out/S --clips auto --blender
+    .venv/bin/python scripts/rig_render.py --stem S --scrub 'Walk@0.5-1.5' --step 0.2   # one clip, close-spaced
 
 CPU path (the default), numpy and PIL only:
 - linear-blend skinning with rig_motion.world_mats and rig_metrics.skin_frames;
@@ -11,21 +12,30 @@ CPU path (the default), numpy and PIL only:
   look) and a flat Lambert shade;
 - one ortho camera centre and scale, fixed from the rest-pose bbox (floor included) and shared by every frame and view,
   so anything that grows, sinks or flies away shows as such;
-- a red floor line at y = 0 (edge-on in the side, front and back views; an outline in top and q).
+- a red floor line at y = 0 (edge-on in the side, front and back views; an outline in top, bottom and q).
 
 Modes: `texture`; `groups` (each corner coloured by its top bone's role); `sticks` (faded texture with x-ray joint
-balls and bone lines at 50% alpha, coloured by role); `heat:<bone>` (that bone's weight on a ramp).
+balls and bone lines at 50% alpha, coloured by role); `heat:<bone>` (that bone's weight on a ramp); `texture_px`
+(the texture sampled per pixel: each pixel's UV from its barycentrics, nearest texel, the same flat Lambert shade)
+and `texture_px:unlit` (the same, unshaded). One texel a face is the rig sheets' PS1 feel, but on a low-poly mesh
+it paints a long sliver triangle as one stripe whatever its UVs cover, so a model check (workbench eyes.look)
+wants texture_px: it shows the texture as an engine would.
 
 Views (glTF frame: +Y up, +Z = the creature's forward, +X = its left). These match rig_fit.vlm_cue and brender:
 - side: camera at +X; image right is -Z (a correctly faced head at +Z shows on the LEFT);
 - xside: camera at -X; image right is +Z (head on the RIGHT);
 - front: camera at +Z (the face); image right is +X;  back: camera at -Z; image right is -X;
 - top: camera at +Y; image right is +X, image up is -Z;
+- bottom: camera at -Y; image right is +X, image up is +Z (top's image flipped upside down);
 - q: three-quarter from (+X, +Y/2, +Z); image right is roughly (+X, -Z).
 VIEW_RIGHT gives the world vector of image right per view.
 
 Outputs (under <asset>/rig/preview/): <clip>_<frac>_<view>_<mode>.png, contact_sheet.png (rows Rest then every clip,
 columns side, front, q) and frames.json (per frame: height_rel, tilt, min_y_rel, max_disp_rel, stance-foot y, beak y).
+
+--scrub renders one clip every --step seconds (default 0.2) over a span, from one fixed camera (default side,
+texture), into rig/preview/scrub/scrub_<clip>_<t0>-<t1>_<view>_<mode>.png with a .json beside it. The sampled
+frames above can miss a foot sliding or a pose jumping between them; a scrub shows it.
 
 --blender renders the same job through Blender Workbench (scripts/blender/rig_render_bl.py) into rig/preview/blender/,
 for a parity cross-check only.
@@ -55,14 +65,16 @@ FLOOR = (255, 0, 0)
 CAP = 18  # caption strip height in the contact sheet
 FILL = 0.85  # the rest bbox diagonal spans this share of the image
 FPS = 30
-VIEWS = ("side", "xside", "front", "back", "top", "q")
+VIEWS = ("side", "xside", "front", "back", "top", "bottom", "q")
+PX_MODES = ("texture_px", "texture_px:unlit")
 SHEET_VIEWS = ("side", "front", "q")
 ROLE_RGB = {"leg": (26, 102, 255), "wing": (255, 128, 0), "spine": (255, 255, 26), "head": (255, 26, 255),
             "tail": (26, 255, 77), "other": (255, 255, 255), "root": (110, 110, 110)}
 
 # view -> (direction from the target to the camera, up hint); glTF frame
 _CAM = {"side": ((1, 0, 0), (0, 1, 0)), "xside": ((-1, 0, 0), (0, 1, 0)), "front": ((0, 0, 1), (0, 1, 0)),
-        "back": ((0, 0, -1), (0, 1, 0)), "top": ((0, 1, 0), (0, 0, -1)), "q": ((1, 0.5, 1), (0, 1, 0))}
+        "back": ((0, 0, -1), (0, 1, 0)), "top": ((0, 1, 0), (0, 0, -1)), "bottom": ((0, -1, 0), (0, 0, 1)),
+        "q": ((1, 0.5, 1), (0, 1, 0))}
 EDGE_ON = ("side", "xside", "front", "back")
 
 
@@ -236,26 +248,37 @@ def _chain_roles() -> dict:
 
 # ---------------------------------------------------------------- scene loading
 
-def _texture_colours(doc: dict, binary: bytes, prim: dict, UV: np.ndarray | None, F: np.ndarray) -> np.ndarray:
-    """Per-face RGB 0..255: the base-colour texture at the UV centroid, nearest texel; else the base colour factor."""
+def _material(doc: dict, binary: bytes, prim: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """A primitive's base colour factor (RGB 0..1) as texture mode has always read it (0.72 grey when unset), the
+    factor as glTF defines it (1 when unset: what multiplies the texture in an engine, and in texture_px), and its
+    decoded base-colour texture (uint8 H x W x 3, or None)."""
     mat = doc.get("materials", [{}])[prim["material"]] if "material" in prim and doc.get("materials") else {}
     pbr = mat.get("pbrMetallicRoughness", {})
     factor = np.asarray(pbr.get("baseColorFactor", [0.72, 0.72, 0.72, 1]), float)[:3]
-    col = np.tile(factor * 255, (len(F), 1))
+    gltf_factor = np.asarray(pbr.get("baseColorFactor", [1.0, 1.0, 1.0, 1]), float)[:3]
     try:
         tex_i = pbr["baseColorTexture"]["index"]
         img = doc["images"][doc["textures"][tex_i]["source"]]
         v = doc["bufferViews"][img["bufferView"]]
         o = v.get("byteOffset", 0)
-        tex = np.asarray(Image.open(io.BytesIO(binary[o:o + v["byteLength"]])).convert("RGB")).astype(float)
+        tex = np.asarray(Image.open(io.BytesIO(binary[o:o + v["byteLength"]])).convert("RGB"))
     except (KeyError, IndexError, TypeError, OSError):
-        return col
-    if UV is None:
-        return col
-    uv = UV[F].mean(1)
+        return factor, gltf_factor, None
+    return factor, gltf_factor, tex
+
+
+def _texels(tex: np.ndarray, uv: np.ndarray) -> np.ndarray:
+    """Nearest texels (float RGB 0..255) at (N,2) UVs, wrapped (glTF's default REPEAT); v counts down the image."""
     th, tw = tex.shape[:2]
-    return tex[np.clip(((uv[:, 1] % 1) * th).astype(int), 0, th - 1), np.clip(((uv[:, 0] % 1) * tw).astype(int), 0, tw - 1)] \
-        * factor
+    return tex[np.clip(((uv[:, 1] % 1) * th).astype(int), 0, th - 1),
+               np.clip(((uv[:, 0] % 1) * tw).astype(int), 0, tw - 1)].astype(float)
+
+
+def _texture_colours(factor: np.ndarray, tex: np.ndarray | None, UV: np.ndarray | None, F: np.ndarray) -> np.ndarray:
+    """Per-face RGB 0..255: the base-colour texture at the UV centroid, nearest texel; else the base colour factor."""
+    if tex is None or UV is None:
+        return np.tile(factor * 255, (len(F), 1))
+    return _texels(tex, UV[F].mean(1)) * factor
 
 
 class Item:
@@ -290,8 +313,12 @@ class Item:
                 F = (rig.accessor(d, b, pr["indices"]).reshape(-1, 3) if "indices" in pr
                      else np.arange(len(P) - len(P) % 3).reshape(-1, 3)).astype(np.int64)
                 UV = rig.accessor(d, b, a["TEXCOORD_0"]).astype(float) if "TEXCOORD_0" in a else None
-                m = {"P": P, "F": F, "col": _texture_colours(d, b, pr, UV, F), "skinned": "skin" in n and skin is not None
-                     and "JOINTS_0" in a, "M": rest_world[i]}
+                factor, gltf_factor, tex = _material(d, b, pr)
+                # col is the per-face colour (texture mode); UV, tex and glTF's factor stay for texture_px's
+                # per-pixel sampling, so each texture is decoded once whichever mode draws it.
+                m = {"P": P, "F": F, "col": _texture_colours(factor, tex, UV, F), "UV": UV, "tex": tex,
+                     "factor": gltf_factor, "skinned": "skin" in n and skin is not None and "JOINTS_0" in a,
+                     "M": rest_world[i]}
                 if m["skinned"]:
                     m["J"] = rig.accessor(d, b, a["JOINTS_0"]).astype(int)
                     m["W"] = rig.accessor(d, b, a["WEIGHTS_0"]).astype(float)
@@ -371,10 +398,16 @@ def draw(items: list[Item], posed: list[tuple[list[np.ndarray], np.ndarray]], vi
     allV, allF, cols = [], [], []
     off = 0
     heat_bone = mode.split(":", 1)[1] if mode.startswith("heat:") else None
+    per_pixel = mode in PX_MODES
+    spans = []  # texture_px: (first face, end face, mesh, per-face shade) of each mesh in the shared z-buffer
+    nf = 0
     for it, (Vs, _) in zip(items, posed):
         for m, V in zip(it.meshes, Vs):
             F = m["F"]
-            shade = _shade(V, F, view)
+            shade = np.ones(len(F)) if mode == "texture_px:unlit" else _shade(V, F, view)
+            if per_pixel:
+                spans.append((nf, nf + len(F), m, shade))
+            nf += len(F)
             if mode == "groups":
                 rgb = np.array([ROLE_RGB[x] for x in it.top_roles(m)], float)  # per corner
                 c = rgb[F] * shade[:, None, None]
@@ -402,6 +435,19 @@ def draw(items: list[Item], posed: list[tuple[list[np.ndarray], np.ndarray]], vi
                 base[hit] = C[face[hit], pick]
             else:
                 base[hit] = (C[face[hit]] * B[:, :, None]).sum(1)
+            # texture_px: each pixel's own UV (the corners' UVs by its barycentrics), nearest texel. A low-poly
+            # mesh's long sliver triangles cross many texels; one texel per face paints each as a stripe.
+            fh = face[hit]
+            for f0, f1, m, sh in spans:
+                if m["tex"] is None or m["UV"] is None:
+                    continue  # no texture: the per-face colour above is already the factor
+                sel = (fh >= f0) & (fh < f1)
+                if not sel.any():
+                    continue
+                fl = fh[sel] - f0
+                uv = (m["UV"][m["F"][fl]] * B[sel][:, :, None]).sum(1)
+                rows = np.flatnonzero(hit)[sel]
+                base[rows] = _texels(m["tex"], uv) * m["factor"] * sh[fl, None]
     out = Image.fromarray(np.clip(base, 0, 255).astype(np.uint8).reshape(n, n, 3)).convert("RGBA")
 
     if mode == "sticks":
@@ -533,6 +579,18 @@ def contact_sheet(pngs: list, rows: int, cols: int, captions: list | None = None
     return S
 
 
+THUMB = "thumb.png"
+
+
+def sheet_thumb(sheet: Path | str, cols: list, out: Path | str) -> Path:
+    """The version thumbnail: the sheet's Rest cell at three-quarters (or its last column), caption strip cut off."""
+    with Image.open(sheet) as S:
+        tile = S.size[0] // len(cols)
+        c = cols.index("q") if "q" in cols else len(cols) - 1
+        S.crop((c * tile, CAP, (c + 1) * tile, CAP + tile)).save(out)
+    return Path(out)
+
+
 # ---------------------------------------------------------------- the job
 
 DEFAULT_JOB = {"views": ["side", "xside", "front", "top", "q"], "modes": ["texture", "sticks"], "frames": "auto",
@@ -639,6 +697,7 @@ def render(asset, job: dict | None = None) -> dict:
             caps.append(f"{f['clip']} {f['frac']:.2f} {v}")
     sheet = out / "contact_sheet.png"
     contact_sheet(cells, len(rows), len(sv), caps, sheet, tile=int(job["sheet_tile"]))
+    sheet_thumb(sheet, sv, out / THUMB)
 
     result = {"asset": str(A), "glbs": [str(g) for g in glbs], "out": str(out), "H": round(H, 6), "camera": cam,
               "floor_rows": {v: round(floor_row(cam, v), 3) for v in views if v in EDGE_ON}, "view_right": VIEW_RIGHT,
@@ -653,12 +712,103 @@ def render(asset, job: dict | None = None) -> dict:
     return result
 
 
+# ---------------------------------------------------------------- scrub (one clip, close-spaced frames)
+
+SCRUB_STEP = 0.2  # seconds between scrub frames
+SCRUB_COLS = 6
+
+
+def scrub_times(dur: float, t0: float | None = None, t1: float | None = None, step: float = SCRUB_STEP) -> list[float]:
+    """Frame times for a scrub of a clip `dur` seconds long: t0, t0 + step, ... up to t1 (both default to the whole
+    clip and are clamped into it). t1 itself is the last frame when the last step falls short of it by over 1 ms, so
+    the end of the span is always shown."""
+    if step <= 0:
+        raise ValueError(f"scrub step must be > 0 (got {step})")
+    a = 0.0 if t0 is None else min(max(float(t0), 0.0), dur)
+    b = dur if t1 is None else min(max(float(t1), 0.0), dur)
+    if b < a:
+        raise ValueError(f"scrub span {a:.3f}-{b:.3f}s runs backwards")
+    n = int(np.floor((b - a) / step + 1e-6))
+    ts = [round(a + k * step, 4) for k in range(n + 1)]
+    if b - ts[-1] > 1e-3:
+        ts.append(round(b, 4))
+    return ts
+
+
+def parse_scrub(spec: str) -> tuple[str, float | None, float | None]:
+    """'Walk' (the whole clip) | 'Walk@0.5-1.5' (seconds) -> (clip, t0, t1)."""
+    name, _, span = spec.partition("@")
+    name = name.strip()
+    if not name:
+        raise ValueError(f"scrub needs a clip name: {spec!r}")
+    if not span.strip():
+        return name, None, None
+    a, sep, b = span.partition("-")
+    if not sep:
+        raise ValueError(f"scrub span is from-to in seconds, e.g. Walk@0.5-1.5: {spec!r}")
+    return name, (float(a) if a.strip() else None), (float(b) if b.strip() else None)
+
+
+def scrub(asset, clip: str, t0: float | None = None, t1: float | None = None, step: float = SCRUB_STEP,
+          view: str = "side", mode: str = "texture", glbs=None, size: int = 384, tile: int = 256,
+          cols: int = SCRUB_COLS, floor: bool = True, out=None, partmap: dict | None = None) -> dict:
+    """One clip, a frame every `step` seconds from t0 to t1, all from one fixed camera (the rest-pose camera
+    render() uses, so a sliding foot or a jumping pose shows against the floor line and the frame edges). Writes
+    <out>/scrub_<clip>_<t0>-<t1>_<view>_<mode>.png, a contact sheet captioned with each frame's time and frame
+    number, and a matching .json with per-frame times and feet heights. Default out: <asset>/rig/preview/scrub."""
+    A = asset_dir(asset)
+    paths = [Path(g) if Path(g).is_absolute() else A / g for g in (glbs or ["rigged.glb"])]
+    paths = [g for g in paths if g.is_file()]
+    if not paths:
+        raise FileNotFoundError(f"nothing to render in {A} (glbs {glbs})")
+    basis(view)
+    items = [Item(g, partmap) for g in paths]
+    prim = next((it for it in items if any(m["skinned"] for m in it.meshes)), next((it for it in items if it.meshes), items[0]))
+    if clip not in prim.clips:
+        raise KeyError(f"no clip {clip!r} in {prim.path.name}; clips: {', '.join(prim.clips)}")
+    dur = float(prim.clips[clip][0])
+    ts = scrub_times(dur, t0, t1, step)
+    rest = [it.pose(None, 0.0) for it in items]
+    allpts = np.concatenate([np.concatenate(Vs + [jp]) for Vs, jp in rest])
+    V0 = np.concatenate(rest[items.index(prim)][0]) if prim.meshes else rest[items.index(prim)][1]
+    H = float(np.ptp(V0[:, 1])) if len(V0) else 1.0
+    cam = camera(allpts, int(size))
+    feet, _ = feet_and_beak(prim)
+    o = Path(out) if out else A / "rig" / "preview" / "scrub"
+    o.mkdir(parents=True, exist_ok=True)
+    ims, caps, frames = [], [], []
+    for t in ts:
+        posed = [it.pose(clip, t) for it in items]
+        f = int(np.floor(t * FPS + 0.5))
+        ims.append(draw(items, posed, view, mode, cam, floor))
+        caps.append(f"{clip} {t:.2f}s f{f}")
+        rec = {"t": t, "frame": f}
+        if feet:
+            jp = posed[items.index(prim)][1]
+            rec["feet_y_rel"] = {prim.names[k]: round(float(jp[k, 1] / H), 4) for k in feet}
+            rec["feet_xz"] = {prim.names[k]: [round(float(jp[k, 0]), 4), round(float(jp[k, 2]), 4)] for k in feet}
+        frames.append(rec)
+    c = max(1, min(int(cols), len(ims)))
+    rows = -(-len(ims) // c)
+    name = f"scrub_{_safe(clip)}_{ts[0]:.2f}-{ts[-1]:.2f}_{view}_{mode_tag(mode)}"
+    sheet = o / f"{name}.png"
+    contact_sheet(ims, rows, c, caps, sheet, tile=int(tile))
+    res = {"asset": str(A), "glb": str(prim.path), "clip": clip, "duration": round(dur, 4), "t0": ts[0], "t1": ts[-1],
+           "step": step, "view": view, "mode": mode, "camera": cam, "H": round(H, 6), "sheet": str(sheet),
+           "cols": c, "rows": rows, "frames": frames}
+    (o / f"{name}.json").write_text(json.dumps(res, indent=1))
+    return res
+
+
 # ---------------------------------------------------------------- textured views (facing)
 
 def textured_views(glb, views=("side", "xside", "front", "back"), size: int = 384, out_dir=None,
-                   floor: bool = False) -> dict:
+                   floor: bool = False, mode: str = "texture") -> dict:
     """Rest-pose textured renders of any GLB (skinned or static) for the facing VLM. Returns {view: png path};
-    see VIEW_RIGHT / the module docstring for which world axis is image right in each view."""
+    see VIEW_RIGHT / the module docstring for which world axis is image right in each view. mode is texture (one
+    texel a face, what the facing VLM has always been shown) or one of PX_MODES (per pixel)."""
+    if mode != "texture" and mode not in PX_MODES:
+        raise ValueError(f"textured_views: mode {mode!r}; texture or one of {PX_MODES}")
     it = Item(Path(glb))
     Vs, jp = it.pose(None, 0.0)
     pts = np.concatenate(Vs) if Vs else jp
@@ -668,7 +818,7 @@ def textured_views(glb, views=("side", "xside", "front", "back"), size: int = 38
     res = {}
     for v in views:
         p = out / f"{Path(glb).stem}_{v}.png"
-        draw([it], [(Vs, jp)], v, "texture", cam, floor).save(p)
+        draw([it], [(Vs, jp)], v, mode, cam, floor).save(p)
         res[v] = str(p)
     return res
 
@@ -738,7 +888,20 @@ def main() -> int:
     ap.add_argument("--no-floor", action="store_true")
     ap.add_argument("--out", help="output directory (default <asset>/rig/preview)")
     ap.add_argument("--blender", action="store_true", help="also render through Blender Workbench (parity)")
+    ap.add_argument("--scrub", help="one clip, close-spaced: 'Walk' or 'Walk@0.5-1.5' (seconds); first of --views, "
+                    "first of --modes")
+    ap.add_argument("--step", type=float, default=SCRUB_STEP, help="seconds between scrub frames")
+    ap.add_argument("--cols", type=int, default=SCRUB_COLS, help="scrub sheet columns")
     a = ap.parse_args()
+    if a.scrub:
+        clip, t0, t1 = parse_scrub(a.scrub)
+        views = [v for v in a.views.split(",") if v] if a.views != ",".join(DEFAULT_JOB["views"]) else ["side"]
+        modes = [m for m in a.modes.split(",") if m] if a.modes != ",".join(DEFAULT_JOB["modes"]) else ["texture"]
+        res = scrub(a.asset or a.stem, clip, t0, t1, a.step, views[0], modes[0],
+                    [x for x in a.glbs.split(",") if x], a.size, cols=a.cols, floor=not a.no_floor, out=a.out)
+        print(json.dumps({k: res[k] for k in ("sheet", "clip", "duration", "t0", "t1", "step", "view", "mode",
+                                              "rows", "cols")} | {"frames": len(res["frames"])}, indent=1))
+        return 0
     job = {"views": [v for v in a.views.split(",") if v], "modes": [m for m in a.modes.split(",") if m],
            "frames": parse_clips(a.clips), "glbs": [x for x in a.glbs.split(",") if x], "size": a.size,
            "floor": not a.no_floor, "blender": a.blender}

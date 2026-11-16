@@ -4,5 +4,3 @@ frontend/dist
 frontend/node_modules
 build/linux/appimage/build
 
-# Taskfile frontend:vendor:puppertino downloads this; it is not part of the repo
-frontend/public/puppertino/

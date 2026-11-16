@@ -1,25 +1,37 @@
 # pipeline
 
-Local image-to-3D on Apple Silicon (MLX). No Meshy. See **[PLAN.md](PLAN.md)**.
+A local, no-cloud asset factory on Apple Silicon (MLX). Give it a picture and/or words; it makes a PS1-budget model, a
+painted 3D model, a sprite stack or a 2D sprite sheet, and can rig animals and people. No Meshy. It was built for the
+MLG Farming PS1-look test game (s&box). Where it stands and what is next: **[PLAN.md](PLAN.md)**.
 
-Turnaround (better pictures → better geometry): drop named views in `out/<stem>/views/` (`front`, `threequarter`, `left`, `back`, `top`). Shape from front (people) or threequarter (props). Extra views only change **geometry** if a multi-view shape DiT is present (`scripts/shape_mv.sh`); otherwise they still photo-bake.
+Two ways to drive it, one factory underneath:
+
+- **The desktop app** (`desktop/`): Home asks *What are you making?*, Make runs it, Library lists assets by project,
+  and each asset goes **Ideas → Concept → 2D / 3D / Rig / Stack → Export**. See *One flow* below.
+- **The workbench** (`scripts/workbench/`): an MCP server where Claude makes, measures, fixes and shows assets, guided
+  by [`scripts/workbench/playbook.md`](scripts/workbench/playbook.md). See *MCP* below and **[examples/workbench.md](examples/workbench.md)**.
 
 ```bash
-scripts/generate.sh --image out/operator-turn/views/front.jpg --quality pbr --stem operator-turn
+scripts/generate.sh --image in/mlg/farmer_hat.jpg --quality psx --stem farmer   # photo -> PS1 model
 ```
 
-## Passes
+## How one make runs
 
-1. **isolate** — Vision foreground mask.
-2. **blockout** — Hunyuan3D-2 mini shape (MLX-Swift). If `views/lifted/{front,left,back}.png` exist, `shape_mv.sh` tries Hunyuan3D-DiT-v2-mv; otherwise mini stays single-image.
-3. **reduce** — named LODs: lookdev 80k, game 12k, proxy 2k (or `--poly` at generate time)
-4. **remesh** — AutoRemesher quads (`mesh_quad.glb`) before paint so xatlas isn't packing Hunyuan triangle soup
-5. **surround** — extra views of the same object
-6. **paint** — Hunyuan RGB (`--quality textured`) or Paint 2.1 PBR albedo+MR (`--quality pbr`) on the remeshed mesh
-7. **retexture** — fit a camera to each reference photo (silhouette IoU), bake into UVs; occluded texels keep Hunyuan paint
-8. **move** — people: `m2m_keep.py` retargets Mesh2Motion clips onto AniGen skins **without** rewriting weights. `m2m_bind.py` is the closest-bone rebind. objects: `articulate.py` piece pivots
-9. **stack** — horizontal slices of the painted mesh → `out/<stem>/stack/{sheet.png,preview.png,stack.json}`
-10. **show** — `viewer/` (`?asset=radio-turn&lod=pbr`): generated mesh left, sprite stack right.
+A photo is a *reference*, never a view: the factory draws four views of the subject (from your photo, or from words),
+then builds from those.
+
+1. **isolate** — Vision foreground mask (`bin/lift-subject`).
+2. **draw** — four views of the subject (front, left, back, three-quarter) from the photo or the words (Qwen-Image-Edit).
+3. **shape** — Hunyuan3D-2mv from the drawn views (`shape_mv.sh`); from front and back when only the sides are drawn wrong. Without the views, the shape falls back to Hunyuan3D-2 mini from one picture and is marked degraded.
+4. **reduce, remesh** — the 80k lookdev mesh, then AutoRemesher quads (`mesh_quad.glb`) so xatlas isn't packing triangle soup.
+5. **paint** — Hunyuan RGB (`--quality textured`), Paint 2.1 PBR (`--quality pbr`), or TRELLIS.2 (`--paint trellis`; its plain paint gets the drawn eyes and snout via `--flat-paint`).
+6. **retexture** — fit a camera to each view, bake the photo into the UVs per triangle; occluded texels keep the paint.
+7. **psx** — the PS1 cut (about 1,200 triangles, a 256 px atlas): welds near-duplicates, caps holes, keeps legs and ears.
+8. **review** — before a model is shown, `scripts/workbench/review.py` checks pieces, paint patchwork, mirror and triangle budget, and writes a close-up sheet.
+9. **rig** — animals and people: skeleton, learned skin weights, library clips, FBX for s&box (see *Rigging*).
+10. **stack, export** — horizontal slices of the painted mesh → `out/<stem>/stack/`; Export writes the chosen files and an `asset.json` to `out/<stem>/export/`.
+
+The older People/Props routes (`m2m_keep.py` and `m2m_bind.py` for Mesh2Motion clips on AniGen skins, `articulate.py` piece pivots) are still in `scripts/` but are not the main path.
 
 ```bash
 scripts/bootstrap.sh draft
@@ -32,7 +44,7 @@ Qualities: `draft` (mesh only), `textured` (RGB atlas), `pbr` (albedo + metallic
 
 Sprite stack is how we ship. Hunyuan meshes stay in the folder as the sculpt; the stack is the lowered-fidelity volume you actually put in a game. Inspector: `viewer/?asset=<stem>` (mesh left, stack right). Default display is 120 texels / 1.20 contrast+saturation; the sheet is 160². Paint in the inspector is a local brush (not Hunyuan): it writes `stack/sheet.png` and `textured_paint.glb`.
 
-Poly: `--poly hero` (octree 256), `lookdev` (octree 128 → 80k), `game` (octree 64 → 12k), `proxy` (octree 64 → 2k). Or `scripts/reduce.sh <stem>` after the fact.
+Poly: `--poly hero` (octree 256), `lookdev` (octree 128 → 80k), `game` (octree 64 → 12k), `proxy` (octree 64 → 2k). That is the shape's detail at make time; `scripts/reduce.sh <stem>` re-cuts only the lookdev mesh and the model list.
 
 ```bash
 scripts/m2m_keep.py out/operator/anigen.glb -o out/operator/anigen_keep.glb
@@ -41,7 +53,9 @@ scripts/m2m_bind.py out/operator/textured.glb -o out/operator/m2m.glb
 
 Grok workflow: `/ai-asset-pipeline` with `args.image` and `args.quality`, run from the repository root (`args.factory_root` points it elsewhere).
 
-HTTP (loopback, curl, no MCP): `.venv/bin/python scripts/factory_http.py` then the copy-paste commands in **[examples/curl.md](examples/curl.md)** (`/health`, `/inspect/radio`, `POST /generate`, `/glb/radio`).
+HTTP (loopback, curl): `.venv/bin/python scripts/factory_http.py` then the copy-paste commands in **[examples/curl.md](examples/curl.md)** (`/health`, `/inspect/radio`, `POST /generate`, `/glb/radio`). `POST /generate` also takes `"mesh"` (a `.glb` under `out/<stem>/`, used as the shape instead of hy3d's) and `"paint": false` (unwrap instead of paint; only the photo bakes).
+
+MCP: the agent workbench, where Claude makes, measures and fixes assets, lives in `scripts/workbench/` as its own server on `:8768`, a client of the factory: `.venv/bin/python scripts/workbench/mcp_server.py`, then `claude mcp add --transport http workbench http://127.0.0.1:8768/mcp`. Tools and a walkthrough: **[examples/workbench.md](examples/workbench.md)**.
 
 ## Layout
 
@@ -61,6 +75,37 @@ HTTP (loopback, curl, no MCP): `.venv/bin/python scripts/factory_http.py` then t
 ## One flow
 
 Home asks **What are you making?**: a PS1 model, a 3D model, a sprite stack or a 2D sprite. Each shows only its own settings and a line saying what Make will do; the choice is saved with the asset (`out/<stem>/intent.json`), and the stages, canvas and Export screen follow it. The loading screen lists the factory's real stages (`STAGES`/`STAGE` lines from `generate.sh`, parsed by `/status`), with Cancel and Run in background. The desktop app runs every asset through **Ideas → Concept → 2D / 3D / Stack → Export**. A prompt with no picture draws a grid of ideas; **Use** one and it becomes the concept still that 2D, 3D and the stack start from. Each stage keeps takes in `out/<stem>/takes/` (listed in `flow.json`), so you can step back to an earlier still, sheet, mesh or stack from the bar above the tools. **Export** copies the picked 2D pieces and motion strips, sprite stack and 3D files into `out/<stem>/export/` with an `asset.json` that says what each file is. See **[docs/unified-pipeline.md](docs/unified-pipeline.md)**.
+
+## Hard-surface props (cars, wheelbarrows, mailboxes)
+
+Props are the weak class. There is no route that makes a clean one on its own:
+
+- **Code-built props are gone.** Claude writing a Three.js page that becomes the model was removed (PR #8); it was not useful.
+- **Plain image-to-3D works but is blocky.** A prop made like an animal (draw views, Hunyuan3D shape, paint, PS1 cut) comes out with handles, spokes and wheels hard to read (the wheelbarrow was the test). It is still the way to make a mailbox, a barrel or a crate, where blocky is fine.
+- **A car is made from parts (experimental, run once on 2026-11-16).** Anything that needs its wheels to turn is made as a body and one wheel, then assembled. It runs end to end and gives a recognisable car with four separate, spinnable wheel nodes, but it is rough and needs hand-tuning per car (see below). Vehicles and props are not rigged.
+
+```
+.venv/bin/python scripts/draw_parts.py out/car/parts body_side "<a car, pure side view, no wheels>" 2   # two stills
+.venv/bin/python scripts/edit_part.py <body.png> out/car/parts/wheel "<show only the front wheel, alone>" 22   # pull a wheel out
+scripts/generate.sh --image <body.png>  --quality psx --stem car_body
+scripts/generate.sh --image <wheel.png> --quality psx --stem car_wheel
+.venv/bin/python scripts/assemble_car.py --body out/car_body/psx.glb --wheel out/car_wheel/psx.glb --out out/car/car.glb \
+    [--drop -0.2 --track -0.05]          # body height and wheel spread are set by hand
+.venv/bin/python scripts/viewer_shots.py car out/car/shots   # five angles and a contact sheet; needs out/car/psx.glb and a one-line lods.json
+```
+
+![The three pictures: car as drawn, wheels painted out, one wheel](docs/car-from-parts/parts.png)
+
+![The assembled car, five angles](docs/car-from-parts/car-sheet.png)
+
+What the run showed (a small red retro car, 5,756 triangles, about 4 minutes to draw two stills, about 6 for both shapes and paints):
+
+- **It works:** a body and one wheel become `car > body, wheel_FL, wheel_FR, wheel_RL, wheel_RR`, the right wheels turned so the hub faces outward, one shared wheel mesh and texture, PS1 sampling.
+- **The image-edit model would not take the wheels off the body picture** (five tries, two wordings, wheels unchanged). The run painted black wheel wells over them by hand instead, and the pink background left in the patch became slabs under the bumpers.
+- **Paint is speckled** (the shape came from one side picture, `single_view` in `degraded.json`) and the body's wheel wells do not line up exactly with the wheels; the stance (`--drop`, `--track`, `--axle`) was set by eye.
+- Fixed while running: `assemble_car.py` assumed the body's length ran along Z, but a body made from a side picture runs along X, so the car came out 7.5 m by 3.5 m. It now takes `--body-yaw` (default 90).
+
+So a car is possible, not push-button. Making more props means making each a picture-by-picture job, or accepting the blocky single-model result. Not in scope: rigging vehicles, and any prop with moving parts other than wheels.
 
 ## Rigging
 

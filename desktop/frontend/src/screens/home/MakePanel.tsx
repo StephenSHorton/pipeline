@@ -2,6 +2,8 @@
 // one text field, Add photo and Make; the kind switch under it; one route line; quiet chips for what is automatic
 // (head direction, height, file name, detail) with an Options disclosure to change them.
 import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type FormEvent } from "react";
+import { ChevronDown, ChevronsUpDown, Folder } from "lucide-react";
+import { IntoMenu } from "@/components/ProjectMenu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +12,6 @@ import {
   arrayBufferToBase64,
   drop2d,
   factoryJson,
-  legacyUrl,
   saveIntentQuiet,
   uploadImage,
   type AssetOutput,
@@ -18,8 +19,10 @@ import {
   type FacingSource,
 } from "@/lib/api";
 import { displayStem, jobChipText, useJobs } from "@/lib/jobs";
+import { intoProject, useProjectList } from "@/lib/projects";
 import { toast } from "@/lib/ui";
 import { onJobChip, openAsset } from "@/app/open";
+import { navigate, UNSORTED } from "@/app/router";
 import { cn } from "@/lib/utils";
 import { startDrawThen3d, startHomeJob } from "./chain";
 import { KIND_TAB } from "./Library";
@@ -87,7 +90,8 @@ function useNarrow(): boolean {
   );
 }
 
-export function MakePanel() {
+/** project: the route's ?project=, the project new assets are filed into (Unsorted, from the Library, is none). */
+export function MakePanel({ project }: { project?: string }) {
   const [kind, setKindState] = useState<AssetOutput>(loadKind);
   const [text, setText] = useState("");
   const [photo, setPhoto] = useState<Photo | null>(null);
@@ -105,6 +109,12 @@ export function MakePanel() {
   const [flags, setFlags] = useState<FlatFlags | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const narrow = useNarrow();
+  const projects = useProjectList();
+  // Before the list loads, the route's id is trusted (the factory only logs a gone one); after, only a real project.
+  const into = intoProject(projects, project);
+  const intoId = projects ? (into?.id ?? null) : project && project !== UNSORTED ? project : null;
+  const intoName = into?.name ?? intoId;
+  const pickInto = (id: string | undefined) => navigate({ name: "home", section: "make", project: id }, { replace: true });
 
   const job = useJobs((s) => s.job);
   const watching = useJobs((s) => s.watching);
@@ -233,28 +243,43 @@ export function MakePanel() {
       return;
     }
     setLine(null);
-    const stem = await freshStem(nameSlug || flatName(c.prompt, p.file.name));
+    const stem = await stemFor(nameSlug || flatName(c.prompt, p.file.name));
+    if (!stem) return;
     void startDrawThen3d(
-      photoDrawBody(c, stem, path),
+      { ...photoDrawBody(c, stem, path), project: intoId },
       { path: "/2d/draw", kind: "flat2d", title: `Drawing ${displayStem(stem)} from your photo` },
       readIntent(c, { drawn: true }),
     );
   }
 
+  /** A name no asset has. The factory files the new asset into `project` (or none) once its first request is
+   * accepted, so every make says where it goes. null, with the reason on the line, when the names can't be checked:
+   * a guess could land on an existing asset and refile it. */
+  async function stemFor(base: string): Promise<string | null> {
+    try {
+      return await freshStem(base);
+    } catch (err) {
+      setLine({ text: `Couldn't check the names already taken: ${err instanceof Error ? err.message : err}`, state: "error" });
+      return null;
+    }
+  }
+
   async function make3dByDrawing() {
     const c = choice();
-    const stem = await freshStem(nameSlug || flatName(c.prompt));
-    void startDrawThen3d(drawFirstBody(c, stem), { path: "/2d/draw", kind: "flat2d", title: `Drawing ${displayStem(stem)}` }, readIntent(c, { drawn: true }));
+    const stem = await stemFor(nameSlug || flatName(c.prompt));
+    if (!stem) return;
+    void startDrawThen3d({ ...drawFirstBody(c, stem), project: intoId }, { path: "/2d/draw", kind: "flat2d", title: `Drawing ${displayStem(stem)}` }, readIntent(c, { drawn: true }));
   }
 
   async function makeSprite() {
     const c = choice();
-    const stem = await freshStem(nameSlug || flatName(c.prompt, photo?.file.name));
+    const stem = await stemFor(nameSlug || flatName(c.prompt, photo?.file.name));
+    if (!stem) return;
     const label = displayStem(stem);
     if (photo) {
       setLine({ text: "Opening the picture.", state: "running" });
       try {
-        await drop2d(stem, arrayBufferToBase64(await photo.file.arrayBuffer()));
+        await drop2d(stem, arrayBufferToBase64(await photo.file.arrayBuffer()), intoId);
       } catch (err) {
         setLine({ text: err instanceof Error ? err.message : String(err), state: "error" });
         return;
@@ -267,7 +292,7 @@ export function MakePanel() {
         return;
       }
     }
-    void startHomeJob(spriteDrawBody(c, stem, !!photo), { path: "/2d/draw", kind: "flat2d", title: photo ? `Finishing ${label}` : `Drawing ${label}` });
+    void startHomeJob({ ...spriteDrawBody(c, stem, !!photo), project: intoId }, { path: "/2d/draw", kind: "flat2d", title: photo ? `Finishing ${label}` : `Drawing ${label}` });
   }
 
   /* --------------------------------------------- drag and drop */
@@ -285,7 +310,9 @@ export function MakePanel() {
 
   // The job, on Home too (legacy #home-job): every state, hidden only while you watch it run.
   const showChip = !!job && !(watching && (job.state === "running" || !!job.next));
-  const quietBtn = "h-auto min-h-11 rounded-xl border-input bg-white px-[0.85rem] text-[0.8rem] font-normal text-ink-2 hover:bg-white hover:text-ink";
+  const quietBtn = "hit-44 h-auto min-h-9 gap-1.5 rounded-xl border-input bg-white px-[0.85rem] text-[0.8rem] font-normal text-ink-2 hover:bg-[#f5f7fc] hover:text-ink";
+  // A cycle button steps to the next value on each click; the up-down chevrons say so.
+  const cycleIcon = <ChevronsUpDown aria-hidden="true" className="size-3.5 text-ink-3" />;
 
   return (
     <section aria-labelledby="mk-h" className="w-full max-w-[38rem]">
@@ -370,7 +397,8 @@ export function MakePanel() {
               "h-auto min-h-11 gap-2 rounded-xl px-[1.1rem] text-[0.9rem] font-semibold",
               makeReady
                 ? "shadow-[0_1px_2px_rgba(37,99,235,0.25),0_6px_16px_rgba(37,99,235,0.2)] hover:bg-blue-deep"
-                : cn("bg-muted text-ink-3 hover:bg-muted", busy ? "cursor-wait" : "cursor-not-allowed"),
+                : // Off: the primary at half strength, as every other disabled button, not a grey that looks pressable.
+                  cn("opacity-50 hover:bg-primary", busy ? "cursor-wait" : "cursor-not-allowed"),
             )}
           >
             {cur.make}
@@ -385,7 +413,7 @@ export function MakePanel() {
         <TabsList
           variant="hud"
           aria-label="What are you making"
-          className="mx-auto box-border flex w-fit max-w-full flex-wrap justify-center gap-[0.35rem] rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] p-[0.3rem]"
+          className="mx-auto box-border flex w-fit max-w-full flex-wrap justify-center gap-[0.35rem] rounded-[14px] border border-[var(--topbar-border)] bg-[var(--topbar-bg)] p-[0.3rem] max-sm:grid max-sm:grid-cols-2"
         >
           {KINDS.map((k) => (
             <TabsTrigger key={k.id} variant="hud" value={k.id} title={k.hint} className={KIND_TAB}>
@@ -399,20 +427,36 @@ export function MakePanel() {
         <p aria-live="polite" className="m-0 max-w-[32rem] text-center text-[0.85rem] leading-normal text-ink-3">
           {routeLine}
         </p>
-        <div className="flex flex-wrap items-center justify-center gap-[0.35rem]">
-          {chips.map((c) => (
-            <Badge key={c} variant="secondary" className="h-[26px] rounded-full px-[0.6rem] text-[0.75rem] font-medium">
-              {c}
-            </Badge>
-          ))}
+        {/* The summary is the Options button: one outline button that says what Make will use and opens the
+            choices. While they are open it says Hide options, so nothing is listed twice. Into sits beside it: the
+            project Make files into, the same ?project= the Library shows. */}
+        <div className="flex max-w-full flex-wrap items-center justify-center gap-2">
+          <IntoMenu
+            value={into?.id ?? null}
+            projects={projects ?? []}
+            onPick={pickInto}
+            trigger={
+              <Button
+                variant="outline"
+                title="The project new assets go into"
+                className="hit-44 h-auto min-h-9 max-w-[16rem] gap-1.5 rounded-xl px-[0.85rem] text-[0.8rem] font-medium text-ink-2 aria-expanded:bg-white aria-expanded:text-ink-2"
+              >
+                <Folder aria-hidden="true" className="size-3.5 shrink-0 text-ink-3" />
+                <span className="min-w-0 truncate">{intoName ? <>Into: <strong className="font-semibold">{intoName}</strong></> : "No project"}</span>
+                <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-ink-3" />
+              </Button>
+            }
+          />
           <Button
-            variant="ghost"
+            variant="outline"
             onClick={() => setOptions((o) => !o)}
             aria-expanded={options}
             aria-controls="mk-options"
-            className="h-auto min-h-11 rounded-[10px] px-[0.6rem] text-[0.8rem] font-semibold text-blue-deep hover:bg-transparent hover:text-ink aria-expanded:bg-transparent aria-expanded:text-blue-deep"
+            title={options ? "Hide the options" : "Change these"}
+            className="hit-44 h-auto min-h-9 max-w-full gap-1.5 rounded-xl px-[0.85rem] text-[0.8rem] font-medium whitespace-normal text-ink-2 aria-expanded:bg-white aria-expanded:text-ink-2"
           >
-            {options ? "Hide options" : "Options"}
+            <span className="min-w-0 truncate">{options ? "Hide options" : ["Options", ...chips].join(" · ")}</span>
+            <ChevronDown aria-hidden="true" className={cn("size-3.5 shrink-0 text-ink-3 transition-transform", options && "rotate-180")} />
           </Button>
         </div>
 
@@ -422,6 +466,7 @@ export function MakePanel() {
               <>
                 <Button variant="outline" className={quietBtn} title="Height in inches: Person 72, Animal 58, Bust 30, Prop 24" onClick={() => setSizeIdx(((sizeIdx ?? guess) + 1) % SIZES.length)}>
                   Size <strong className="font-semibold">{sizeText}</strong>
+                  {cycleIcon}
                 </Button>
                 <Button
                   variant="outline"
@@ -430,12 +475,14 @@ export function MakePanel() {
                   onClick={() => setFacingPick(FACING_CYCLE[(FACING_CYCLE.indexOf(facingPick) + 1) % FACING_CYCLE.length])}
                 >
                   Head points <strong className="font-semibold">{facingText}</strong>
+                  {cycleIcon}
                 </Button>
               </>
             ) : null}
             {kind === "model" || kind === "stack" ? (
               <Button variant="outline" className={quietBtn} title={polyDef.hint} onClick={() => setPoly(POLYS[(POLYS.indexOf(polyDef) + 1) % POLYS.length].id)}>
                 Detail <strong className="font-semibold">{polyDef.label}</strong>
+                {cycleIcon}
               </Button>
             ) : null}
             {editingName ? (
@@ -473,7 +520,7 @@ export function MakePanel() {
                       key={s.id}
                       variant="outline"
                       aria-pressed={on}
-                      className={cn(quietBtn, on && "border-primary bg-secondary font-semibold hover:bg-secondary")}
+                      className={cn(quietBtn, "aria-pressed:border-[#bcd2fb] aria-pressed:bg-accent aria-pressed:font-semibold aria-pressed:text-accent-foreground")}
                       title={`After the picture: ${s.label.toLowerCase()}`}
                       onClick={() => setSteps((cur) => (on ? cur.filter((x) => x !== s.id) : [...cur, s.id]))}
                     >
@@ -492,16 +539,11 @@ export function MakePanel() {
                       onChange={(e) => setStepText((t) => ({ ...t, [s.id]: e.target.value }))}
                       placeholder={s.placeholder}
                       spellCheck={false}
-                      className="h-11 rounded-xl border-input bg-white px-3 text-[0.85rem] md:text-[0.85rem]"
+                      className="h-9 rounded-xl border-input bg-white px-3 text-[0.85rem] md:text-[0.85rem]"
                     />
                   </label>
                 ))}
               </div>
-            ) : null}
-            {kind === "sprite" ? (
-              <a href={legacyUrl()} className="hit-44 inline-flex items-center rounded-md px-1 text-[0.8rem] font-semibold text-blue-deep no-underline outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-ring" title="Motion animates from a video or frames you attach; the classic view takes the clip.">
-                Motion (from a clip) is in the classic view
-              </a>
             ) : null}
           </div>
         ) : null}

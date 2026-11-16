@@ -1,5 +1,6 @@
 // The job card (legacy #gen-overlay / drawJob) as a Mokei glass card in the Make column: title, the stages
 // (done / now / next), the bar with time left, the step line, the one-line Degraded note and the actions.
+import { ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -115,8 +116,11 @@ export function JobCard({ job }: { job: Job }) {
       </div>
 
       {log ? (
-        <details className="mt-2 text-[0.75rem]" open={job.state === "error" || undefined}>
-          <summary className="inline-flex min-h-11 cursor-pointer items-center rounded-md text-ink-3 outline-none focus-visible:ring-2 focus-visible:ring-ring">Details</summary>
+        <details className="group/details mt-2 text-[0.75rem]" open={job.state === "error" || undefined}>
+          <summary className="hit-44 inline-flex min-h-8 cursor-pointer list-none items-center gap-1 rounded-md font-medium text-ink-2 outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+            <ChevronRight aria-hidden="true" className="size-3.5 transition-transform group-open/details:rotate-90" />
+            Details
+          </summary>
           <pre ref={logRef} className="mt-1 max-h-48 overflow-auto rounded-lg bg-muted p-2 text-[0.7rem] whitespace-pre-wrap text-ink-2">{log}</pre>
         </details>
       ) : null}
@@ -124,7 +128,7 @@ export function JobCard({ job }: { job: Job }) {
       <div className="mt-3 flex flex-wrap justify-end gap-2">
         {running ? (
           <>
-            <Button variant="ghost" className="min-h-11 rounded-xl px-4" onClick={() => setWatching(false)}>
+            <Button variant="outline" className="min-h-11 rounded-xl px-4" onClick={() => setWatching(false)}>
               Run in background
             </Button>
             <Button variant="outline" className="min-h-11 rounded-xl px-4" disabled={job.stopping} onClick={() => void cancel()}>
@@ -133,7 +137,7 @@ export function JobCard({ job }: { job: Job }) {
           </>
         ) : job.state === "ok" || job.next ? null : (
           <>
-            <Button variant="ghost" className="min-h-11 rounded-xl px-4" onClick={dismiss}>
+            <Button variant="outline" className="min-h-11 rounded-xl px-4" onClick={dismiss}>
               Close
             </Button>
             {job.spec ? (

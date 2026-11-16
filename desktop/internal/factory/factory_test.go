@@ -1,6 +1,7 @@
 package factory
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -21,5 +22,19 @@ func TestExportDirChecksStem(t *testing.T) {
 	dir, err := ExportDir("lantern-2")
 	if err != nil || filepath.Base(dir) != "export" || filepath.Base(filepath.Dir(dir)) != "lantern-2" {
 		t.Fatalf("dir=%q err=%v", dir, err)
+	}
+}
+
+func TestListAssetsSkipsDotFolders(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PIPELINE_ROOT", root)
+	for _, d := range []string{"out/radio", "out/.projects/rust-belt"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := New().ListAssets()
+	if len(got) != 1 || got[0].Stem != "radio" {
+		t.Fatalf("assets=%v", got)
 	}
 }

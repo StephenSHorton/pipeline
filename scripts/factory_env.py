@@ -98,16 +98,16 @@ def json_degraded(path: str | Path) -> list[dict[str, str]]:
             add_degraded(out, coerce_degraded(item))
     return out
 
+# GET /glb?lod=: the file each name serves. game / proxy LODs are no longer made (reduce.sh cuts only lookdev), so
+# those names fall through to DEFAULT_GLB like any unknown one, and nothing here reaches for their files.
 LOD_FILES = {
     "mesh": ("mesh.glb",),
     "hero": ("mesh_hero.glb", "mesh.glb"),
     "lookdev": ("mesh_lookdev.glb", "mesh.glb"),
-    "game": ("mesh_game.glb", "mesh.glb"),
-    "proxy": ("mesh_proxy.glb", "mesh.glb"),
     "mv": ("mesh_mv.glb", "mesh_hero.glb", "mesh.glb"),
     "psx": ("psx.glb",),
 }
-DEFAULT_GLB = ("mesh.glb", "mesh_hero.glb", "mesh_mv.glb", "mesh_proxy.glb")
+DEFAULT_GLB = ("mesh.glb", "mesh_hero.glb", "mesh_mv.glb")
 
 # UI labels High / Medium / Low. Canonical CLI names stay hero / lookdev / proxy.
 # Medium is lookdev: same fidelity class, lower octree so shape is faster.
@@ -217,6 +217,11 @@ def generate_argv(
     psx: dict[str, Any] | None = None,
     views_json: Path | None = None,
     degraded: list[dict[str, str]] | None = None,
+    mesh: Path | None = None,
+    paint: bool | str = True,
+    fill: str | None = None,
+    mirror_ends: bool | None = None,
+    delight: bool | None = None,
 ) -> list[str]:
     cmd = [
         str(generate_script(root)),
@@ -242,6 +247,22 @@ def generate_argv(
     # degraded.json and inspect.json beside its own.
     for entry in degraded or []:
         cmd += ["--degraded", f"{entry['stage']} {entry['code']}: {entry['message']}"]
+    # A shape made elsewhere (the workbench's clay) instead of hy3d's; no paint: unwrap, then the photo bake.
+    if mesh:
+        cmd += ["--mesh", str(mesh)]
+    if paint == "trellis":
+        cmd += ["--paint", "trellis"]
+    elif not paint:
+        cmd += ["--paint", "off"]
+    # Every texel from the photo (mirrored onto the far end, the rest filled from its swatch). Only when asked, so a
+    # plain make's argv is as it was; mirror_ends only when stated (generate.sh's default follows fill).
+    if fill == "photo":
+        cmd += ["--fill", "photo"]
+    if mirror_ends is not None:
+        cmd += ["--mirror-ends", "on" if mirror_ends else "off"]
+    # The photo's lighting out before the bake; only when stated (generate.sh's default is off, a make as before).
+    if delight is not None:
+        cmd += ["--delight", "on" if delight else "off"]
     # --quality psx options: facing, height, faces, atlas, up, name.
     for key, value in (psx or {}).items():
         if value not in (None, ""):

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, factoryJson, meshUrls, outUrl, uploadImage, WAILS, wailsByName } from "./api";
+import { ApiError, createProject, factoryJson, meshUrls, moveAsset, outUrl, renameProject, uploadImage, WAILS, wailsByName } from "./api";
 
 const g = globalThis as unknown as { window?: unknown; fetch: typeof fetch };
 const realFetch = g.fetch;
@@ -48,6 +48,46 @@ describe("uploadImage", () => {
     await expect(uploadImage(file([1]))).rejects.toThrow("upload too large");
     await expect(uploadImage(file([]))).rejects.toThrow("could not read image");
     expect(wailsByName("x")).toBeNull();
+  });
+});
+
+describe("projects", () => {
+  const project = { id: "mlg-farming", name: "MLG Farming", assets: ["hen"], created: 1, updated: 2 };
+  const capture = (body: unknown) => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    g.fetch = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(u), init: init! });
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    return seen;
+  };
+
+  it("creates with a name, and moves the given assets in the same call", async () => {
+    const seen = capture({ ok: true, project });
+    expect((await createProject("MLG Farming")).project.id).toBe("mlg-farming");
+    await createProject("MLG Farming", ["hen"]);
+    expect(seen.map((s) => [s.url, s.init.method, JSON.parse(String(s.init.body))])).toEqual([
+      ["/projects", "POST", { name: "MLG Farming" }],
+      ["/projects", "POST", { name: "MLG Farming", assets: ["hen"] }],
+    ]);
+  });
+
+  it("renames by PATCH on the id", async () => {
+    const seen = capture({ ok: true, project });
+    await renameProject("mlg-farming", "Farm");
+    expect([seen[0].url, seen[0].init.method, JSON.parse(String(seen[0].init.body))]).toEqual(["/projects/mlg-farming", "PATCH", { name: "Farm" }]);
+  });
+
+  it("moves into a project by POST, unsorts by DELETE on the old one, and asks nothing for no project to none", async () => {
+    const seen = capture({ ok: true, project, stem: "hen" });
+    await moveAsset("hen", "mlg-farming", "barn");
+    await moveAsset("hen", null, "mlg-farming");
+    expect(await moveAsset("hen", null, null)).toBeNull();
+    expect(seen.map((s) => [s.url, s.init.method])).toEqual([
+      ["/projects/mlg-farming/assets", "POST"],
+      ["/projects/mlg-farming/assets/hen", "DELETE"],
+    ]);
+    expect(JSON.parse(String(seen[0].init.body))).toEqual({ stem: "hen" });
   });
 });
 

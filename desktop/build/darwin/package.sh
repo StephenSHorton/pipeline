@@ -10,7 +10,7 @@ ARCH="$(go env GOARCH)"
 APP="bin/Pipeline.app"
 DMG="bin/pipeline-${VERSION}-darwin-${ARCH}.dmg"
 
-# The React app (vite build -> frontend/dist/index.html + static/) plus the legacy page at dist/legacy.html.
+# The React app (vite build -> frontend/dist/index.html + static/ + the public files).
 [[ -d frontend/node_modules ]] || npm --prefix frontend ci
 npm --prefix frontend run build
 node frontend/scripts/copy-factory.mjs

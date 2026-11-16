@@ -8,6 +8,7 @@ import {
   LEAD_EMPTY,
   leadText,
   psxCard,
+  psxImportNote,
   rigCard,
   type ExportDoc,
   type PlainCard,
@@ -36,9 +37,7 @@ const chicken: ExportDoc = {
   made: 1792522526,
   concept: "concept.png",
   "3d": {
-    model: { file: "3d/model.glb" },
-    game: { file: "3d/game.glb" },
-    proxy: { file: "3d/proxy.glb", faces: 2000 },
+    model: { file: "3d/model.glb", faces: 2000 },
     rigged: {
       file: "3d/rigged.glb",
       class: "avian",
@@ -86,7 +85,7 @@ describe("cards", () => {
     expect(concept).toMatchObject({ title: "Concept", lines: ["concept.png"], img: "concept.png", missing: false });
     expect(cards[3]).toMatchObject({
       title: "Other 3D files",
-      lines: ["Full detail: model.glb", "Game detail: game.glb", `Collision proxy: proxy.glb · ${(2000).toLocaleString()} faces`, "Rigged: rigged.glb"],
+      lines: [`Model: model.glb · ${(2000).toLocaleString()} faces`, "Rigged: rigged.glb"],
     });
   });
 
@@ -96,7 +95,7 @@ describe("cards", () => {
     expect(cards.map((c) => [c.title, c.lines, c.missing])).toEqual([
       ["2D sheet", ["Not in this export"], true],
       ["Sprite stack", ["Not in this export"], true],
-      ["3D", ["Full detail: model.glb"], false],
+      ["3D", ["Model: model.glb"], false],
     ]);
     // A sprite with no 3D in its export still lists the 3D slot only when the intent wants a mesh.
     expect(exportCards(exported, { output: "sprite" }, { made: 1 }).map((c) => c.title)).toEqual(["2D sheet"]);
@@ -158,6 +157,11 @@ describe("hero cards", () => {
       axes: "z-up, +x front",
     });
     expect(psxCard({ file: "3d/psx.glb" })).toMatchObject({ name: "model", atlas: "256", size: "", axes: "z-up, +x front", height: "" });
+  });
+  it("PS1 import step follows the obj axes: y-up needs no rotation, z-up does", () => {
+    expect(psxImportNote("y-up, +z front (glTF)")).toBe("It is already in inches, Y up, facing +Z: s&box turns it upright itself.");
+    expect(psxImportNote("z-up, +x front")).toBe("It is in inches, Z up, facing +X: set its import rotation to -90 0 -90 or it lands on its side.");
+    expect(psxCard({ file: "3d/psx.glb", axes: { obj: "y-up, +z front (glTF)" } }).importNote).toMatch(/^It is already in inches, Y up/);
   });
   it("Rigged facts: body plan name, basenames, clip names with spaces", () => {
     expect(rigCard(chicken["3d"]!.rigged!)).toEqual({

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build lookdev / game / proxy LODs from an existing hero mesh.
+# Build the lookdev mesh (80k: the mesh paint and the unwrap work on) from an existing hero mesh, then list the
+# finished models in lods.json. No game / proxy LODs any more: they were extra copies at other triangle counts that
+# nothing in a make went on to use; the PS1 low-poly is cut from the finished model by psx_lowpoly.py instead.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -8,113 +10,18 @@ source "$ROOT/scripts/_common.sh"
 PYTHON="$(factory_python)"
 STEM="${1:-radio}"
 OUT="$ROOT/out/$STEM"
-export STEM OUT
 MESH="$OUT/mesh_hero.glb"
 [[ -f "$MESH" ]] || MESH="$OUT/mesh.glb"
 REDUCE="$PYTHON $ROOT/scripts/reduce_mesh.py"
-
-# DEGRADED <stage> <code>: <message>, also recorded in $DEGRADED_JSON when generate.sh sets it.
-degrade() {
-  echo "DEGRADED $1 $2: $3"
-  [[ -n "${DEGRADED_JSON:-}" ]] || return 0
-  "$PYTHON" - "$DEGRADED_JSON" "$1" "$2" "$3" <<'PY'
-import json, sys
-from pathlib import Path
-p, row = Path(sys.argv[1]), {"stage": sys.argv[2], "code": sys.argv[3], "message": sys.argv[4]}
-try:
-    data = json.loads(p.read_text())
-except (OSError, ValueError):
-    data = {}
-rows = data.get("degraded") or []
-if row not in rows:
-    rows.append(row)
-data["degraded"] = rows
-p.write_text(json.dumps(data, indent=2) + "\n")
-PY
-}
 
 [[ -f "$MESH" ]] || { echo "reduce: missing hero mesh in $OUT" >&2; exit 1; }
 echo "reduce: source $MESH"
 
 echo "=== reduce lookdev (80k) ==="
 $REDUCE "$MESH" -o "$OUT/mesh_lookdev.glb" --preset lookdev --report "$OUT/lod_lookdev.json"
+# pipeline.sh (and generate.sh's fallback) read the lookdev mesh by this older name.
 cp "$OUT/mesh_lookdev.glb" "$OUT/mesh_lod.glb"
 
-echo "=== reduce game (12k) ==="
-$REDUCE "$MESH" -o "$OUT/mesh_game.glb" --preset game --report "$OUT/lod_game.json"
-
-echo "=== reduce proxy (2k) ==="
-$REDUCE "$MESH" -o "$OUT/mesh_proxy.glb" --preset proxy --report "$OUT/lod_proxy.json"
-
-# The textured game LOD comes from the photo bake when there is one (what the asset ships), else the paint.
-# reduce_mesh.py re-bakes the texture onto the decimated mesh; a game LOD without UVs is degraded, not hidden.
-TEXSRC="$OUT/textured_photo.glb"
-[[ -f "$TEXSRC" ]] || TEXSRC="$OUT/textured.glb"
-rm -f "$OUT/lod_textured_game.json"
-if [[ -f "$TEXSRC" ]]; then
-  echo "=== reduce $(basename "$TEXSRC") -> game ==="
-  if ! $REDUCE "$TEXSRC" -o "$OUT/textured_game.glb" --preset game --report "$OUT/lod_textured_game.json"; then
-    degrade lods game_failed "textured game LOD failed to reduce; the game LOD is untextured"
-  elif ! grep -q '"has_uvs": true' "$OUT/lod_textured_game.json"; then
-    degrade lods game_uvs "textured game LOD lost its UVs; the game LOD is untextured"
-  fi
-fi
-
-"$PYTHON" - <<'PY'
-import json
-from pathlib import Path
-import os
-out = Path(os.environ["OUT"])
-stem = os.environ["STEM"]
-lods = []
-
-def add(lid, files, label, metas):
-    for f in files:
-        p = out / f
-        if not p.is_file():
-            continue
-        item = {"id": lid, "file": f, "label": label}
-        for m in metas:
-            mp = out / m
-            if mp.is_file():
-                d = json.loads(mp.read_text())
-                item["faces"] = d.get("faces", d.get("triangles"))
-                item["vertices"] = d.get("vertices")
-                item["has_uvs"] = d.get("has_uvs", True if "atlas" in d else None)
-                break
-        lods.append(item)
-        return
-
-add("pbr", ["pbr.glb"], "PBR", ["inspect_pbr.json"])
-add("mv", ["mesh_mv.glb"], "2mv", ["shape_mv.json"])
-add("photo", ["textured_photo.glb"], "Photo bake", [])
-# PS1 low-poly: psx_lowpoly.py (generate --quality psx).
-add("psx", ["psx.glb"], "PSX", ["psx/psx.json"])
-add("keep", ["anigen_keep.glb"], "Keep-weights", ["anigen_keep.json"])
-add("anigen", ["anigen.glb"], "AniGen", [])
-add("m2m", ["m2m.glb"], "Mesh2Motion", ["m2m.json"])
-add("hero", ["mesh.glb"], "Hero", ["inspect.json"])
-add("lookdev", ["textured.glb", "mesh_lookdev.glb", "mesh_lod.glb"], "Lookdev",
-    ["inspect_textured.json", "lod_lookdev.json"])
-add("quad", ["mesh_quad.glb"], "Quads", [])
-# Quadric decimation drops UVs, so don't advertise a "textured" game LOD unless UVs survived.
-game_files = ["mesh_game.glb"]
-tg = out / "lod_textured_game.json"
-if tg.is_file() and json.loads(tg.read_text()).get("has_uvs"):
-    game_files = ["textured_game.glb", "mesh_game.glb"]
-add("game", game_files, "Game", ["lod_textured_game.json", "lod_game.json"])
-add("proxy", ["mesh_proxy.glb"], "Proxy", ["lod_proxy.json"])
-add("born-game", ["mesh_born_game.glb"], "Born game", ["lod_born_game.json"])
-if (out / "stack" / "stack.json").is_file():
-    lods.append({
-        "id": "stack",
-        "file": "stack/stack.json",
-        "label": "Sprite stack",
-        "kind": "stack",
-    })
-(out / "lods.json").write_text(json.dumps({"stem": stem, "lods": lods}, indent=2) + "\n")
-print("reduce: wrote", out / "lods.json")
-for x in lods:
-    print(" ", x["id"], x["file"], x.get("faces"))
-PY
+# lods.py builds the list (generate.sh's lods stage and the workbench's psx tool use the same code).
+"$PYTHON" "$ROOT/scripts/lods.py" "$OUT"
 echo "REDUCE_RESULT $OUT/lods.json"

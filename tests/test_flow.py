@@ -69,6 +69,21 @@ class FlowTest(unittest.TestCase):
         for rel in ("mesh.glb", "shape.json", "degraded.json", "views/lifted/front.png", "views/lifted/left.png"):
             self.assertIn(rel, files)
 
+    def test_mesh_take_carries_the_workbench(self) -> None:
+        # The workbench's clay, its mesh and nested products are the mesh take's, once each, and come back on a pick.
+        for rel in ("workbench/clay.json", "workbench/clay.glb", "workbench/edits/edit_1.glb"):
+            write(self.asset / rel, rel)
+        files = self.stage("mesh")["files"]
+        for rel in ("workbench/clay.json", "workbench/clay.glb", "workbench/edits/edit_1.glb"):
+            self.assertEqual(files.count(rel), 1, rel)
+        self.assertNotIn("workbench/clay.json", self.stage("concept")["files"])
+        flow.snapshot(self.root, "radio", "mesh")
+        write(self.asset / "workbench" / "clay.json", "a later blob")
+        flow.snapshot(self.root, "radio", "mesh")
+        flow.pick(self.root, "radio", "mesh", "t1")
+        self.assertEqual((self.asset / "workbench" / "clay.json").read_text(), "workbench/clay.json")
+        self.assertTrue((self.asset / "workbench" / "edits" / "edit_1.glb").is_file())
+
     def test_old_asset_reads_as_unsaved(self) -> None:
         self.assertTrue(self.stage("concept")["unsaved"])
         self.assertTrue(self.stage("mesh")["live"])
@@ -266,6 +281,26 @@ class FactoryAutosaveTest(unittest.TestCase):
             self.assertEqual(stages["concept"]["pick"], "t1")
             self.assertEqual(stages["flat"]["takes"][0]["from"], {"concept": "t1"})
             self.assertFalse(stages["flat"]["unsaved"])
+
+    def test_a_dropped_picture_joins_its_project(self) -> None:
+        import base64
+        import io
+
+        import factory_http
+        import projects
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (16, 16), (255, 0, 255)).save(buf, format="PNG")
+        data = base64.b64encode(buf.getvalue()).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            factory = factory_http.Factory(root)
+            projects.create(root, "Farm")
+            body = json.dumps({"stem": "hen", "data": data, "project": "farm"}).encode("utf-8")
+            status, _, _ = factory_http.dispatch(factory, "POST", "/2d/drop", {}, body)
+            self.assertEqual(status, 201)
+            self.assertEqual(projects.membership(root), {"hen": "farm"})
 
 
 if __name__ == "__main__":

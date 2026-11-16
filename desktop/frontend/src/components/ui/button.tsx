@@ -9,7 +9,7 @@ const buttonVariants = cva(
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary/80",
         outline:
-          "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+          "border-input bg-white hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
@@ -17,17 +17,17 @@ const buttonVariants = cva(
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
         link: "text-primary underline-offset-4 hover:underline",
-        hud: "border-[#dde3ee] bg-[rgba(255,255,255,0.92)] text-ink shadow-none hover:bg-[rgba(255,255,255,0.92)] aria-expanded:bg-[rgba(255,255,255,0.92)] aria-expanded:text-ink active:translate-y-0 focus-visible:border-[#dde3ee] focus-visible:ring-0 [&_svg]:!h-auto [&_svg]:!w-auto",
+        hud: "border-[#dde3ee] bg-[rgba(255,255,255,0.92)] text-ink shadow-none hover:bg-[rgba(255,255,255,0.92)] aria-expanded:bg-[rgba(255,255,255,0.92)] aria-expanded:text-ink active:translate-y-0 focus-visible:border-[#dde3ee] focus-visible:ring-0 [&_svg:not([class*='size-'])]:!h-auto [&_svg:not([class*='size-'])]:!w-auto",
         "hud-icon":
-          "border-[#d9e0eb] bg-white text-ink shadow-[0_1px_2px_rgba(30,41,90,0.05)] hover:bg-white active:translate-y-0 focus-visible:border-[#d9e0eb] focus-visible:ring-2 focus-visible:ring-ring [&_svg]:!h-auto [&_svg]:!w-auto",
+          "border-[#d9e0eb] bg-white text-ink shadow-[0_1px_2px_rgba(30,41,90,0.05)] hover:bg-white active:translate-y-0 focus-visible:border-[#d9e0eb] focus-visible:ring-2 focus-visible:ring-ring [&_svg:not([class*='size-'])]:!h-auto [&_svg:not([class*='size-'])]:!w-auto",
         "hud-ghost":
-          "border-transparent bg-transparent text-ink shadow-none hover:bg-transparent aria-expanded:bg-transparent active:translate-y-0 focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring [&_svg]:!h-auto [&_svg]:!w-auto",
+          "border-transparent bg-transparent text-ink shadow-none active:translate-y-0 focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring [&_svg:not([class*='size-'])]:!h-auto [&_svg:not([class*='size-'])]:!w-auto",
         "hud-cam":
-          "rounded-[10px] border-transparent bg-transparent text-ink shadow-none hover:bg-[rgba(241,245,249,0.9)] active:translate-y-0 focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring [&_svg]:!h-auto [&_svg]:!w-auto",
+          "rounded-[10px] border-transparent bg-transparent text-ink shadow-none hover:bg-[rgba(241,245,249,0.9)] active:translate-y-0 focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-ring [&_svg:not([class*='size-'])]:!h-auto [&_svg:not([class*='size-'])]:!w-auto",
         "hud-row":
-          "justify-start border-transparent bg-transparent text-left text-ink shadow-none hover:bg-[rgba(219,234,254,0.55)] aria-expanded:bg-transparent data-[selected=true]:bg-[rgba(219,234,254,0.55)] active:translate-y-0 focus-visible:border-transparent focus-visible:ring-0 [&_svg]:!h-auto [&_svg]:!w-auto",
+          "justify-start border-transparent bg-transparent text-left text-ink shadow-none hover:bg-[rgba(219,234,254,0.55)] aria-expanded:bg-transparent data-[selected=true]:bg-[rgba(219,234,254,0.55)] active:translate-y-0 focus-visible:border-transparent focus-visible:ring-0 [&_svg:not([class*='size-'])]:!h-auto [&_svg:not([class*='size-'])]:!w-auto",
         "hud-ship":
-          "justify-start border-0 bg-[rgba(226,233,245,0.75)] bg-clip-border text-left text-ink shadow-none hover:bg-[rgba(226,233,245,0.75)] active:translate-y-0 focus-visible:border-0 focus-visible:ring-0 [&_svg]:!h-auto [&_svg]:!w-auto",
+          "justify-start border-0 bg-[rgba(226,233,245,0.75)] bg-clip-border text-left text-ink shadow-none hover:bg-[rgba(226,233,245,0.75)] active:translate-y-0 focus-visible:border-0 focus-visible:ring-0 [&_svg:not([class*='size-'])]:!h-auto [&_svg:not([class*='size-'])]:!w-auto",
       },
       size: {
         default:

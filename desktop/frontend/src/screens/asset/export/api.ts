@@ -1,6 +1,6 @@
 // The Export stage's factory calls and its small store (legacy exportDoc / exportStem / exporting, loadExport,
 // exportAsset, openExport, rigCardFacts; index.html 3313-3359, 3454-3481). Kept here, not in lib/api.ts, so the
-// stage owns them; the store is module-level so the versions strip can show the same Exporting… state later.
+// stage owns them; the store is module-level so the versions panel can show the same Exporting… state later.
 import { create } from "zustand";
 import { enc, factoryJson, headOut, readOutJson, readRig, WAILS, wailsByName } from "@/lib/api";
 import { useFlow } from "@/lib/flow";

@@ -71,8 +71,9 @@ export const RIG_NAMES: Record<string, string> = {
   avian: "Bird",
 };
 
-/** Plain names for the 3D roles; the PS1 model gets its own card. */
-const ROLE: Record<string, string> = { model: "Full detail", game: "Game detail", proxy: "Collision proxy", pixel: "Pixel", rigged: "Rigged" };
+/** Plain names for the 3D roles; the PS1 model gets its own card. No game / proxy LODs: export no longer writes them
+ * (an older export's asset.json that has them shows the bare role name until it is exported again). */
+const ROLE: Record<string, string> = { model: "Model", pixel: "Pixel", rigged: "Rigged" };
 
 const base = (p: string) => p.split("/").pop() ?? p;
 
@@ -116,6 +117,8 @@ export interface PsxCard {
   height: string;
   size: string;
   axes: string;
+  /** The Create Model step's last sentence: what the importer does with these axes (psxImportNote). */
+  importNote: string;
 }
 
 export interface RigCard {
@@ -206,7 +209,16 @@ export function psxCard(p: ExportPsx): PsxCard {
     height: String(p.height || ""),
     size: Array.isArray(p.size) ? p.size.map((n) => Math.round(n)).join(" × ") : "",
     axes: p.axes?.obj || "z-up, +x front",
+    importNote: psxImportNote(p.axes?.obj || "z-up, +x front"),
   };
+}
+
+/** s&box's .obj importer reads glTF axes and turns them to Source itself, so a y-up file needs nothing and a z-up
+ * one (the old default, and what a psx.json with no axes was made with) is turned twice unless rotated at import. */
+export function psxImportNote(axes: string): string {
+  return /^y-up/.test(axes)
+    ? "It is already in inches, Y up, facing +Z: s&box turns it upright itself."
+    : "It is in inches, Z up, facing +X: set its import rotation to -90 0 -90 or it lands on its side.";
 }
 
 export function rigCard(r: ExportRigged): RigCard {

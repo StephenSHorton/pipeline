@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { degradedLine, healthLabel, overlayPct, overlayPctText, shapeMvNote } from "./jobs";
 
 describe("degradedLine", () => {
-  it("is one plain line in the DEGRADED grammar, nothing when there is nothing", () => {
+  it("is one plain-English line, nothing when there is nothing", () => {
     expect([
       degradedLine([
         { stage: "shape", code: "single_view", message: "one picture" },
@@ -14,17 +14,21 @@ describe("degradedLine", () => {
       degradedLine(undefined),
       degradedLine([{}]),
       degradedLine([{ stage: "views", code: "stale", message: "" }]),
+      degradedLine([{ stage: "psx", code: "legs_clean", message: "no legs to replace" }]),
+      degradedLine([{ stage: "psx", code: "facing_check" }]),
     ]).toEqual([
-      "Degraded: shape single_view: one picture · rig clips_dropped: Flap,Glide",
+      "Built from one view, not four · Clips left out: Flap, Glide",
       "",
       "",
       "",
-      "Degraded: views stale",
+      "The drawing changed since this was built",
+      "No legs to replace",
+      "Facing check",
     ]);
   });
 
-  it("shows ? for a missing stage or code", () => {
-    expect(degradedLine([{ message: "x" }])).toBe("Degraded: ? ?: x");
+  it("shows the message alone when there is no stage or code", () => {
+    expect(degradedLine([{ message: "x" }])).toBe("X");
   });
 });
 

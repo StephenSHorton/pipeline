@@ -27,7 +27,20 @@ import { toast } from "./ui";
 export function degradedLine(list: unknown): string {
   const items = (Array.isArray(list) ? (list as DegradedEntry[]) : []).filter((e) => e && (e.stage || e.code || e.message));
   if (!items.length) return "";
-  return "Degraded: " + items.map((e) => `${e.stage || "?"} ${e.code || "?"}${e.message ? `: ${e.message}` : ""}`).join(" · ");
+  return items.map(degradedSentence).join(" · ");
+}
+
+// The codes the factory writes most, as sentences; anything else shows its own message (or its code in words).
+const DEGRADED_WORDS: Record<string, (msg: string) => string> = {
+  single_view: () => "Built from one view, not four",
+  stale: () => "The drawing changed since this was built",
+  clips_dropped: (m) => `Clips left out${m ? `: ${m.replace(/,(?=\S)/g, ", ")}` : ""}`,
+};
+
+function degradedSentence(e: DegradedEntry): string {
+  const words = e.code ? DEGRADED_WORDS[e.code] : undefined;
+  const s = words ? words(e.message || "") : e.message || String(e.code || e.stage || "").replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** The multi-view shape, as /health.features probed it (factory_features): only what the probe shows. */

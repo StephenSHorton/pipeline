@@ -19,8 +19,8 @@ export interface UpdateState {
   buttonLabel: string;
 }
 
-export const CHECK_LABEL = "Check for Updates";
-export const OUTSIDE_WAILS = "Check for Updates runs in the desktop app.";
+export const CHECK_LABEL = "Check for updates";
+export const OUTSIDE_WAILS = "Check for updates runs in the desktop app.";
 
 export const useUpdate = create<UpdateState>(() => ({
   status: "boot",

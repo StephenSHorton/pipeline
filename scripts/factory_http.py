@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Loopback HTTP adapter over the local MLX factory. Curl only; no MCP.
+"""Loopback HTTP adapter over the local MLX factory, for curl and the app. The agent workbench's MCP server
+(scripts/workbench/) is a separate process and a client of this one.
 
 GET  /health
 GET  /inspect/<stem>
@@ -11,6 +12,7 @@ POST /intent/<stem>
 POST /rig/<stem>
 POST /rig/<stem>/inspect
 POST /rig/<stem>/render  the rig's contact sheet (rig/preview/) as a job
+POST /rig/<stem>/weights hand-edited skin weights into rigged.glb (scripts/rig_weights.py), FBX again, a rig version
 GET  /rig/plans          the body plans (scripts/rig_plans/)
 POST /facing/detect      which way the head points in a picture {image|stem}
 GET  /glb/<stem>
@@ -40,6 +42,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from activity import Activity, JobWatch
 from flat2d import drawjob
 from flat2d.routes import handle as handle_flat2d
 from flat2d.sheet import still_backend
@@ -47,6 +50,7 @@ import flow
 from flow import FLAT_WRITES, autosave
 from flow import handle as handle_flow
 from export_asset import handle as handle_export
+import projects
 from factory_env import (
     NO_PICTURE,
     PSX_KEYS,
@@ -79,6 +83,24 @@ QUALITIES = ("draft", "textured", "pbr", "stack", "psx")
 NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 ALLOWED_HOSTS = LOOPBACK
 DEFAULT_PORT = 8766
+
+
+def local_origin(origin: str | None) -> bool:
+    """No Origin (curl, scripts, the workbench) or a page on this machine: a loopback host or the app's own
+    webview (wails://). Any other web page is refused, so a site open in a browser can't read or delete assets."""
+    if not origin:
+        return True
+    u = urlparse(origin)
+    host = (u.hostname or "").strip("[]")
+    return u.scheme == "wails" or host in LOOPBACK or host == "wails.localhost"
+
+
+def local_host(host_header: str | None) -> bool:
+    """The Host header names this machine, so a DNS-rebound name can't reach the factory."""
+    if not host_header:
+        return True
+    host = host_header.rsplit(":", 1)[0] if not host_header.startswith("[") else host_header[1:].split("]")[0]
+    return host in LOOPBACK
 
 
 def _dir_has_files(path: Path) -> bool:
@@ -202,9 +224,11 @@ STAGE_LABELS = {
     "shape": "Build the shape",
     "reduce": "Reduce the mesh",
     "paint": "Paint the texture",
+    "unwrap": "Unwrap the mesh",
     "retexture": "Bake the photo on",
+    "fill": "Fill what the photo missed",
     "psx": "PS1 low-poly",
-    "lods": "Detail levels",
+    "lods": "List the finished models",  # lods.py only: no game / proxy LODs are cut any more
     "inspect": "Check the model",
     "stack": "Sprite stack",
     "preview": "Thumbnail",
@@ -286,7 +310,7 @@ def _switch(key: str, value: Any) -> str:
 
 def rig_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]) -> list[str]:
     """rig.py's argv for a POST /rig/<stem> body, every value checked (ValueError on a bad one):
-    {class, plan, template, binder, pred, floor, render, reframe, clips, straighten}."""
+    {class, plan, template, binder, pred, floor, render, reframe, clips, straighten, reuse_skin}."""
     if not isinstance(body, dict):
         raise ValueError("body must be a JSON object")
     argv = [str(python), str(Path(root) / "scripts" / "rig.py"), "--stem", stem]
@@ -331,6 +355,9 @@ def rig_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]) ->
         raise ValueError("straighten must be auto or off")
     if straighten:
         argv += ["--straighten", straighten]
+    # keep the skin weights learned before (same mesh; same joints, even moved): a re-rig without skin-tokens
+    if body.get("reuse_skin") not in (None, "") and _switch("reuse_skin", body["reuse_skin"]) == "1":
+        argv += ["--reuse-skin"]
     return argv
 
 
@@ -512,6 +539,17 @@ class Factory:
         self._checking: set[str] = set()  # stems whose rig is being checked again (POST /rig/<stem>/inspect)
         self._runner = generate_runner or self._run_generate_sh
         self._sync_draws = 0  # plain POST /2d/generate or /2d/idea drawing right now (they share the model's hook)
+        # What Claude (the workbench posts its tool calls) and the jobs are doing, for the app (GET /activity).
+        self.activity = Activity(self.root / "out" / "_logs" / "activity.jsonl")
+        self.job_watch = JobWatch(self.activity, self.status, self.root)
+
+    def watch_jobs(self, stop: threading.Event, every: float = 1.0) -> None:
+        """The activity entry of the running job, kept current about once a second until stop is set."""
+        while not stop.wait(every):
+            try:
+                self.job_watch.tick()
+            except Exception:  # noqa: BLE001 - the watch never takes the factory down
+                traceback.print_exc()
 
     def health(self) -> dict[str, Any]:
         job = self._snapshot()
@@ -587,6 +625,12 @@ class Factory:
     def list_assets(self) -> dict[str, Any]:
         out = self.root / "out"
         assets: list[dict[str, Any]] = []
+        # One membership pass for the whole list, not a manifest read per asset. A bad manifest never hides the Library.
+        try:
+            owner = projects.membership(self.root)
+        except (projects.ProjectError, OSError) as e:
+            print(f"assets: could not read projects: {e}", file=sys.stderr)
+            owner = {}
         if out.is_dir():
             for d in sorted(out.iterdir()):
                 if not d.is_dir() or d.name.startswith("."):
@@ -629,6 +673,7 @@ class Factory:
                         "output": (read_intent(d) or {}).get("output"),
                         "input": _asset_shot(d, ("input.png", "input.jpg")),
                         "preview": preview,
+                        "project": owner.get(d.name),
                         "mtime": int(d.stat().st_mtime),
                     }
                 )
@@ -705,6 +750,11 @@ class Factory:
         with self._lock:
             if self._job and self._job.get("stem") == stem:
                 self._job["stem"] = dest_slug
+        # The folder already moved: a projects failure is logged, never turned into a failed rename.
+        try:
+            projects.rename_stem(self.root, stem, dest_slug)
+        except (projects.ProjectError, OSError) as e:
+            print(f"rename: could not move {stem}'s project membership: {e}", file=sys.stderr)
         return {"ok": True, "stem": dest_slug, "from": stem, "renamed": True, "path": f"out/{dest_slug}"}
 
     def delete_asset(self, stem: str) -> dict[str, Any]:
@@ -715,8 +765,22 @@ class Factory:
         d = stem_dir(self.root, stem)
         if not d.is_dir():
             return {"ok": False, "error": "not found", "stem": stem}
-        shutil.rmtree(d)
-        return {"ok": True, "deleted": True, "stem": stem, "path": f"out/{stem}"}
+        # Move, don't erase: out/.trash/ is on the same disk (an instant rename), the library skips dot folders,
+        # and a mis-click or a stray request can be undone by moving the folder back.
+        trash = d.parent / ".trash"
+        trash.mkdir(exist_ok=True)
+        dest = trash / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+        n = 2
+        while dest.exists():
+            dest = trash / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}-{n}"
+            n += 1
+        d.rename(dest)
+        try:
+            projects.drop_stem(self.root, stem)
+        except (projects.ProjectError, OSError) as e:
+            print(f"delete: could not drop {stem} from its project: {e}", file=sys.stderr)
+        return {"ok": True, "deleted": True, "stem": stem, "path": f"out/{stem}",
+                "trashed": str(dest.relative_to(d.parent.parent))}
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Stop a running generate (the whole process group) and mark it cancelled."""
@@ -829,6 +893,19 @@ class Factory:
                     add_degraded(out, entry)
         return out
 
+    def mesh_of(self, mesh: str) -> tuple[Path, str]:
+        """The supplied mesh and the asset it belongs to: a .glb file under out/<stem>/ (ValueError otherwise)."""
+        path = resolve_under_root(self.root, mesh)
+        out_dir = (self.root / "out").resolve()
+        if path.suffix.lower() != ".glb":
+            raise ValueError("mesh must be a .glb file")
+        if not path.is_relative_to(out_dir) or len(path.relative_to(out_dir).parts) < 2:
+            raise ValueError("mesh must be a .glb under out/<stem>/")
+        stem = check_stem(path.relative_to(out_dir).parts[0])
+        if not path.is_file():
+            raise FileNotFoundError(f"no mesh at {mesh}")
+        return path, stem
+
     def views_handoff(self, img: Path) -> tuple[Path | None, list[dict[str, str]]]:
         """The draw's views.json to pass to generate.sh (--views-json), or None, plus the degraded notes.
         Views pass only when the picture is out/<stem>/flat/source.png and its sha256 is the one views.json was
@@ -862,8 +939,19 @@ class Factory:
             require_picture(resolve_under_root(folder, rel))
         notes: list[dict[str, str]] = []
         if doc.get("consistent") is False:
-            flaws = ", ".join(str(f) for f in doc.get("flaws") or []) or "the views disagree"
-            return None, [degraded_entry("views", "inconsistent", f"{flaws}; using one picture")]
+            flaws = [str(f) for f in doc.get("flaws") or []]
+            ids = {v.get("id") for v in views if isinstance(v, dict)}
+            if flaws == ["side"] and {"front", "back"} <= ids and doc.get("canonical") in ("front", "back"):
+                # Only the side views are off (an A-pose person's side came back turned to the back, twice, on
+                # the farmer): front and back still agree, and two views beat one picture.
+                kept = dict(doc, views=[v for v in views if v.get("id") in ("front", "back")], consistent=True,
+                            flaws=[], dropped=["side"])
+                fb = views_path.with_name("views.front_back.json")
+                fb.write_text(json.dumps(kept, indent=2) + "\n", encoding="utf-8")
+                return fb, [degraded_entry("views", "sides_dropped",
+                                           "the side views disagree with the front; built from front and back")]
+            why = ", ".join(flaws) or "the views disagree"
+            return None, [degraded_entry("views", "inconsistent", f"{why}; using one picture")]
         return views_path, notes
 
     def start_generate(
@@ -878,11 +966,36 @@ class Factory:
         prompt: str | None = None,
         psx: dict[str, Any] | None = None,
         intent: dict[str, Any] | None = None,
+        mesh: str | None = None,
+        paint: bool | str = True,
+        fill: str | None = None,
+        mirror_ends: bool | None = None,
+        delight: bool | None = None,
     ) -> dict[str, Any]:
+        """mesh: a .glb under out/<stem>/ that generate.sh takes as the shape instead of hy3d's (the stem is that
+        folder's when none is given). paint False: no paint model, the mesh is unwrapped and only the photo bakes.
+        paint "trellis": TRELLIS.2's texturing paints the mesh instead of hy3d (MIT, no Hunyuan output).
+        The picture is required either way: isolate, the orientation check and the bake read it.
+        fill "photo": every texel from the photo (generate.sh --fill photo); "none" or absent: as before.
+        mirror_ends: mirror a front-on photo onto the far end too (generate.sh's default: on with fill photo).
+        delight: take the photo's lighting out before the bake and the fill (generate.sh --delight; default off)."""
         # Everything is checked before the job slot is taken: a refused request leaves /status idle.
         quality = str(quality or "stack")
         if quality not in QUALITIES:
             raise ValueError(f"quality must be one of {', '.join(QUALITIES)}")
+        if not isinstance(paint, bool) and paint != "trellis":
+            raise ValueError('paint must be true, false or "trellis"')
+        if paint is not True and quality == "pbr":
+            raise ValueError("quality pbr needs hy3d's PBR paint")
+        fill = None if fill in (None, "") else fill
+        if fill not in (None, "photo", "none"):
+            raise ValueError("fill must be photo or none")
+        if fill == "photo" and quality == "draft":
+            raise ValueError("fill photo needs a photo bake; quality draft has none")
+        if mirror_ends is not None and not isinstance(mirror_ends, bool):
+            raise ValueError("mirror_ends must be true or false")
+        if delight is not None and not isinstance(delight, bool):
+            raise ValueError("delight must be true or false")
         poly_in = str(poly or "medium")
         poly = normalize_poly(poly_in)
         # No 3D without a picture: the main image, every ref and every view must be one.
@@ -900,6 +1013,14 @@ class Factory:
         psx_opts = clean_psx(psx)
         intent_doc = clean_intent(intent)
         prompt = str(prompt or "").strip()
+        mesh_path = None
+        if mesh:
+            mesh_path, mesh_stem = self.mesh_of(str(mesh))
+            if stem and check_stem(str(stem)) != mesh_stem:
+                raise ValueError(f"mesh must be under out/{stem}/")
+            stem = mesh_stem
+            # The shape never ran from the one picture, so "one picture" is no fallback to report.
+            degraded = [d for d in degraded if not (d.get("stage") == "shape" and d.get("code") == "single_view")]
         if not stem:
             stem = auto_stem(self.root, prompt, [img, *refs])
         else:
@@ -922,6 +1043,11 @@ class Factory:
             "intent": intent_doc,
             "views_json": str(views_json) if views_json else None,
             "degraded": degraded,
+            "mesh": str(mesh_path) if mesh_path else None,
+            "paint": paint,
+            "fill": fill or "none",
+            "mirror_ends": mirror_ends,
+            "delight": delight,
             "log": str(stem_dir(self.root, stem) / "generate.log"),
             "started": time.time(),
             "glb_path": None,
@@ -1052,6 +1178,7 @@ class Factory:
             self._job = dict(spec)
         threading.Thread(target=drawjob.run, args=(self, spec, payload), kwargs={"write_intent": write_intent},
                          daemon=False).start()
+        projects.file_made(self.root, stem, body)  # accepted: the new asset joins its project (or none)
         return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "kind": kind,
                 "status_url": f"/status/{job_id}"}
 
@@ -1175,6 +1302,35 @@ class Factory:
         return {"ok": True, "stem": stem, "take": take["id"] if take else None, "checks": bundle["checks"],
                 "summary": bundle["summary"]}
 
+    def save_rig_weights(self, stem: str, raw: Any, exporter: Any = "default") -> dict[str, Any]:
+        """The Weights panel's Save (scripts/rig_weights.py): the rig on disk is kept as a version first, the edited
+        JOINTS_0/WEIGHTS_0 go into rigged.glb (and its same-mesh siblings), the FBX is exported again, and the result
+        is saved as a new rig version. Holds the stem like a recheck, so no job or other write starts meanwhile."""
+        import rig_weights
+
+        stem = check_stem(stem)
+        folder = stem_dir(self.root, stem)
+        if not folder.is_dir():
+            raise FileNotFoundError(f"no asset {stem!r}")
+        if not (folder / "rig" / "rig.json").is_file():
+            raise ValueError("this asset has no rig yet")
+        with self._lock:
+            if (self._job and self._job.get("state") == "running" and self._job.get("stem") == stem) or stem in self._checking:
+                raise RuntimeError("a job is writing this asset")
+            self._checking.add(stem)
+        try:
+            autosave(self.root, stem, ("rig",))
+            result = rig_weights.save_weights(folder, raw, rig_weights.default_exporter if exporter == "default" else exporter)
+            take = None
+            try:
+                take = flow.snapshot(self.root, stem, "rig", note="Edited weights")["take"]
+            except (flow.FlowError, OSError, ValueError) as e:
+                print(f"flow: could not save the edited weights as a rig version for {stem}: {e}", file=sys.stderr)
+        finally:
+            with self._lock:
+                self._checking.discard(stem)
+        return {"ok": True, "stem": stem, "take": take["id"] if take else None, **result}
+
     def _run_rig_job(self, spec: dict[str, Any]) -> None:
         """A rig (kind rig: saves a rig version before and after) or its contact sheet (kind render: refreshes the
         picked version in place, since a render is about the rig, not part of it)."""
@@ -1252,6 +1408,11 @@ class Factory:
             psx=spec.get("psx") or None,
             views_json=Path(spec["views_json"]) if spec.get("views_json") else None,
             degraded=list(spec.get("degraded") or []),
+            mesh=Path(spec["mesh"]) if spec.get("mesh") else None,
+            paint="trellis" if spec.get("paint") == "trellis" else spec.get("paint", True) is not False,
+            fill=spec.get("fill"),
+            mirror_ends=spec.get("mirror_ends"),
+            delight=spec.get("delight"),
         )
         spec["argv"] = argv
         with self._lock:
@@ -1461,6 +1622,10 @@ def _dispatch(
     if flow is not None:
         return flow
 
+    grouped = projects.handle(factory.root, method, parts, body)
+    if grouped is not None:
+        return grouped
+
     if method == "POST" and len(parts) == 2 and parts[0] == "export":
         try:
             export_stem = check_stem(parts[1])
@@ -1494,6 +1659,7 @@ def _dispatch(
                     "POST /rig/<stem>",
                     "POST /rig/<stem>/inspect",
                     "POST /rig/<stem>/render",
+                    "POST /rig/<stem>/weights",
                     "GET /rig/plans",
                     "POST /facing/detect",
                     "GET /glb/<stem>",
@@ -1521,6 +1687,13 @@ def _dispatch(
                     "GET /flow/<stem>",
                     "POST /flow/<stem>/snapshot",
                     "POST /flow/<stem>/pick",
+                    "GET /projects",
+                    "POST /projects",
+                    "GET /projects/<id>",
+                    "PATCH /projects/<id>",
+                    "DELETE /projects/<id>",
+                    "POST /projects/<id>/assets",
+                    "DELETE /projects/<id>/assets/<stem>",
                     "GET /export/<stem>",
                     "POST /export/<stem>",
                 ],
@@ -1529,6 +1702,23 @@ def _dispatch(
 
     if method == "GET" and path == "/health":
         return _json_bytes(factory.health())
+
+    if path == "/activity":
+        if method == "GET":
+            try:
+                since = int((query.get("since") or ["0"])[0])
+            except ValueError:
+                return _json_bytes({"ok": False, "error": "since must be a number"}, 400)
+            return _json_bytes(factory.activity.since(since))
+        if method == "POST":
+            try:
+                raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+                if not isinstance(raw, dict):
+                    raise ValueError("send one entry as an object")
+                entry_id = raw.pop("id", None)
+                return _json_bytes({"ok": True, "entry": factory.activity.put(entry_id, **raw)})
+            except (ValueError, TypeError) as e:
+                return _json_bytes({"ok": False, "error": str(e)}, 400)
 
     if method == "GET" and path == "/assets":
         return _json_bytes(factory.list_assets())
@@ -1748,6 +1938,22 @@ def _dispatch(
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
 
+    if method == "POST" and len(parts) == 3 and parts[0] == "rig" and parts[2] == "weights":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.save_rig_weights(parts[1], raw))
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+        except Exception as e:
+            traceback.print_exc()
+            return _json_bytes({"ok": False, "error": f"couldn't save the weights: {e}"}, 500)
+
     if method == "POST" and len(parts) == 3 and parts[0] == "rig" and parts[2] == "inspect":
         try:
             return _json_bytes(factory.inspect_rig(parts[1]))
@@ -1805,6 +2011,23 @@ def _dispatch(
                 raw_images = [p for p in raw_images.split(",") if p]
             if not isinstance(raw_images, list):
                 raw_images = []
+            paint = payload.get("paint")
+            if paint is None:
+                paint = True
+            elif isinstance(paint, str):  # from the query string
+                paint = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(
+                    paint.strip().lower(), paint)
+            mirror_ends = payload.get("mirror_ends")
+            if isinstance(mirror_ends, str):  # from the query string
+                mirror_ends = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(
+                    mirror_ends.strip().lower(), mirror_ends)
+            delight = payload.get("delight")
+            if isinstance(delight, str):  # from the query string
+                delight = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(
+                    delight.strip().lower(), delight)
+            mesh = payload.get("mesh")
+            if mesh not in (None, "") and not isinstance(mesh, str):
+                raise ValueError("mesh must be a path to a .glb under out/<stem>/")
             result = factory.start_generate(
                 image=str(payload.get("image") or ""),
                 quality=str(payload.get("quality") or "stack"),
@@ -1815,6 +2038,11 @@ def _dispatch(
                 prompt=str(payload.get("prompt") or "") or None,
                 psx={k: payload.get(k if k == "facing" else f"psx_{k}") for k in PSX_KEYS},
                 intent=payload.get("intent") if isinstance(payload.get("intent"), dict) else None,
+                mesh=mesh or None,
+                paint=paint,
+                fill=payload.get("fill"),
+                mirror_ends=mirror_ends,
+                delight=delight,
             )
             return _json_bytes(result, 202)
         except FileNotFoundError as e:
@@ -1842,9 +2070,24 @@ def make_handler(factory: Factory):
             return self.rfile.read(n)
 
         def _cors(self) -> None:
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            origin = self.headers.get("Origin")
+            if origin and local_origin(origin):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+        def _refuse(self) -> bool:
+            """403 for a web page that isn't the app or this machine, or a Host that isn't loopback."""
+            if local_origin(self.headers.get("Origin")) and local_host(self.headers.get("Host")):
+                return False
+            body = json.dumps({"error": "origin not allowed"}).encode()
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return True
 
         def _send(self, status: int, body: bytes, content_type: str) -> None:
             self.send_response(status)
@@ -1863,31 +2106,43 @@ def make_handler(factory: Factory):
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "GET", parsed.path, parse_qs(parsed.query), b"")
             self._send(status, body, ctype)
 
         def do_POST(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "POST", parsed.path, parse_qs(parsed.query), self._read_body())
             self._send(status, body, ctype)
 
         def do_PATCH(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "PATCH", parsed.path, parse_qs(parsed.query), self._read_body())
             self._send(status, body, ctype)
 
         def do_DELETE(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "DELETE", parsed.path, parse_qs(parsed.query), b"")
             self._send(status, body, ctype)
 
         def do_OPTIONS(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             self.send_response(204)
             self._cors()
             self.end_headers()
 
         def do_HEAD(self) -> None:  # noqa: N802
+            if self._refuse():
+                return
             parsed = urlparse(self.path)
             status, body, ctype = dispatch(factory, "GET", parsed.path, parse_qs(parsed.query), b"")
             self.send_response(status)
@@ -1937,6 +2192,8 @@ def serve(host: str, port: int, root: Path, log_path: Path | None = None) -> Non
     pid_path = root / "out" / "factory_http.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     pid_path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    watch_stop = threading.Event()
+    threading.Thread(target=factory.watch_jobs, args=(watch_stop,), name="job-watch", daemon=True).start()
     handle = stop_handler(factory, httpd)
     before = {sig: signal.signal(sig, handle) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
@@ -1944,6 +2201,7 @@ def serve(host: str, port: int, root: Path, log_path: Path | None = None) -> Non
     finally:
         for sig, old in before.items():
             signal.signal(sig, old)
+        watch_stop.set()
         factory.reap()  # also when serve_forever stopped some other way; after the handlers, so it is not re-entered
         httpd.server_close()
         try:

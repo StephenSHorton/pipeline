@@ -3,6 +3,7 @@
 // open; a dot says it holds files, an amber ring that it is stale, red that its check failed.
 import { flowEntry, railHidden, railTitle, STAGE_LABEL, STAGES, useFlow } from "@/lib/flow";
 import { cn } from "@/lib/utils";
+import { TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import { useStage } from "./stage";
 
 export function StageRail({ stem }: { stem: string }) {
@@ -12,7 +13,9 @@ export function StageRail({ stem }: { stem: string }) {
   const flow = useFlow((s) => (s.stem === stem ? s.flow : null));
   if (!stage) return null;
   return (
-    <nav aria-label="Stages" className="flex min-w-0 gap-0.5 overflow-x-auto rounded-[10px] bg-muted/60 p-0.5 [scrollbar-width:none]">
+    // The shared segmented tray (the open stage a white pill), one row that never wraps. It gets its own row in the
+    // top bar before it would clip (TopBar); if it still overflows, the thin scrollbar shows there is more.
+    <nav aria-label="Stages" className={cn(TRAY, "flex-nowrap overflow-x-auto [scrollbar-width:thin]")}>
       {STAGES.filter((s) => !railHidden(flow, output, s, stage)).map((s) => {
         const entry = flowEntry(flow, s);
         const problem = !!(entry?.live && entry.summary?.level === "fail");
@@ -23,10 +26,7 @@ export function StageRail({ stem }: { stem: string }) {
             aria-pressed={s === stage}
             title={railTitle(entry)}
             onClick={() => enter(s)}
-            className={cn(
-              "relative flex min-h-10 shrink-0 items-center gap-1.5 rounded-[8px] px-2.5 text-[0.8rem] font-medium text-ink-3 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-ring",
-              "aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:text-ink aria-pressed:shadow-[var(--glass-shadow)]",
-            )}
+            className={cn(TRAY_ITEM, "relative flex h-[30px] shrink-0 items-center gap-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring")}
           >
             {STAGE_LABEL[s]}
             {entry?.live ? (

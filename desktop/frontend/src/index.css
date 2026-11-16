@@ -15,6 +15,12 @@
     font: inherit;
     color: inherit;
   }
+  /* Tailwind v4 dropped cursor:pointer on buttons; without it nothing in the HUD reads as clickable. */
+  button:not(:disabled),
+  [role='tab'],
+  summary {
+    cursor: pointer;
+  }
 }
 
 :root {

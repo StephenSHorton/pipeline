@@ -139,10 +139,17 @@ SHEET_POSE = {
     "humanoid": ("Standing upright in an A-pose, arms straight and held 30° from the body, legs straight and "
                  "slightly apart, feet flat, mouth closed, neutral relaxed expression, no motion."),
 }
+# A turned head on a side view cannot be baked: no one camera sees it, so its face and far ear landed on the pig's
+# shoulders (retexture fit IoU 0.79 for those panels, 0.93 for front and back). Asked for on every creature sheet.
+SHEET_HEAD = {"humanoid": "The head faces the same way as the body in every view, never turned toward the viewer.",
+              "creature": ("The head points straight along the body in every view, never turned toward the viewer: "
+                           "in the two side views it is a strict profile, only the near eye and the near ear "
+                           "visible.")}
 SHEET_FLOAT = "The object floats in the air in every view, upright, not standing on anything."
 SHEET_TAIL = ("Exactly four views, no more, {where}, each whole and separate, the same size, with wide empty gaps between "
               "them. Plain flat uniform magenta #FF00FF background with no gradient, no vignette and no floor. Flat even "
-              "lighting. No shadow, no text, no labels, no borders.")
+              "lighting, every view lit the same, no highlights and no shading. No shadow, no text, no labels, no "
+              "borders.")
 # Where each panel sits, by layout. The wording "View n (where)" plus "turned to face RIGHT, its head at the right
 # and its tail at the left" is what made Qwen-Image-2512 draw the two profiles facing opposite ways (scratchpad
 # qmv/p2/ab.md); "head pointing toward the RIGHT edge" drew both profiles facing left.
@@ -180,7 +187,8 @@ def sheet_prompt(text: str, kind: str | None = None, layout: str = "grid") -> st
         head = (f"Character turnaround sheet {rows}, the same {who} turning in place, four orthographic full-body "
                 f"views{' ' + order if order else ''}.")
         same = ("The two side views are mirror images of each other and face in opposite directions. "
-                + SHEET_POSE.get(kind, SHEET_POSE["creature"]))
+                + SHEET_POSE.get(kind, SHEET_POSE["creature"]) + " "
+                + SHEET_HEAD["humanoid" if kind == "humanoid" else "creature"])
     else:
         head = (f"Product turnaround sheet {rows}, the same single object turning in place, four orthographic "
                 f"views{' ' + order if order else ''}.")

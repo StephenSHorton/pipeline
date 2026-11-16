@@ -7,7 +7,7 @@ const desktop = join(frontendScripts, "..", "..");
 const repo = join(desktop, "..");
 const src = join(repo, "scripts");
 const dest = join(desktop, "internal", "runtime", "fs", "scripts");
-const keepExt = new Set([".py", ".sh", ".json"]);
+const keepExt = new Set([".py", ".sh", ".json", ".md"]);  // .md: the workbench playbook its MCP server reads
 
 function copyDir(from, to) {
   mkdirSync(to, { recursive: true });

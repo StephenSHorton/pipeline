@@ -258,17 +258,23 @@ def _toes_vote(mesh: Mesh, legs_xz: list[np.ndarray], cx: float) -> dict:
 
 
 def facing_check(mesh: Mesh, pred: rig_pred.Pred | None, red: np.ndarray | None, legs_xz: list[np.ndarray], cx: float,
-                 prior: dict | None = None) -> dict:
+                 prior: dict | None = None, canonical: bool = False) -> dict:
     """Does the head point to +Z? Independent cues only (the +Z label always calls the +Z-most chain the head).
 
     prior: the psx pass's facing_check (psx.json; its own toes + VLM votes on the textured model). When it found the
     head at +Z with votes behind it, it is one more cue (weight 1), so a correctly faced bird whose tail stands taller
-    than its head (label -1) is not refused on that single weak cue."""
+    than its head (label -1) is not refused on that single weak cue.
+
+    canonical: the views were drawn facing the way psx placed them (a canonical draw). When no psx check ran (the
+    workbench cuts with it off) that is a cue of weight 2: the chicken's prediction found only its tail (label -1)
+    and its blob feet read backwards (toes -1), and the build refused a hen whose head was plainly at +Z."""
     cues = {}
     if isinstance(prior, dict) and prior.get("head_axis") in ("+Z", "-Z"):
         backed = any(int(v or 0) != 0 for v in (prior.get("votes") or {}).values())
         vote = (1 if prior["head_axis"] == "+Z" else -1) if backed else 0
         cues["psx"] = {"head_axis": prior["head_axis"], "agrees": prior.get("agrees"), "vote": vote, "weight": 1}
+    elif canonical:
+        cues["drawn"] = {"vote": 1, "weight": 2}
     if pred is not None:
         lab = rig_pred.label(pred, None, red if red is not None and len(red) == len(pred.P) else None)
         yaw = rig_pred.head_chain_yaw(pred, lab)
@@ -488,7 +494,8 @@ def _build(source: Path, plan: dict, pred: rig_pred.Pred | None, out_dir: Path, 
     diag["cx"] = cx
 
     # facing (independent cues)
-    fc = facing_check(mesh, pred, red, [C[0], C[1]], cx, prior=plan.get("facing_check"))
+    fc = facing_check(mesh, pred, red, [C[0], C[1]], cx, prior=plan.get("facing_check"),
+                      canonical=bool(plan.get("canonical")))
     diag["facing_check"] = fc
     if not fc["agrees"]:
         raise BuildError("facing", "the head points to -Z (cues: " + ", ".join(
@@ -496,7 +503,13 @@ def _build(source: Path, plan: dict, pred: rig_pred.Pred | None, out_dir: Path, 
     if head_c is not None:
         tipz = pred.jp[head_c[-1]][2]
         if tipz < pred.jp[pred.root[0]][2]:
-            raise BuildError("facing", "the predicted head chain points to -Z")
+            if "drawn" not in fc["cues"]:
+                raise BuildError("facing", "the predicted head chain points to -Z")
+            # the head is at +Z (the canonical draw), so a lone body chain running to -Z is the tail: the head
+            # follows the mesh's centreline instead
+            tail_c = tail_c if tail_c is not None else head_c
+            head_c = None
+            diag["head_chain_was_tail"] = True
 
     # leg tops (the body bottom, for cross-sections)
     leg_root = {}
@@ -508,9 +521,15 @@ def _build(source: Path, plan: dict, pred: rig_pred.Pred | None, out_dir: Path, 
     body_lo = float(min(p[1] for p in leg_root.values())) - 0.05 * H
 
     # ---- 2. hips, root, spine, neck, head, jaw
-    if pred is not None:
+    root_z = [p[2] for p in leg_root.values()]
+    if pred is not None and min(root_z) - 0.1 * H <= pred.jp[pred.root[0]][2] <= max(root_z) + 0.1 * H:
         hb = pred.jp[pred.root[0]].copy()
         src_h = f"pred:{pred.names[pred.root[0]]}"
+    elif pred is not None:
+        # the crow's prediction rooted at the back of the body, behind both legs: hips there sat low and behind the
+        # tail, so the hips go above the legs instead, as on every bird that built
+        hb = np.array([cx, pred.jp[pred.root[0]][1], float(np.mean(root_z))])
+        src_h = "legs (predicted root off the legs)"
     else:
         hb = np.array([cx, y0 + 0.45 * H, float(C[:, 1].mean())])
         src_h = "fallback"
@@ -594,6 +613,13 @@ def _build(source: Path, plan: dict, pred: rig_pred.Pred | None, out_dir: Path, 
 
     # ---- 3. tail
     tailspec = chains.get("tail", {}) if isinstance(chains.get("tail"), dict) else {}
+    if tail_c is not None:
+        # a real tail runs back from the hips near the midline over 2+ joints; the crow's "tail" was a one-joint
+        # stub off the root at the side, forward of it, and the tail built from it came out outside the mesh
+        tj = np.array([pred.jp[k] for k in tail_c])
+        if len(tail_c) < 2 or abs(tj[-1][0] - cx) > 0.06 * H or tj[-1][2] >= pos["hips"][2]:
+            diag["tail_pred_rejected"] = {"joints": len(tail_c), "tip": [round(float(x), 4) for x in tj[-1]]}
+            tail_c = None
     if tail_c is not None:
         tline = np.array([pred.jp[k] for k in tail_c])
         tsrc = "pred:tail"

@@ -1,7 +1,7 @@
 // The viewer's glass HUD (Mokei playground look): panels at the edges, the model in the clear middle.
 // Panels drop the backdrop blur on purpose: at 0.9 white the frost barely shows, and in the macOS webview
 // (WebKit applies -webkit-backdrop-filter) it re-blurs the WebGL canvas behind every panel on every frame.
-import { House, Minus, Pause, Play, Plus, RotateCcw, RotateCw } from "lucide-react";
+import { ChevronDown, House, Minus, Pause, Play, Plus, RotateCcw, RotateCw } from "lucide-react";
 import { useLook } from "mokei/clay";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -10,37 +10,30 @@ import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { legacyUrl, renameAsset, type Lod } from "@/lib/api";
+import { MoveMenu } from "@/components/ProjectMenu";
+import { renameAsset, type Lod } from "@/lib/api";
 import { degradedLine, displayStem } from "@/lib/jobs";
+import { projectOf, refreshProjects, useProjectList } from "@/lib/projects";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { KIND_NAMES, RIGGED, slugStem } from "@/viewer/candidates";
 import type { PixelLook } from "@/viewer/pixelLook";
 import type { AssetDocs } from "@/viewer/useAssetDocs";
+import { openOn } from "./panels/panels";
+import { PanelRail } from "./panels/PanelRails";
+import { usePanels } from "./panels/store";
+import { PANEL, TOGGLE } from "./classes";
+import type { LoadState, ModelInfo, ViewerPanelBase } from "./types";
 
-export interface ModelInfo {
-  url: string;
-  file: string;
-  lod: string;
-  tag: string;
-  ms: number;
-  vertices: number;
-  faces: number;
-  hasMap: boolean;
-}
+export type { LoadState, ModelInfo } from "./types";
 
-type LoadState = { state: "loading" } | { state: "ready"; info: ModelInfo } | { state: "error"; message: string };
-
-const PANEL = "pointer-events-auto rounded-[14px] [-webkit-backdrop-filter:none] [backdrop-filter:none]";
-const TOGGLE =
-  "hit-44 h-[29px] rounded-[8px] px-[11px] text-[length:calc(14.2px*var(--fs))] font-semibold text-ink-3 hover:bg-muted aria-pressed:bg-accent aria-pressed:text-accent-foreground";
+export { PANEL, TOGGLE } from "./classes";
 
 export interface HudProps {
   stem: string;
   docs: AssetDocs | null;
   load: LoadState;
   lods: Lod[];
-  hasRig: boolean;
   onPickLod: (id: string) => void;
   clips: string[];
   clip: string | null;
@@ -58,30 +51,62 @@ export interface HudProps {
   isPs1: boolean;
   onPixel: (on: boolean) => void;
   on240: () => void;
+  /** Compare (./compare.ts), when the stage has an earlier version to show; null hides the toggle. */
+  compare?: { on: boolean; onToggle: (on: boolean) => void } | null;
+  /** Rig: the motion source beside the rig (./compare.ts motionSource), when the rig names one; null hides it. */
+  source?: { on: boolean; onToggle: (on: boolean) => void; name: string } | null;
   onRenamed: (stem: string) => void;
+  /** What the rail and dock panels get (ViewerPanelProps minus id, open, onClose). */
+  panel: ViewerPanelBase;
+  /** The asset screen's versions panel, the foot of the left column. */
+  versions?: ReactNode;
 }
 
 export function Hud(p: HudProps) {
   const info = p.load.state === "ready" ? p.load.info : null;
+  // Comparing on a phone, the HUD yields room for two panes: no asset card or model picker, and a shorter left
+  // column (an open panel scrolls), which an open panel has to itself. The panes keep clear of what is left
+  // (data-hud-col, ViewerScreen measures it).
+  const yields = !!p.compare?.on || !!p.source?.on;
+  const panelOpen = !!openOn(usePanels((s) => s.open), p.panel.stage);
   return (
     <div data-hud className="pointer-events-none absolute inset-0 z-[5] text-ink tracking-[var(--track)]">
-      <AssetCard {...p} info={info} />
-      {/* Wide: view toggles and the camera stack top right. Phones: one column at the bottom, in normal flow, so
-          nothing overlaps: the toggles with Reset view, then the model and clip pickers. */}
-      <div className="absolute top-3 right-3 flex flex-col items-end gap-2 max-sm:hidden">
-        <ViewCard {...p} />
+      {/* The asset card, the panel rail under it (legacy left cubby rail), then the versions panel: the left side
+          is one stack. The column stops above the bottom pickers on phones and scrolls the open panel instead of
+          running off the screen; the versions panel shrinks with the rail and scrolls its own body. */}
+      <div
+        data-hud-col="left"
+        className={cn(
+          "absolute top-3 left-3 flex max-h-[calc(100%-24px)] w-[min(340px,calc(100%-24px))] flex-col gap-2 max-sm:w-[calc(100%-24px)]",
+          yields ? "max-sm:max-h-[40%]" : "max-sm:max-h-[calc(100%-200px)]",
+        )}
+      >
+        <AssetCard {...p} info={info} className={yields ? "max-sm:hidden" : undefined} />
+        <PanelRail side="left" base={p.panel} />
+        <div className={cn("contents", yields && panelOpen && "max-sm:hidden")}>{p.versions}</div>
+      </div>
+      {/* Wide: view toggles and the camera stack top right, the Rig check dock under them. Phones: one column at
+          the bottom, in normal flow, so nothing overlaps: the toggles with Reset view, then the model and clip
+          pickers (the dock's panels join the left rail there). */}
+      {/* Below 1360 px the bottom clip bar reaches under this column, so the column stops above it. */}
+      <div data-hud-col="right" className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] flex-col items-end gap-2 max-[1360px]:max-h-[calc(100%-80px)] max-sm:hidden">
+        <div data-hud-col="top">
+          <ViewCard {...p} />
+        </div>
         <CameraStack />
+        <PanelRail side="right" base={p.panel} className="w-[min(342px,calc(100vw-24px))]" />
       </div>
       <Status load={p.load} />
-      <div className="absolute inset-x-3 bottom-3 flex flex-col items-center gap-2">
-        <div className="flex max-w-full items-center gap-2 sm:hidden">
+      <div data-hud-col="bottom" className="absolute inset-x-3 bottom-3 flex flex-col items-center gap-2">
+        <div className="flex max-w-full items-stretch gap-2 sm:hidden">
           <ViewCard {...p} />
-          <Card size="hud" className={cn(PANEL, "p-1")}>
+          <Card size="hud" className={cn(PANEL, "justify-center p-1")}>
             <ResetView />
           </Card>
         </div>
         <div className="flex max-w-full flex-wrap items-end justify-center gap-2">
-          <ModelPicker lods={p.lods} hasRig={p.hasRig} current={info?.lod ?? ""} onPick={p.onPickLod} />
+          {/* 3D only: Rig always shows the rigged model (Stephen: the Rigged / Photo bake / PSX tabs made no sense there). */}
+          {p.panel.stage === "mesh" ? <ModelPicker lods={p.lods} current={info?.lod ?? ""} onPick={p.onPickLod} className={yields ? "max-sm:hidden" : undefined} /> : null}
           {p.clips.length ? <ClipPicker {...p} /> : null}
         </div>
       </div>
@@ -91,7 +116,7 @@ export function Hud(p: HudProps) {
 
 /* ------------------------------------------------------------------ asset card (top left) */
 
-function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo | null }) {
+function AssetCard({ stem, docs, info, onRenamed, className }: HudProps & { info: ModelInfo | null; className?: string }) {
   const kind = docs?.intent?.output ? KIND_NAMES[docs.intent.output] : null;
   const insp = docs?.inspect;
   // inspect.json describes one file; when another file is on screen its own counts are shown instead.
@@ -102,11 +127,12 @@ function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo
   const degraded = degradedLine(docs?.degraded);
   const summary = docs?.summary;
   return (
-    <Card size="hud" className={cn(PANEL, "absolute top-3 left-3 w-[min(340px,calc(100%-24px))] gap-1.5 px-4 pt-3 pb-3")}>
+    <Card size="hud" className={cn(PANEL, "w-full shrink-0 gap-1.5 px-4 pt-3 pb-3", className)}>
       <TitleInput stem={stem} onRenamed={onRenamed} />
+      <ProjectLine stem={stem} />
       <div className="flex flex-wrap items-center gap-1.5">
         {kind ? <Badge variant="info" size="hud-sm">{kind}</Badge> : null}
-        {/* The rigged model is already named by the selected Rigged tab. */}
+        {/* The rigged model is already named by the Rig tab. */}
         {info && info.lod !== RIGGED && info.tag.toLowerCase() !== kind?.toLowerCase() ? <Badge variant="slate" size="hud-sm">{info.tag}</Badge> : null}
       </div>
       {typeof faces === "number" || info ? (
@@ -122,13 +148,6 @@ function AssetCard({ stem, docs, info, onRenamed }: HudProps & { info: ModelInfo
         </p>
       ) : null}
       {summary?.level ? <RigLine summary={summary} /> : null}
-      <a
-        href={legacyUrl(info?.lod === RIGGED ? { asset: stem, lod: RIGGED } : { asset: stem })}
-        className="hit-44 mt-0.5 w-fit rounded-sm text-[length:calc(13.5px*var(--fs))] font-medium text-primary no-underline outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-        title="Rig check, export, 2D, sprite stack, paint, cleanup, the turnaround figures and the articulated pivots live in the classic view for now."
-      >
-        Open in classic view
-      </a>
     </Card>
   );
 }
@@ -154,10 +173,35 @@ function RigLine({ summary }: { summary: NonNullable<AssetDocs["summary"]> }) {
         <Badge variant={lv.variant} size="hud-sm" className="shrink-0">
           {lv.word}
         </Badge>
-        {summary.line ? <span className="line-clamp-2 pt-0.5 text-[length:calc(13px*var(--fs))] text-ink-3">{summary.line}</span> : null}
+        {summary.line ? <span className="line-clamp-2 min-w-0 flex-1 pt-0.5 text-[length:calc(13px*var(--fs))] text-ink-3">{summary.line}</span> : null}
+        {problems.length ? <ChevronDown aria-hidden size={15} className="mt-0.5 shrink-0 text-ink-3 transition-transform group-open/rig:rotate-180" /> : null}
       </summary>
       <p className="m-0 mt-1 text-[length:calc(13px*var(--fs))] whitespace-pre-line text-ink-2">{tip}</p>
     </details>
+  );
+}
+
+/** "Project: X ▾" / "No project ▾" under the title: the library card's Move menu. Hidden until the list loads. */
+function ProjectLine({ stem }: { stem: string }) {
+  const projects = useProjectList();
+  if (!projects) return null;
+  const p = projectOf(projects, stem);
+  return (
+    <MoveMenu
+      stem={stem}
+      current={p?.id ?? null}
+      projects={projects}
+      trigger={
+        <Button
+          variant="hud-ghost"
+          title="Move to project"
+          className="hit-44 -mx-1.5 -mt-1 h-6 max-w-[calc(100%+12px)] justify-start gap-1 self-start rounded-md px-1.5 text-[length:calc(13px*var(--fs))] font-medium text-ink-3 hover:bg-white hover:text-ink aria-expanded:bg-white aria-expanded:text-ink"
+        >
+          <span className="min-w-0 truncate">{p ? <>Project: <b className="font-semibold text-ink-2">{p.name}</b></> : "No project"}</span>
+          <ChevronDown aria-hidden size={14} className="shrink-0" />
+        </Button>
+      }
+    />
   );
 }
 
@@ -176,6 +220,8 @@ function TitleInput({ stem, onRenamed }: { stem: string; onRenamed: (stem: strin
     busy.current = true;
     try {
       const res = await renameAsset(stem, value);
+      // The factory moves the project membership to the new stem.
+      void refreshProjects();
       onRenamed(res.stem || next);
     } catch (err) {
       setValue(displayStem(stem));
@@ -199,7 +245,7 @@ function TitleInput({ stem, onRenamed }: { stem: string; onRenamed: (stem: strin
           requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
         }
       }}
-      className="-mx-1.5 w-[calc(100%+12px)] rounded-[8px] border border-transparent bg-transparent px-1.5 py-0.5 text-[1.05rem] font-semibold text-ink outline-none hover:border-input focus:border-ring focus:bg-white"
+      className="-mx-1.5 w-[calc(100%+12px)] cursor-text rounded-[8px] border border-transparent bg-transparent px-1.5 py-0.5 text-[1.05rem] font-semibold text-ink outline-none hover:border-input hover:bg-white focus:border-ring focus:bg-white"
     />
   );
 }
@@ -208,7 +254,7 @@ function TitleInput({ stem, onRenamed }: { stem: string; onRenamed: (stem: strin
 
 function ViewCard(p: HudProps) {
   return (
-    <Card size="hud" className={cn(PANEL, "flex-row flex-wrap items-center justify-end gap-0.5 p-1")}>
+    <Card size="hud" className={cn(PANEL, "flex-row flex-wrap items-center justify-end gap-1 p-1")}>
       <Toggle on={p.spin} onClick={() => p.onSpin(!p.spin)} title="Slowly turn the model on its pad.">
         Spin
       </Toggle>
@@ -231,13 +277,37 @@ function ViewCard(p: HudProps) {
           PS1 240p
         </Toggle>
       ) : null}
+      {p.compare ? (
+        <>
+          <Separator orientation="vertical" className="mx-0.5 h-5 w-px bg-hair" />
+          <Toggle
+            on={p.compare.on}
+            onClick={() => p.compare?.onToggle(!p.compare.on)}
+            title="Show an earlier version beside this one, turning and playing together. Click a version to choose which."
+          >
+            Compare
+          </Toggle>
+        </>
+      ) : null}
+      {p.source ? (
+        <>
+          {p.compare ? null : <Separator orientation="vertical" className="mx-0.5 h-5 w-px bg-hair" />}
+          <Toggle
+            on={p.source.on}
+            onClick={() => p.source?.onToggle(!p.source.on)}
+            title={`Show the ${p.source.name ? p.source.name.toLowerCase() : "model"} the clips were made from beside the rig, playing the same clip.`}
+          >
+            Motion source
+          </Toggle>
+        </>
+      ) : null}
     </Card>
   );
 }
 
 function Toggle({ on, onClick, title, disabled, children }: { on: boolean; onClick: () => void; title: string; disabled?: boolean; children: ReactNode }) {
   return (
-    <Button type="button" variant="hud-ghost" aria-pressed={on} disabled={disabled} title={title} onClick={onClick} className={TOGGLE}>
+    <Button type="button" variant="hud-ghost" aria-pressed={on} disabled={disabled} title={title} onClick={onClick} className={cn(TOGGLE, "max-sm:px-2")}>
       {children}
     </Button>
   );
@@ -290,17 +360,17 @@ function CamBtn({ label, onClick, children }: { label: string; onClick: () => vo
 
 /* ------------------------------------------------------------------ model + clip pickers (bottom) */
 
-function ModelPicker({ lods, hasRig, current, onPick }: { lods: Lod[]; hasRig: boolean; current: string; onPick: (id: string) => void }) {
-  const items = [...(hasRig ? [{ id: RIGGED, label: "Rigged", title: "The rigged model, with its clips." }] : []), ...lods.map((l) => ({
+function ModelPicker({ lods, current, onPick, className }: { lods: Lod[]; current: string; onPick: (id: string) => void; className?: string }) {
+  const items = lods.map((l) => ({
     id: l.id,
     label: l.label || l.id,
     title: `Show ${l.label || l.id} (${l.file}${typeof l.faces === "number" ? `, ${l.faces.toLocaleString()} faces` : ""}).`,
-  }))];
+  }));
   if (items.length < 2) return null;
   return (
-    <Card size="hud" className={cn(PANEL, "max-w-full p-1")}>
+    <Card size="hud" className={cn(PANEL, "max-w-full p-1", className)}>
       <Tabs value={current} onValueChange={(v) => typeof v === "string" && v !== current && onPick(v)}>
-        <TabsList variant="hud" aria-label="Model" className="max-w-full flex-wrap justify-start bg-transparent p-0">
+        <TabsList variant="hud" aria-label="Model" className="max-w-full flex-wrap justify-start">
           {items.map((it) => (
             <TabsTrigger key={it.id} variant="hud" value={it.id} title={it.title} className="hit-44">
               {it.label}
@@ -314,7 +384,7 @@ function ModelPicker({ lods, hasRig, current, onPick }: { lods: Lod[]; hasRig: b
 
 function ClipPicker({ clips, clip, playing, onClip, onPlaying }: HudProps) {
   return (
-    <Card size="hud" className={cn(PANEL, "max-w-full flex-row items-center gap-1 p-1")}>
+    <Card size="hud" className={cn(PANEL, "max-w-full min-w-0 flex-row items-center gap-1 p-1")}>
       <Tooltip>
         <TooltipTrigger
           render={<Button type="button" variant="hud-cam" size="hud-cam" aria-label={playing ? "Pause" : "Play"} onClick={() => onPlaying(!playing)} className="hit-44 h-[29px] w-[32px]" />}
@@ -323,8 +393,8 @@ function ClipPicker({ clips, clip, playing, onClip, onPlaying }: HudProps) {
         </TooltipTrigger>
         <TooltipContent>{playing ? "Pause" : "Play"}</TooltipContent>
       </Tooltip>
-      <Tabs value={clip ?? ""} onValueChange={(v) => typeof v === "string" && onClip(v)}>
-        <TabsList variant="hud" aria-label="Clips" className="max-w-full flex-wrap justify-start bg-transparent p-0">
+      <Tabs value={clip ?? ""} onValueChange={(v) => typeof v === "string" && onClip(v)} className="min-w-0">
+        <TabsList variant="hud" aria-label="Clips" className="max-w-full flex-wrap justify-start max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:[scrollbar-width:none]">
           {clips.map((name) => (
             <TabsTrigger key={name} variant="hud" value={name} title={`Play the “${name}” animation on the mesh.`} className="hit-44">
               {name.replace(/_/g, " ")}
