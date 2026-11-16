@@ -86,9 +86,9 @@ Props are the weak class. There is no route that makes a clean one on its own:
 
 ```
 .venv/bin/python scripts/draw_parts.py out/car/parts body_side "<a car, pure side view, no wheels>" 2   # two stills
-.venv/bin/python scripts/edit_part.py <body.png> out/car/parts/wheel "<show only the front wheel, alone>" 22   # pull a wheel out
-scripts/generate.sh --image <body.png>  --quality psx --stem car_body
-scripts/generate.sh --image <wheel.png> --quality psx --stem car_wheel
+.venv/bin/python scripts/strip_wheels.py <car.png> out/car/parts/body_nowheels.png --wheel-out out/car/parts/wheel.png --debug out/car/parts/wheels_found.png   # body without wheels, and one wheel, both in code
+scripts/generate.sh --image out/car/parts/body_nowheels.png --quality psx --stem car_body
+scripts/generate.sh --image out/car/parts/wheel.png --quality psx --stem car_wheel
 .venv/bin/python scripts/assemble_car.py --body out/car_body/psx.glb --wheel out/car_wheel/psx.glb --out out/car/car.glb \
     [--drop -0.2 --track -0.05]          # body height and wheel spread are set by hand
 .venv/bin/python scripts/viewer_shots.py car out/car/shots   # five angles and a contact sheet; needs out/car/psx.glb and a one-line lods.json
@@ -96,12 +96,16 @@ scripts/generate.sh --image <wheel.png> --quality psx --stem car_wheel
 
 ![The three pictures: car as drawn, wheels painted out, one wheel](docs/car-from-parts/parts.png)
 
-![The assembled car, five angles](docs/car-from-parts/car-sheet.png)
+![The assembled car, five angles (first run, wheels hand-painted out)](docs/car-from-parts/car-sheet.png)
+
+![The same steps with `strip_wheels.py`: car as drawn, wheels off in code, one wheel cropped](docs/car-from-parts/parts-v2.png)
+
+![The assembled car after pipeline#5: five angles, no slabs under the bumpers](docs/car-from-parts/car-sheet-v2.png)
 
 What the run showed (a small red retro car, 5,756 triangles, about 4 minutes to draw two stills, about 6 for both shapes and paints):
 
 - **It works:** a body and one wheel become `car > body, wheel_FL, wheel_FR, wheel_RL, wheel_RR`, the right wheels turned so the hub faces outward, one shared wheel mesh and texture, PS1 sampling.
-- **The image-edit model would not take the wheels off the body picture** (five tries, two wordings, wheels unchanged). The run painted black wheel wells over them by hand instead, and the pink background left in the patch became slabs under the bumpers.
+- **The image-edit model would not take the wheels off the body picture** (five tries, two wordings, wheels unchanged). The first run painted black wheel wells over them by hand instead, and the pink background left in the patch became slabs under the bumpers. `scripts/strip_wheels.py` now does it in code (pipeline#5): it cuts the car out, finds each tyre as the part of the car's lower edge that hangs below the underside, fills the wheel well dark above the underside and cuts everything below it away, and sets the car on one flat ground colour. Nothing is left under the bumpers to become a slab. The same script crops the wheel out of the picture (`--wheel-out`), because the image-edit model could not be trusted to pull a wheel out either: on the second run it handed back the whole car. `edit_part.py` stays for other edits.
 - **Paint is speckled** (the shape came from one side picture, `single_view` in `degraded.json`) and the body's wheel wells do not line up exactly with the wheels; the stance (`--drop`, `--track`, `--axle`) was set by eye.
 - Fixed while running: `assemble_car.py` assumed the body's length ran along Z, but a body made from a side picture runs along X, so the car came out 7.5 m by 3.5 m. It now takes `--body-yaw` (default 90).
 
