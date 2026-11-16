@@ -849,7 +849,8 @@ class Workbench:
         if body["quality"] != "draft":
             body["fill"] = fill
             # Not de-lit unless asked (generate.sh --delight on), as bake_photo; a draft has no bake to de-light.
-            body["delight"] = bool(a.get("delight"))
+            d = a.get("delight")
+            body["delight"] = d if isinstance(d, (int, float)) and not isinstance(d, bool) else bool(d)
         if "mirror_ends" in a:
             body["mirror_ends"] = bool(a["mirror_ends"])
         for key in ("prompt", "poly", "seed", "intent"):
@@ -1098,10 +1099,13 @@ class Workbench:
                  "inside the job). psx: {facing, height, faces, atlas, up, name}. fill photo (default; not for "
                  "draft) gives every texel the photo: a front-on photo mirrored onto the far end (mirror_ends, "
                  "default true) and a swatch of it on the rest; delight (default false; not for draft) takes the "
-                 "photo's lighting out before the bake and the fill (for a side in shadow, not dark material). "
+                 "photo's lighting out before the bake and the fill (for a side in shadow, not dark material); a number "
+                 "0-1 is the strength (true = 1; the pig's shaded belly and lit back agreed with the paint at 0.65, "
+                 "where 1 overshot). "
                  "Returns a job_id.",
                  _obj({"stem": STEM, "image": {"type": "string"}, "mesh": GLB, "paint": {"type": ["boolean", "string"], "enum": [True, False, "trellis"]},
-                       "fill": FILL, "mirror_ends": {"type": "boolean"}, "delight": {"type": "boolean"},
+                       "fill": FILL, "mirror_ends": {"type": "boolean"},
+                       "delight": {"type": ["boolean", "number"], "minimum": 0, "maximum": 1},
                        "quality": {"type": "string", "enum": ["draft", "textured", "pbr", "stack", "psx"]},
                        "psx": _obj({k: {"type": ["string", "number"]} for k in PSX_KEYS}),
                        "images": {"type": "array", "items": {"type": "string"}},

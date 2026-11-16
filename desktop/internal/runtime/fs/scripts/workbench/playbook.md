@@ -77,6 +77,8 @@ Teardown's checklist (#352), checked in #356:
 - **The PS1 cut.** `psx` with `head_weight` 2 for creatures. For legs, either `tidy_legs` then `leg_weight` (sheep
   2.5) or `legs: "clean"` with `leg_scale` (sheep 1.6); they don't combine. Use `quality: "textured"` then psx, not
   `quality: "psx"`, whose facing check asks Ollama.
+- **A thin part cut loose (the pig's tail)** shows as extra pieces; psx joins a creature's loose pieces to the body.
+- **A bake carrying the photo's shade** disagrees with flat paint: `delight` takes a strength 0-1 (the pig 0.65).
 - **Crumbs and slivers.** Before decimating the cut drops crumbs under 2% of the area; after, only slivers under 0.1%,
   because decimation pinches thin legs and ears into their own pieces. Weight such a leg; don't remove_floaters it.
 - **Bakes** take cutouts only (`lifted.png`, `views/lifted/*.png`). `fill: "photo"` (default) gives every texel the

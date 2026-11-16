@@ -217,6 +217,65 @@ def close_up(low: trimesh.Trimesh) -> tuple[trimesh.Trimesh, dict]:
     return trimesh.Trimesh(vertices=out.vertices, faces=faces, process=False), info
 
 
+BRIDGE_GAP = 0.10  # a detached piece within this share of the model's largest side is joined to the body
+
+
+def bridge_pieces(low: trimesh.Trimesh, gap: float = BRIDGE_GAP) -> tuple[trimesh.Trimesh, dict]:
+    """Join the pieces the cut left floating to the body. The pig's curly tail comes from the shape as a dozen thin
+    fragments, so the cut kept it as two specks beside the rump (the review's "pieces 3, limit 1"): a creature that
+    skins as one mesh has no loose parts. Each piece, nearest the body first, takes its vertex closest to what is
+    already joined onto that body vertex (the others stay), so the piece hangs from the body at its root. A piece
+    farther than `gap` of the model's largest side stays loose and is reported."""
+    from scipy.spatial import cKDTree
+    V, F = np.asarray(low.vertices, float), np.asarray(low.faces).copy()
+    info = {"pieces": 1, "bridged": 0, "left": 0, "moved": []}
+    if not len(F):
+        return low, info
+    size = float(np.ptp(V, axis=0).max()) or 1.0
+    tol = size * 1e-6
+    _, ids = np.unique(np.round(V / tol).astype(np.int64), axis=0, return_inverse=True)
+    G = ids.ravel()[F]
+    n = int(G.max()) + 1
+    a = np.concatenate([G[:, 0], G[:, 1], G[:, 2]])
+    b = np.concatenate([G[:, 1], G[:, 2], G[:, 0]])
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    _, lab = connected_components(coo_matrix((np.ones(len(a)), (a, b)), shape=(n, n)), directed=False)
+    face_lab = lab[G[:, 0]]
+    parts = np.unique(face_lab)
+    info["pieces"] = int(len(parts))
+    if len(parts) <= 1:
+        return low, info
+    main = int(np.argmax([(face_lab == k).sum() for k in parts]))
+    joined = {int(parts[main])}
+    todo = [int(k) for k in parts if int(k) != int(parts[main])]
+    while todo:
+        tree_idx = np.unique(F[np.isin(face_lab, list(joined))])
+        tree = cKDTree(V[tree_idx])
+        best = None
+        for k in todo:
+            mine = np.unique(F[face_lab == k])
+            d, j = tree.query(V[mine])
+            i = int(np.argmin(d))
+            if best is None or d[i] < best[0]:
+                best = (float(d[i]), k, int(mine[i]), int(tree_idx[j[i]]))
+        d, k, src, dst = best
+        if d > gap * size:
+            break
+        mask = face_lab == k
+        sub = F[mask]
+        sub[sub == src] = dst
+        F[mask] = sub
+        joined.add(k)
+        todo.remove(k)
+        info["bridged"] += 1
+        info["moved"].append(round(d / size, 4))
+    info["left"] = len(todo)
+    out = trimesh.Trimesh(vertices=V, faces=F, process=False)
+    out.remove_unreferenced_vertices()
+    return out, info
+
+
 def smoothstep(t: np.ndarray) -> np.ndarray:
     t = np.clip(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
@@ -874,8 +933,15 @@ def main() -> int:
         low = decimate_head(high, args.faces, args.head_weight)
     # --legs clean builds its own columns, set into the body on purpose, and its regions index the faces as cut
     closed = {"holes": 0, "flipped_pieces": 0, "skipped": 0}
+    bridged = None
+    creature, kind = subject_kind(args.src)
     if regions is None:
         low, closed = close_up(low)
+        if creature:  # a prop's separate parts (a tractor's wheels, a mailbox's post) are real: only a creature skins as one
+            low, bridged = bridge_pieces(low)
+        if bridged and (bridged["bridged"] or bridged["left"]):
+            print(f"psx_lowpoly: joined {bridged['bridged']} loose piece(s) to the body"
+                  + (f", left {bridged['left']} too far to join" if bridged["left"] else ""))
     print(f"psx_lowpoly: capped {closed['holes']} holes, turned {closed['flipped_pieces']} pieces outward"
           + (f", left {closed['skipped']} big openings" if closed["skipped"] else ""))
     verts, faces, uvs, image, used = bake(high, texture, low, args.atlas, regions)
@@ -887,7 +953,6 @@ def main() -> int:
     drawn = drawn_facing(args.src)
     canonical = bool(args.canonical or (drawn.get("canonical") and drawn.get("facing") == args.facing))
     source = args.facing_source or (drawn.get("facing_source") if drawn.get("facing") == args.facing else None)
-    creature, kind = subject_kind(args.src)
     cls = "humanoid" if kind == "humanoid" else args.cls
     if gate == "auto" and not creature and not canonical:
         gate = "off"
@@ -942,6 +1007,8 @@ def main() -> int:
         "degraded": degraded,
         "size": [round(float(x), 1) for x in size.max(0) - size.min(0)],
     }
+    if bridged and bridged["pieces"] > 1:
+        report["bridged"] = bridged
     if legs_info is not None:
         report["legs"] = legs_info
     (args.out / "psx.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
