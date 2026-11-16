@@ -1,25 +1,37 @@
 # pipeline
 
-Local image-to-3D on Apple Silicon (MLX). No Meshy. See **[PLAN.md](PLAN.md)**.
+A local, no-cloud asset factory on Apple Silicon (MLX). Give it a picture and/or words; it makes a PS1-budget model, a
+painted 3D model, a sprite stack or a 2D sprite sheet, and can rig animals and people. No Meshy. It was built for the
+MLG Farming PS1-look test game (s&box). Where it stands and what is next: **[PLAN.md](PLAN.md)**.
 
-Turnaround (better pictures → better geometry): drop named views in `out/<stem>/views/` (`front`, `threequarter`, `left`, `back`, `top`). Shape from front (people) or threequarter (props). Extra views only change **geometry** if a multi-view shape DiT is present (`scripts/shape_mv.sh`); otherwise they still photo-bake.
+Two ways to drive it, one factory underneath:
+
+- **The desktop app** (`desktop/`): Home asks *What are you making?*, Make runs it, Library lists assets by project,
+  and each asset goes **Ideas → Concept → 2D / 3D / Rig / Stack → Export**. See *One flow* below.
+- **The workbench** (`scripts/workbench/`): an MCP server where Claude makes, measures, fixes and shows assets, guided
+  by [`scripts/workbench/playbook.md`](scripts/workbench/playbook.md). See *MCP* below and **[examples/workbench.md](examples/workbench.md)**.
 
 ```bash
-scripts/generate.sh --image out/operator-turn/views/front.jpg --quality pbr --stem operator-turn
+scripts/generate.sh --image in/mlg/farmer_hat.jpg --quality psx --stem farmer   # photo -> PS1 model
 ```
 
-## Passes
+## How one make runs
 
-1. **isolate** — Vision foreground mask.
-2. **blockout** — Hunyuan3D-2 mini shape (MLX-Swift). If `views/lifted/{front,left,back}.png` exist, `shape_mv.sh` tries Hunyuan3D-DiT-v2-mv; otherwise mini stays single-image.
-3. **reduce** — the 80k lookdev mesh that paint works on (`--poly` sets the shape's detail at generate time); no game / proxy LODs
-4. **remesh** — AutoRemesher quads (`mesh_quad.glb`) before paint so xatlas isn't packing Hunyuan triangle soup
-5. **surround** — extra views of the same object
-6. **paint** — Hunyuan RGB (`--quality textured`) or Paint 2.1 PBR albedo+MR (`--quality pbr`) on the remeshed mesh
-7. **retexture** — fit a camera to each reference photo (silhouette IoU), bake into UVs; occluded texels keep Hunyuan paint
-8. **move** — people: `m2m_keep.py` retargets Mesh2Motion clips onto AniGen skins **without** rewriting weights. `m2m_bind.py` is the closest-bone rebind. objects: `articulate.py` piece pivots
-9. **stack** — horizontal slices of the painted mesh → `out/<stem>/stack/{sheet.png,preview.png,stack.json}`
-10. **show** — `viewer/` (`?asset=radio-turn&lod=pbr`): generated mesh left, sprite stack right.
+A photo is a *reference*, never a view: the factory draws four views of the subject (from your photo, or from words),
+then builds from those.
+
+1. **isolate** — Vision foreground mask (`bin/lift-subject`).
+2. **draw** — four views of the subject (front, left, back, three-quarter) from the photo or the words (Qwen-Image-Edit).
+3. **shape** — Hunyuan3D-2mv from the drawn views (`shape_mv.sh`); from front and back when only the sides are drawn wrong. Without the views, the shape falls back to Hunyuan3D-2 mini from one picture and is marked degraded.
+4. **reduce, remesh** — the 80k lookdev mesh, then AutoRemesher quads (`mesh_quad.glb`) so xatlas isn't packing triangle soup.
+5. **paint** — Hunyuan RGB (`--quality textured`), Paint 2.1 PBR (`--quality pbr`), or TRELLIS.2 (`--paint trellis`; its plain paint gets the drawn eyes and snout via `--flat-paint`).
+6. **retexture** — fit a camera to each view, bake the photo into the UVs per triangle; occluded texels keep the paint.
+7. **psx** — the PS1 cut (about 1,200 triangles, a 256 px atlas): welds near-duplicates, caps holes, keeps legs and ears.
+8. **review** — before a model is shown, `scripts/workbench/review.py` checks pieces, paint patchwork, mirror and triangle budget, and writes a close-up sheet.
+9. **rig** — animals and people: skeleton, learned skin weights, library clips, FBX for s&box (see *Rigging*).
+10. **stack, export** — horizontal slices of the painted mesh → `out/<stem>/stack/`; Export writes the chosen files and an `asset.json` to `out/<stem>/export/`.
+
+The older People/Props routes (`m2m_keep.py` and `m2m_bind.py` for Mesh2Motion clips on AniGen skins, `articulate.py` piece pivots) are still in `scripts/` but are not the main path.
 
 ```bash
 scripts/bootstrap.sh draft

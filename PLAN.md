@@ -1,99 +1,125 @@
 # Plan
 
-Repo: `ai-asset-pipeline` (was prototyped as `mac-3d-factory` on an M5 Max 128 GB). macOS on Apple Silicon only (MLX).
+Repo: `pipeline` (GitHub `StephenSHorton/pipeline`; prototyped as `mac-3d-factory`, then `ai-asset-pipeline`). A local, no-cloud
+asset factory for macOS on Apple Silicon only (MLX). Rewritten 2026-11-16 from the code as of 2026-11-09 (`mokei-ui`).
 
-## What already works
+## What it is for
 
-| Stage | Tool | Notes |
-|---|---|---|
-| Isolate | `bin/lift-subject` (Vision) | |
-| Shape | `bin/hy3d shape` = Hunyuan3D-DiT-v2-**mini** (0.6B, MLX-Swift) | **Single image.** Extra views do not change geometry |
-| Reduce | `scripts/reduce.sh` quadric LODs | lookdev 80k / game 12k / proxy 2k |
-| Remesh | AutoRemesher CLI `bin/autoremesher` | quads before paint; Hunyuan soup → ~5–8k quads in ~2 s |
-| Paint RGB | `hy3d paint --model rgb` | Hunyuan Paint 2.0, 2048 atlas |
-| Paint PBR | `hy3d paint --model pbr` | Paint 2.1 albedo + metallic-roughness, 4096 atlas. Radio-turn 116 s, operator-turn 145 s |
-| Photo bake | `scripts/retexture.py` | silhouette-IoU camera fit, halo-free; extra views bake albedo only |
-| People motion | AniGen-mac (MPS) + `scripts/m2m_keep.py` | keeps AniGen weights; Mesh2Motion clips retargeted from Idle_A rest |
-| People motion (worse skins) | `scripts/m2m_bind.py` | closest-bone rebind onto 66-bone M2M human |
-| Props | `scripts/articulate.py` | Recoil-style piece pivots |
-| Viewer | `viewer/index.html` | LOD strip, PBR maps, clips, turnaround strip |
+You give it a picture and/or words; it makes game assets, aimed at the MLG Farming PS1-look test game (s&box):
 
-Facade: `scripts/generate.sh --image … --quality draft|textured|pbr|stack --poly hero|lookdev|game|proxy --stem NAME`
+| You pick (Home: *What are you making?*) | You get |
+|---|---|
+| **PS1 model** | about 1,200 flat-shaded triangles wearing the photo itself in a 256 px atlas: `psx/` (`.obj` + `.png`) and `psx.glb` |
+| **3D model** | a painted mesh with detail levels (Hunyuan3D shape; Hunyuan or TRELLIS.2 paint) |
+| **Sprite stack** | horizontal slices of the model as a sheet; "how we ship" |
+| **2D sprite** | a cut-out piece sheet with names, sound and voice lines |
 
-`--quality stack` runs textured paint then slices. Every quality also emits `out/<stem>/stack/` (160² sheet; viewer defaults to 120 texels). `--no-stack` skips it. The stack is the shippable product; the GLB is the sculpt.
+## How one make runs
 
-`generate.sh` calls `scripts/shape_mv.sh` when `out/<stem>/views/lifted/{front,left,back}.png` exist. Without `vendor/hunyuan3d-mlx` or `vendor/hunyuan3d-2` that script **exits 2** and generate falls back to mini.
+1. **Isolate** the subject (`bin/lift-subject`, Apple Vision).
+2. **Draw four views** (front, left, back, three-quarter) of the subject. A photo is a reference, never a view: the
+   views are drawn from it (Qwen-Image-Edit), or from words when there is no photo.
+3. **Shape** from those views with Hunyuan3D-2mv (`scripts/shape_mv.sh`, MPS). When only the side views come out
+   wrong, shape from front and back. With one picture only, the shape falls back to Hunyuan3D-2 mini and the
+   result is marked degraded.
+4. **Reduce and remesh** (`reduce_mesh.py`, AutoRemesher quads before paint).
+5. **Paint**: Hunyuan Paint (RGB 2048, or PBR 4096), or **TRELLIS.2** (`--paint trellis`, MIT, in
+   `vendor/trellis-mac`). TRELLIS.2's paint is plain colour, so `--flat-paint` fits the drawn views' eyes and snout on
+   top.
+6. **Photo bake** (`retexture.py`): fit a camera per view, bake per triangle; occluded texels keep the paint.
+7. **PS1 cut** (`psx_lowpoly.py`): weld near-duplicates, cap holes, keep legs, ears and small pieces that touch the
+   body, bake the photo into a 256 px atlas, publish `psx.glb`.
+8. **Review** (`scripts/workbench/review.py`) before the model is shown: pieces, paint patchwork, mirror, triangle
+   budget, ears and eyes on a close-up sheet. Each of Stephen's critiques became a check there.
+9. **Rig** (animals and people): body plan (person, four legs, many legs, bird), skeleton from Mesh2Motion's CC0
+   templates, skin weights learned by skin-tokens.cpp on Metal, library clips baked with a floor pass, FBX for s&box.
+   `rig_review` and `rig_scrub` check it.
+10. **Stack / export**: sprite stack from the mesh; Export copies the chosen files into `out/<stem>/export/` with an
+    `asset.json`.
+
+Every stage keeps numbered **takes** in `out/<stem>/takes/` (`flow.json`; see `docs/unified-pipeline.md`), and assets
+group into **projects** (`docs/projects.md`).
+
+## Two ways to drive it, one factory
+
+- **The desktop app** (`desktop/`: Wails host, React + shadcn on Mokei UI in `desktop/frontend/`). The app flow:
+  **Home** picks what you are making, **Make** runs it with the factory's real stages, **Library** lists assets by
+  project, and each asset has **Ideas → Concept → 2D / 3D / Rig / Stack → Export**, with Versions and Compare
+  (shift-click a version). The factory is `scripts/factory_http.py` on `:8766`.
+- **The workbench** (`scripts/workbench/`, an MCP server on `:8768`, a client of the factory): Claude makes, measures,
+  fixes and shows assets: look, measure, compare, mesh edits (close holes, carve parts, thicken legs, trim belly),
+  review before showing, and `show`, which opens an asset in the app with a before and after. CPU work runs in the
+  workbench; model work goes to the factory as a job (one big model at a time). **Read
+  `scripts/workbench/playbook.md` first** (rule 1: make ONE model, wait for the critique, improve the pipeline, then
+  make the next). Walkthrough: `examples/workbench.md`.
+
+## Where it stands (2026-11-09)
+
+- **Works:** the Make flow for all four kinds, photo-as-reference, TRELLIS.2 paint, the PS1 cut, the review step,
+  rigging with clips and FBX, the workbench, projects, takes and Compare. 793 tests passed (12 skipped) before the
+  last two commits.
+- **Pig:** the one model that took most of the last two weeks of work (2026-10-24 to 11-03). It still fails its own
+  review (a leg is a pinched separate piece; a belly patch of paint disagrees with the bake) and its rig check (head
+  20° off its bone; its rig is from an older mesh).
+- **Hard-surface props (mailbox, wheelbarrow, car) have no working route.** The code-built route (Claude writes a
+  Three.js page, a headless browser exports it) was added 2026-11-03 and removed 2026-11-09 (PR #8) because it was
+  useless in practice. The image-to-3D models lose to it on these props too (playbook, #351). "Car from parts"
+  (`racecar-1127`: draw a body and a wheel, assemble one body + four named wheels) is an unmerged, never-run-end-to-end
+  experiment. Vehicles and props cannot be rigged yet.
+- **Not checked since the break:** whether every model-heavy path (draw, shape, paint, rig) still runs end to end.
+
+## Next
+
+Pick one; they are listed in the order that costs least.
+
+1. **Hard-surface props:** run car from parts end to end on one car and judge it, or decide props are out of scope
+   and say so in the README.
+2. **Finish the pig** (leg piece, belly paint, head bone), then run its photo fresh through Make → PS1 → Rig → Export
+   with timings, to find what broke while nobody was looking. Then the next MLG animal, under the playbook's rule 1.
+3. **Tidy:** the branches and worktrees whose commits are already on `mokei-ui` or `main`; keep the old private
+   `main` (it holds `in/mlg/cow.jpg`) as an archive and do not push it.
 
 ## Output contract (do not rename)
 
-Keep these paths so the viewer and later game import keep working:
+Keep these paths so the app, the viewer and the game import keep working:
 
 ```
 out/<stem>/
   input.*                 original
-  lifted.png              subject cutout used for single-image shape/paint
-  views/lifted/
-    front.png left.png back.png   required for 2mv
-    threequarter.png top.png      optional; bake only
-  mesh_hero.glb           full-res shape
-  mesh.glb                copy of hero (or reduced if --poly)
-  mesh_lookdev.glb        ~80k
-  mesh_quad.glb           AutoRemesher (or InstantMeshes / PartUV result)
-  mesh_game.glb / mesh_proxy.glb
-  textured.glb            RGB paint
-  pbr.glb                 albedo + metallicRoughnessTexture
+  intent.json             what was being made (ps1 | 3d | stack | 2d)
+  lifted.png              subject cutout
+  views/lifted/{front,left,back}.png   drawn views (threequarter, top: bake only)
+  flat/source.png         the concept still the views are drawn from
+  mesh_hero.glb           full-res shape; mesh.glb is the working copy
+  mesh_lookdev.glb        ~80k, the mesh paint works on
+  mesh_quad.glb           AutoRemesher result
+  textured.glb / pbr.glb  Hunyuan or TRELLIS.2 paint (RGB / albedo + metallic-roughness)
   textured_photo.glb      photo bake
-  anigen.glb              skinned people
-  anigen_keep.glb         keep-weights + M2M clips
-  lods.json               viewer LOD list
-  inspect.json
-  stack/sheet.png         sprite-stack atlas (bottom → top)
-  stack/preview.png       stacked composite
-  stack/stack.json        layers, pitch, factory display defaults
+  psx/ and psx.glb        PS1 cut: .obj + .mtl + .png, and the GLB
+  rigged.glb, rig/*.fbx   rig and clips
+  stack/{sheet,preview}.png, stack.json
+  takes/<stage>/<id>/, flow.json        takes and the pick per stage
+  workbench/              the workbench's writes (review/, clay.json, ...)
+  export/                 Export's folder, with asset.json
+  lods.json, inspect.json
 ```
 
-CLI flags on `generate.sh` stay stable.
-
-## Next
-
-### 1. Character A-pose before shape (optional, people only)
-
-If the input person is not already a front A-pose, run a canonicalizer **before** multi-view shape.
-
-- CharacterGen 2D stage: https://github.com/zjp-shadow/CharacterGen (SIGGRAPH 2024). Hugging Face `zjpshadow/CharacterGen`.
-- Goal: emit `views/lifted/{front,left,back}.png` that are actually the same identity in A-pose, not Imagine-orbit guesses.
-
-We already generate A-pose sheets on the Mac with Imagine + Vision lift (`out/operator-turn/views/`). Use CharacterGen only if those sheets drift.
-
-Skip if the user already dropped a proper turnaround.
-
-### 2. Mesh2Motion official BYO-rig (only if keep-weights looks cheap)
-
-`m2m_keep.py` is a CLI stand-in for Mesh2Motion’s experimental “upload your rigged mesh” web UI (Jan 2026). It maps bones by hierarchy and copies rest-relative rotations using Idle_A as the source rest (M2M bind is T-pose, AniGen is A-pose).
-
-If the bones don’t map cleanly, drive Mesh2Motion’s `AnimationRetargetService` from a headless three.js / node script using `vendor/mesh2motion-app` (clone: https://github.com/Mesh2Motion/mesh2motion-app, CC0 clips).
-
-Do not rewrite JOINTS_0 / WEIGHTS_0 / IBMs. That is the whole point of keep-weights.
-
-## Viewer / pipeline wiring
-
-After a mesh exists:
-
-1. `scripts/reduce.sh <stem>` — LODs
-2. `scripts/quad_remesh.sh` — quads
-3. paint → `pbr.glb`
-4. refresh `lods.json` (reduce.sh already lists `pbr`, `quad`, `keep`, `anigen`, `m2m`)
-5. `python3 -m http.server 8765 --bind 127.0.0.1` from repo root
-6. `viewer/?asset=<stem>&lod=pbr`
-
-Viewer already shows PBR maps. Do not clamp `metalness` when `metalnessMap` / `roughnessMap` exist (`viewer/index.html`).
+`scripts/generate.sh` flags stay stable: `--image`, `--quality draft|textured|pbr|stack|psx`,
+`--poly hero|lookdev|game|proxy`, `--paint on|off|trellis`, `--stem`, `--mesh <glb>`, `--fill`, `--mirror-ends`.
 
 ## What not to do
 
-- Do not check in Hugging Face weights or `out/*.glb`.
-- Do not rebind AniGen skins onto Mesh2Motion’s 66 bones unless keep-weights is impossible (that is `m2m_bind.py`, already known-worse).
-- Hunyuan Community license: no distribution in EU/UK/South Korea.
+- Do not check in weights, `vendor/` clones or `out/`.
+- Do not load a model in a script outside the factory's job slot: two big models co-loaded ran the 128 GB Mac out of
+  memory (playbook).
+- Do not make sibling stems (`foo_v2`) to try a fix: iterate inside the asset as takes.
+- Do not push the old private `main` branch: it holds `in/mlg/cow.jpg`, which the public line leaves out on purpose.
+- Licences: Hunyuan Community licence (no distribution in the EU, UK or South Korea); Qwen-Image 2.1 weights are
+  research-only. See [NOTICE](NOTICE).
 
-## Pixel style
+## Older routes still in the repo
 
-Leaning into the accidental low-poly instead of chasing photoreal. `scripts/stylize_pixel.py` → `out/<stem>/pixel.glb`: ~1400 faceted tris, 128px atlas, 16-color concept palette, glTF NEAREST sampler. Viewer lod `pixel` uses nearest + no ACES. It projects the concept still onto the faceted mesh.
+From the September pipeline, kept but not the main path: `articulate.py` (prop piece pivots), AniGen-mac +
+`m2m_keep.py` / `m2m_bind.py` (people skins and Mesh2Motion clips), and the `viewer/` Three.js inspector (LOD strip,
+PBR maps, clips, turnaround strip; `python3 -m http.server 8765` then `viewer/?asset=<stem>`). The rig stage above is
+the current route for animals and people.
