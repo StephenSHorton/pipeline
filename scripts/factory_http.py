@@ -970,7 +970,7 @@ class Factory:
         paint: bool | str = True,
         fill: str | None = None,
         mirror_ends: bool | None = None,
-        delight: bool | None = None,
+        delight: bool | float | None = None,
     ) -> dict[str, Any]:
         """mesh: a .glb under out/<stem>/ that generate.sh takes as the shape instead of hy3d's (the stem is that
         folder's when none is given). paint False: no paint model, the mesh is unwrapped and only the photo bakes.
@@ -994,8 +994,9 @@ class Factory:
             raise ValueError("fill photo needs a photo bake; quality draft has none")
         if mirror_ends is not None and not isinstance(mirror_ends, bool):
             raise ValueError("mirror_ends must be true or false")
-        if delight is not None and not isinstance(delight, bool):
-            raise ValueError("delight must be true or false")
+        if delight is not None and not isinstance(delight, bool) and not (
+                isinstance(delight, (int, float)) and 0 < delight <= 1):
+            raise ValueError("delight must be true, false or a strength between 0 and 1")
         poly_in = str(poly or "medium")
         poly = normalize_poly(poly_in)
         # No 3D without a picture: the main image, every ref and every view must be one.
@@ -2023,8 +2024,13 @@ def _dispatch(
                     mirror_ends.strip().lower(), mirror_ends)
             delight = payload.get("delight")
             if isinstance(delight, str):  # from the query string
-                delight = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(
-                    delight.strip().lower(), delight)
+                word = delight.strip().lower()
+                delight = {"true": True, "on": True, "1": True, "false": False, "off": False, "0": False}.get(word, word)
+                if isinstance(delight, str):  # "0.65": a strength; anything else is refused by start_generate
+                    try:
+                        delight = float(delight)
+                    except ValueError:
+                        pass
             mesh = payload.get("mesh")
             if mesh not in (None, "") and not isinstance(mesh, str):
                 raise ValueError("mesh must be a path to a .glb under out/<stem>/")

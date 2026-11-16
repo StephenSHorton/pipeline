@@ -141,10 +141,13 @@ class ProtocolTests(Base):
             for key, prop in s["properties"].items():
                 self.assertTrue("type" in prop or "enum" in prop, f"{t['name']}.{key}")
             json.dumps(s)
-        # generate and bake_photo take delight (a boolean, off unless asked: it would lift dark material to grey).
+        # generate takes delight as a boolean or a 0-1 strength; bake_photo a boolean (off unless asked: it would
+        # lift dark material to grey).
         by_name = {t["name"]: t for t in listed}
+        self.assertEqual(by_name["bake_photo"]["inputSchema"]["properties"]["delight"], {"type": "boolean"})
+        self.assertEqual(by_name["generate"]["inputSchema"]["properties"]["delight"],
+                         {"type": ["boolean", "number"], "minimum": 0, "maximum": 1})
         for name in ("generate", "bake_photo"):
-            self.assertEqual(by_name[name]["inputSchema"]["properties"]["delight"], {"type": "boolean"}, name)
             self.assertIn("delight (default false", by_name[name]["description"])
 
     def test_bad_arguments(self) -> None:

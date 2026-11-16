@@ -1148,6 +1148,13 @@ class FactoryHttpTests(unittest.TestCase):
         argv = factory_env.generate_argv(self.root, image=Path(seen["image"]), quality="textured", stem="f",
                                          poly="medium", delight=seen["delight"])
         self.assertEqual(argv[argv.index("--delight") + 1], "on")
+        # A strength between 0 and 1 reaches generate.sh as that number (the pig's shaded belly: 0.65).
+        seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "quality": "textured",
+                                     "fill": "photo", "delight": 0.65})
+        self.assertEqual(seen["delight"], 0.65)
+        argv = factory_env.generate_argv(self.root, image=Path(seen["image"]), quality="textured", stem="f",
+                                         poly="medium", delight=seen["delight"])
+        self.assertEqual(argv[argv.index("--delight") + 1], "0.65")
         # The query string's "off" is false.
         seen, _ = self.run_generate({"image": "in/radio-concept.jpg", "stem": "f", "delight": "off"})
         self.assertIs(seen["delight"], False)
@@ -1160,7 +1167,8 @@ class FactoryHttpTests(unittest.TestCase):
             ({"fill": "photo", "mirror_ends": "maybe"}, "mirror_ends"),
             ({"fill": "photo", "mirror_ends": 1}, "mirror_ends"),
             ({"delight": "maybe"}, "delight"),
-            ({"delight": 1}, "delight"),
+            ({"delight": 2}, "delight"),
+            ({"delight": 0}, "delight"),
             ({"delight": [True]}, "delight"),
         ):
             with self.subTest(body=body):

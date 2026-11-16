@@ -221,7 +221,7 @@ def generate_argv(
     paint: bool | str = True,
     fill: str | None = None,
     mirror_ends: bool | None = None,
-    delight: bool | None = None,
+    delight: bool | float | None = None,
 ) -> list[str]:
     cmd = [
         str(generate_script(root)),
@@ -262,7 +262,8 @@ def generate_argv(
         cmd += ["--mirror-ends", "on" if mirror_ends else "off"]
     # The photo's lighting out before the bake; only when stated (generate.sh's default is off, a make as before).
     if delight is not None:
-        cmd += ["--delight", "on" if delight else "off"]
+        # true/false, or a strength between 0 and 1 (a pig's lit back and shaded belly: 0.65 where 1 overshoots)
+        cmd += ["--delight", ("on" if delight else "off") if isinstance(delight, bool) else f"{float(delight):g}"]
     # --quality psx options: facing, height, faces, atlas, up, name.
     for key, value in (psx or {}).items():
         if value not in (None, ""):

@@ -150,7 +150,8 @@ case "$MIRROR_ENDS" in
 esac
 case "$DELIGHT" in
   on|off) ;;
-  *) echo "generate: unknown --delight $DELIGHT (on|off)" >&2; exit 2 ;;
+  0.[0-9]*|1|1.0) ;;  # a strength: the share of the shade lifted (on = 1)
+  *) echo "generate: unknown --delight $DELIGHT (on|off|a strength 0-1)" >&2; exit 2 ;;
 esac
 FILL_CLI="$ROOT/scripts/workbench/fill.py"
 if [[ "$FILL" == "photo" && ! -f "$FILL_CLI" ]]; then
@@ -816,6 +817,7 @@ if [[ "$QUALITY" == "textured" || "$QUALITY" == "pbr" ]]; then
   # Every view de-lit before it bakes (last: the fill below reads the first picture at VIEW_ARGS[1]).
   DELIGHT_ARGS=()
   [[ "$DELIGHT" == "on" ]] && DELIGHT_ARGS=(--delight 1)
+  [[ "$DELIGHT" != "on" && "$DELIGHT" != "off" ]] && DELIGHT_ARGS=(--delight "$DELIGHT")
   VIEW_ARGS+=(${DELIGHT_ARGS[@]+"${DELIGHT_ARGS[@]}"})
   echo "generate: retexture with ${PHOTO_VIEW:+the photo (wins), then }${NAMED[*]}${OPPOSITE:+ (mirror: $([[ " ${VIEW_ARGS[*]} " == *" --mirror "* ]] && echo on || echo off))}"
   if "$PYTHON" "$ROOT/scripts/retexture.py" "$TEXTURED" -o "$OUT/textured_photo.glb" "${VIEW_ARGS[@]}"; then
