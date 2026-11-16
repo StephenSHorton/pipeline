@@ -76,6 +76,37 @@ MCP: the agent workbench, where Claude makes, measures and fixes assets, lives i
 
 Home asks **What are you making?**: a PS1 model, a 3D model, a sprite stack or a 2D sprite. Each shows only its own settings and a line saying what Make will do; the choice is saved with the asset (`out/<stem>/intent.json`), and the stages, canvas and Export screen follow it. The loading screen lists the factory's real stages (`STAGES`/`STAGE` lines from `generate.sh`, parsed by `/status`), with Cancel and Run in background. The desktop app runs every asset through **Ideas → Concept → 2D / 3D / Stack → Export**. A prompt with no picture draws a grid of ideas; **Use** one and it becomes the concept still that 2D, 3D and the stack start from. Each stage keeps takes in `out/<stem>/takes/` (listed in `flow.json`), so you can step back to an earlier still, sheet, mesh or stack from the bar above the tools. **Export** copies the picked 2D pieces and motion strips, sprite stack and 3D files into `out/<stem>/export/` with an `asset.json` that says what each file is. See **[docs/unified-pipeline.md](docs/unified-pipeline.md)**.
 
+## Hard-surface props (cars, wheelbarrows, mailboxes)
+
+Props are the weak class. There is no route that makes a clean one on its own:
+
+- **Code-built props are gone.** Claude writing a Three.js page that becomes the model was removed (PR #8); it was not useful.
+- **Plain image-to-3D works but is blocky.** A prop made like an animal (draw views, Hunyuan3D shape, paint, PS1 cut) comes out with handles, spokes and wheels hard to read (the wheelbarrow was the test). It is still the way to make a mailbox, a barrel or a crate, where blocky is fine.
+- **A car is made from parts (experimental, run once on 2026-11-16).** Anything that needs its wheels to turn is made as a body and one wheel, then assembled. It runs end to end and gives a recognisable car with four separate, spinnable wheel nodes, but it is rough and needs hand-tuning per car (see below). Vehicles and props are not rigged.
+
+```
+.venv/bin/python scripts/draw_parts.py out/car/parts body_side "<a car, pure side view, no wheels>" 2   # two stills
+.venv/bin/python scripts/edit_part.py <body.png> out/car/parts/wheel "<show only the front wheel, alone>" 22   # pull a wheel out
+scripts/generate.sh --image <body.png>  --quality psx --stem car_body
+scripts/generate.sh --image <wheel.png> --quality psx --stem car_wheel
+.venv/bin/python scripts/assemble_car.py --body out/car_body/psx.glb --wheel out/car_wheel/psx.glb --out out/car/car.glb \
+    [--drop -0.2 --track -0.05]          # body height and wheel spread are set by hand
+.venv/bin/python scripts/viewer_shots.py car out/car/shots   # five angles and a contact sheet; needs out/car/psx.glb and a one-line lods.json
+```
+
+![The three pictures: car as drawn, wheels painted out, one wheel](docs/car-from-parts/parts.png)
+
+![The assembled car, five angles](docs/car-from-parts/car-sheet.png)
+
+What the run showed (a small red retro car, 5,756 triangles, about 4 minutes to draw two stills, about 6 for both shapes and paints):
+
+- **It works:** a body and one wheel become `car > body, wheel_FL, wheel_FR, wheel_RL, wheel_RR`, the right wheels turned so the hub faces outward, one shared wheel mesh and texture, PS1 sampling.
+- **The image-edit model would not take the wheels off the body picture** (five tries, two wordings, wheels unchanged). The run painted black wheel wells over them by hand instead, and the pink background left in the patch became slabs under the bumpers.
+- **Paint is speckled** (the shape came from one side picture, `single_view` in `degraded.json`) and the body's wheel wells do not line up exactly with the wheels; the stance (`--drop`, `--track`, `--axle`) was set by eye.
+- Fixed while running: `assemble_car.py` assumed the body's length ran along Z, but a body made from a side picture runs along X, so the car came out 7.5 m by 3.5 m. It now takes `--body-yaw` (default 90).
+
+So a car is possible, not push-button. Making more props means making each a picture-by-picture job, or accepting the blocky single-model result. Not in scope: rigging vehicles, and any prop with moving parts other than wheels.
+
 ## Rigging
 
 The **Rig** stage (after 3D) gives a model a skeleton and animation clips: pick a body plan (or let the local planner
