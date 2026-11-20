@@ -70,6 +70,8 @@ MCP: the agent workbench, where Claude makes, measures and fixes assets, lives i
 | `viewer/` | local Three.js inspector |
 | `viewer/` | inspector: mesh left, sprite stack right |
 | `scripts/sprite_stack.py` | mesh → `out/<stem>/stack/` |
+| `scripts/pixel_views.py` | the pixel art sheet's four drawn views → true pixel art in `out/<stem>/flat/pixel/` (one shared palette, one colour per cell, sizes checked), again without the model. The sheet itself is drawn by `POST /2d/draw` with `"views": "pixel"` (top, side, front, back on magenta; `scripts/flat2d/pixelart.py`), API only. Pictures of the first car in [docs/pixel-views/](docs/pixel-views/) |
+| `scripts/stack_views.py` | four pixel art views (top, side, front, back in `out/<stem>/flat/pixel/`) → `out/<stem>/stack/`, no mesh; not in the app's buttons yet. Try it: `python3 tests/fixtures/views_car.py out/views-car/flat/pixel && python3 scripts/stack_views.py --stem views-car`. Carve rules in the script's header; pictures in [docs/stack-views/](docs/stack-views/) |
 | `PLAN.md` | what works and what is next |
 
 ## One flow

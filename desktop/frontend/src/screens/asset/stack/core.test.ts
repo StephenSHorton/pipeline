@@ -2,6 +2,7 @@
 // contour shapes, OkLab Reduce, the brush (paint, erase back to rgb0, undo), Drop and the sheet Save writes.
 import { describe, expect, it } from "vitest";
 import {
+  srgbToLinear,
   beginStroke,
   buildMergedVoxelSurface,
   cellKept,
@@ -289,5 +290,17 @@ describe("restBox", () => {
     expect(b.min).toEqual([-0.2, 0, -0.15]);
     expect(b.max).toEqual([0.2, 1, 0.15]);
     expect(b.diagonal).toBeCloseTo(Math.hypot(0.4, 1, 0.3));
+  });
+});
+
+describe("pixel art colours", () => {
+  it("srgbToLinear is the inverse of three's sRGB output, so every sheet byte comes back as itself", async () => {
+    const { ColorManagement, LinearSRGBColorSpace, SRGBColorSpace, Color } = await import("three");
+    expect(ColorManagement.enabled).toBe(true);
+    for (let v = 0; v <= 255; v++) {
+      const c = new Color(srgbToLinear(v / 255), 0, 0);
+      const out = ColorManagement.convert(c, LinearSRGBColorSpace, SRGBColorSpace);
+      expect(Math.round(out.r * 255)).toBe(v);
+    }
   });
 });
