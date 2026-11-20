@@ -25,8 +25,10 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  type MeshBasicMaterialParameters,
   type MeshStandardMaterialParameters,
   MOUSE,
+  NearestFilter,
   type Object3D,
   OrthographicCamera,
   PerspectiveCamera,
@@ -65,6 +67,7 @@ import {
   restBox,
   sampleVoxel,
   sheetPixels,
+  srgbToLinear,
   type Slice,
   undoStroke,
 } from "./core";
@@ -275,6 +278,14 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
   voxelMat.customProgramCacheKey = () => "voxel-pbr-v2";
   voxelMat.onBeforeCompile = (shader) => injectVoxelPbr(shader, grade);
 
+  // Pixel art (state.flat): the cubes unlit and not tone mapped, so each face is the sheet's own colour.
+  const flatVoxelMat = new MeshBasicMaterial({ toneMapped: false });
+  attachGrade(flatVoxelMat, "stack-flat-v1");
+  const voxelMaterial = () => (state.flat ? flatVoxelMat : voxelMat);
+  /** A sheet channel as an instance colour. The lit look always fed sRGB bytes in as linear; pixel art decodes
+   * them, so the sRGB output encodes them back to the exact byte. */
+  const chan = (v: number, shade: number) => (state.flat ? srgbToLinear(v / 255) : v / 255) * shade;
+
   function applyGrade() {
     grade.brightness.value = state.brightness;
     grade.contrast.value = state.contrast;
@@ -396,9 +407,11 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       rec.sliceTex = new CanvasTexture(rec.sliceCanvas);
       rec.sliceTex.flipY = false;
       rec.sliceTex.colorSpace = SRGBColorSpace;
-      rec.sliceTex.magFilter = LinearFilter;
-      rec.sliceTex.minFilter = LinearFilter;
     }
+    // Pixel art keeps its texels square; the older looks blend them.
+    const filter = state.flat ? NearestFilter : LinearFilter;
+    rec.sliceTex!.magFilter = filter;
+    rec.sliceTex!.minFilter = filter;
     const ctx = rec.sliceCtx!;
     const img = ctx.createImageData(res, res);
     img.data.fill(0);
@@ -424,6 +437,18 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
   function makeSliceMaterial(rec: Rec, extra: MeshStandardMaterialParameters & { cacheKey?: string } = {}) {
     const shade = layerShade(core!, rec.index);
     const { cacheKey, ...params } = extra;
+    if (state.flat) {
+      const flat = new MeshBasicMaterial({
+        map: ensureSliceTexture(rec),
+        color: new Color(shade, shade, shade),
+        alphaTest: 0.12,
+        depthWrite: true,
+        toneMapped: false,
+        ...(params as MeshBasicMaterialParameters),
+      });
+      attachGrade(flat, `${cacheKey || "stack-slice-v1"}-flat`);
+      return flat;
+    }
     const mat = new MeshStandardMaterial({
       map: ensureSliceTexture(rec),
       color: new Color(shade, shade, shade),
@@ -460,7 +485,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       if (m.geometry && m.geometry !== voxelGeo) m.geometry.dispose();
       const mats = m.material ? (Array.isArray(m.material) ? m.material : [m.material]) : [];
       for (const mt of mats) {
-        if (!mt || mt === voxelMat || seen.has(mt)) continue;
+        if (!mt || mt === voxelMat || mt === flatVoxelMat || seen.has(mt)) continue;
         seen.add(mt);
         mt.dispose();
       }
@@ -486,20 +511,22 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     if (!rec.mesh) {
       const geo = voxelGeo.clone();
       geo.setAttribute("aPBR", new InstancedBufferAttribute(new Float32Array(native.n * 3), 3));
-      const mesh = new InstancedMesh(geo, voxelMat, native.n);
+      const mesh = new InstancedMesh(geo, voxelMaterial(), native.n);
       mesh.frustumCulled = false;
       mesh.instanceColor = new InstancedBufferAttribute(new Float32Array(native.n * 3), 3);
       rec.group.add(mesh);
       rec.mesh = mesh;
     }
     const mesh = rec.mesh;
+    mesh.material = voxelMaterial();
     const me = mesh.instanceMatrix.array;
     const ca = mesh.instanceColor!.array;
     const aPBR = mesh.geometry.getAttribute("aPBR");
     let count = 0;
     const write = (gx: number, gz: number, r: number, g: number, b: number, metal: number, rough: number, emit: number) => {
       const o = count * 16;
-      const s = texel * 1.02;
+      // The lit look overlaps cubes 2% against cracks; on pixel art that overlap shows as slivers of the next colour.
+      const s = state.flat ? texel : texel * 1.02;
       const wx = ((gx + 0.5) / crunch - 0.5) * world;
       const wz = ((gz + 0.5) / crunch - 0.5) * world;
       me[o] = s; me[o + 1] = 0; me[o + 2] = 0; me[o + 3] = 0;
@@ -507,9 +534,9 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       me[o + 8] = 0; me[o + 9] = 0; me[o + 10] = s; me[o + 11] = 0;
       me[o + 12] = wx; me[o + 13] = 0; me[o + 14] = wz; me[o + 15] = 1;
       const c = count * 3;
-      ca[c] = (r * shade) / 255;
-      ca[c + 1] = (g * shade) / 255;
-      ca[c + 2] = (b * shade) / 255;
+      ca[c] = chan(r, shade);
+      ca[c + 1] = chan(g, shade);
+      ca[c + 2] = chan(b, shade);
       if (aPBR) aPBR.setXYZ(count, metal, rough, emit);
       count++;
     };
@@ -539,9 +566,9 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
           write(gx, gz, r, g, b, m, rh, em);
         } else {
           const c = idx * 3;
-          ca[c] = (r * shade) / 255;
-          ca[c + 1] = (g * shade) / 255;
-          ca[c + 2] = (b * shade) / 255;
+          ca[c] = chan(r, shade);
+          ca[c + 1] = chan(g, shade);
+          ca[c + 2] = chan(b, shade);
           if (aPBR) aPBR.setXYZ(idx, m, rh, em);
         }
       }
@@ -783,7 +810,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     if (changed("brightness") || changed("contrast") || changed("saturation")) applyGrade();
     if (!meta) return;
     const rebuild =
-      changed("look") || changed("shade") || changed("main") || (changed("layers") && (state.round > 0 || state.main));
+      changed("look") || changed("flat") || changed("shade") || changed("main") || (changed("layers") && (state.round > 0 || state.main));
     if (rebuild) {
       applyStackState();
       void rebuildLookAsync();
@@ -873,7 +900,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       gameLook.dispose();
       pixelRT?.depthTexture?.dispose();
       pixelRT?.dispose();
-      for (const m of [pixelMat, isoMat, voxelMat, ground.material, blob.material, brushBall.material]) m.dispose();
+      for (const m of [pixelMat, isoMat, voxelMat, flatVoxelMat, ground.material, blob.material, brushBall.material]) m.dispose();
       for (const g of [pixelQuad.geometry, voxelGeo, ground.geometry, blob.geometry, brushBall.geometry]) g.dispose();
       renderer.dispose();
       // Without this the browser keeps the context until GC, and a few remounts hit its context limit.

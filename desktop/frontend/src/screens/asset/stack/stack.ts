@@ -24,6 +24,8 @@ export interface StackState {
   outline: boolean;
   round: number;
   main: boolean;
+  /** Pixel art: unlit, the sheet's exact colours, sharp textures (a stack drawn as pixel art, maker "views"). */
+  flat: boolean;
 }
 
 /** stack.json, as the page reads it (layers, resolution, pitch, extents, defaults). */
@@ -62,8 +64,35 @@ export function defaultsFromSearch(search = ""): StackState {
       return Math.max(0, Math.min(1, Number(raw) || 0));
     })(),
     main: urlParams.get("main") !== "0",
+    flat: false,
   };
 }
+
+/** A stack drawn as pixel art (carved from four pixel art views): its sheet is the art, pixel for pixel. */
+export const isPixelArt = (meta: Pick<StackMeta, "maker"> | null | undefined) => meta?.maker === "views";
+
+/**
+ * How a pixel art stack is shown: every texel as one square cube in the sheet's exact colour. No Round (it melts
+ * one-pixel features), no Main piece (it drops parts that touch only at a corner), no Shade, a neutral grade, no
+ * screen-space pixel grid or outline, and every texel (Texels = the resolution).
+ */
+export function pixelArtLook(meta: Pick<StackMeta, "resolution">): Partial<StackState> {
+  return {
+    flat: true,
+    round: 0,
+    main: false,
+    shade: false,
+    pixel: false,
+    outline: false,
+    brightness: 1,
+    contrast: 1,
+    saturation: 1,
+    texels: meta.resolution,
+  };
+}
+
+/** The keys a pixel art stack sets on load; a model stack loaded after one gets the page's back. */
+const PIXEL_ART_KEYS = ["flat", "round", "main", "shade", "pixel", "outline"] as const;
 
 /** The keys stack.json's `defaults` may set (sprite_stack.py FACTORY_DEFAULTS). Look, round and main stay the page's. */
 const META_KEYS = ["spacing", "height", "texels", "brightness", "contrast", "saturation"] as const;
@@ -81,14 +110,19 @@ export function defaultsFor(base: StackState, meta: StackMeta): StackState {
       if (d[k] != null && Number.isFinite(v)) out[k] = v;
     }
   }
-  return out;
+  // The pixel art look wins over stack.json's grade and texels: the colours and the grid are the art.
+  return isPixelArt(meta) ? { ...out, ...pixelArtLook(meta) } : out;
 }
 
 /** A stack loaded (legacy applyMetaToSliders): layers, texels, spacing, height and the grade go back to its defaults;
  * look, pixel, round, main, shade and sync stay as they were. */
 export function stateForMeta(state: StackState, defaults: StackState, meta: StackMeta): StackState {
+  // A pixel art stack sets its own look; the next model stack goes back to the page's (defaults is the page's then).
+  const look: Partial<StackState> = {};
+  if (isPixelArt(meta) || state.flat) for (const k of PIXEL_ART_KEYS) (look as Record<string, unknown>)[k] = defaults[k];
   return {
     ...state,
+    ...look,
     layers: meta.layers,
     texels: Math.min(defaults.texels, meta.resolution),
     spacing: defaults.spacing,
@@ -117,16 +151,18 @@ export function resetState(state: StackState, defaults: StackState, meta: StackM
     outline: defaults.outline,
     round: defaults.round,
     main: defaults.main,
+    flat: defaults.flat,
   };
 }
 
 /* ---------------------------------------------------------------- the stats line (stack-lab.js 1165-1190) */
 
 /** "Voxel · Pixel · Round 0.45 · Main" (legacy lookLabel). */
-export function lookLabel(state: Pick<StackState, "look" | "pixel" | "round" | "main">): string {
+export function lookLabel(state: Pick<StackState, "look" | "pixel" | "round" | "main"> & { flat?: boolean }): string {
   let name = "Voxel";
   if (state.look === "plane") name = "Plane";
   if (state.look === "contour") name = "Contour";
+  if (state.flat) name += " · Pixel art";
   if (state.pixel) name += " · Pixel";
   if (state.look === "voxel" && state.round > 0.001) name += ` · Round ${state.round.toFixed(2)}`;
   if (state.main) name += " · Main";
@@ -244,6 +280,13 @@ export const SLIDERS: SliderSpec[] = [
   { key: "contrast", label: "Contrast", min: 0.3, max: 2.2, step: 0.05, digits: 2, title: "Contrast. 1.20 is the factory look." },
   { key: "saturation", label: "Saturate", min: 0, max: 2.2, step: 0.05, digits: 2, title: "Color intensity. 0 is grey, 1.20 is the factory look." },
 ];
+
+/** The sliders a stack shows: a pixel art stack has no Round (cubes only) and no Texels (every texel is the art),
+ * and Layers goes down to one slab. */
+export const slidersFor = (state: Pick<StackState, "flat">): SliderSpec[] =>
+  state.flat
+    ? SLIDERS.filter((s) => s.key !== "round" && s.key !== "texels").map((s) => (s.key === "layers" ? { ...s, min: 1 } : s))
+    : SLIDERS;
 
 /** A slider's readout (legacy textContent: toFixed(digits), or the integer as is). */
 export const readout = (spec: Pick<SliderSpec, "digits">, value: number): string =>

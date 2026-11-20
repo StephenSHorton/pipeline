@@ -8,6 +8,7 @@ import {
   CUBBY_LABELS,
   defaultsFor,
   defaultsFromSearch,
+  isPixelArt,
   GAME_TOGGLE,
   hexToRgb,
   LOOK_BUTTONS,
@@ -25,6 +26,7 @@ import {
   rgbToHex,
   sliderMax,
   SLIDERS,
+  slidersFor,
   sliderValue,
   STACK_COPY,
   stateForMeta,
@@ -154,6 +156,7 @@ describe("defaults", () => {
       outline: true,
       round: 0.45,
       main: true,
+      flat: false,
     });
   });
 
@@ -187,6 +190,47 @@ describe("defaults", () => {
     const was = { ...base, look: "contour" as const, auto: false, shade: false, round: 0, main: false, pixel: false, pixelSize: 6, layers: 10, texels: 32 };
     const s = resetState(was, base, meta);
     expect(s).toEqual({ ...base, look: "contour", layers: 87, texels: 120 });
+  });
+});
+
+describe("a pixel art stack (maker \"views\")", () => {
+  const art: StackMeta = { layers: 15, resolution: 43, pitch: 0.02, extents: [0.86, 0.3, 0.86], maker: "views" };
+
+  it("only maker views is pixel art; a model or a picture stack is not", () => {
+    expect([isPixelArt(art), isPixelArt(meta), isPixelArt({ maker: "picture" }), isPixelArt(null)]).toEqual([true, false, false, false]);
+  });
+
+  it("its defaults: unlit exact colours, no Round, Main, Shade, pixel grid or outline, neutral grade, every texel", () => {
+    const base = defaultsFromSearch("");
+    // Even a stack.json that carries the factory grade (contrast 1.2) shows the sheet's own colours.
+    const d = defaultsFor(base, { ...art, defaults: { contrast: 1.2, saturation: 1.2, texels: 120, spacing: 1.5 } });
+    expect([d.flat, d.round, d.main, d.shade, d.pixel, d.outline]).toEqual([true, 0, false, false, false, false]);
+    expect([d.brightness, d.contrast, d.saturation, d.texels, d.spacing]).toEqual([1, 1, 1, 43, 1.5]);
+    expect(base.flat).toBe(false);
+  });
+
+  it("loading it sets the look over what the last stack had; a model stack after it gets the page's look back", () => {
+    const base = defaultsFromSearch("");
+    const art1 = stateForMeta(base, defaultsFor(base, art), art);
+    expect([art1.flat, art1.round, art1.main, art1.shade, art1.pixel, art1.outline, art1.texels, art1.layers]).toEqual([true, 0, false, false, false, false, 43, 15]);
+    expect([art1.contrast, art1.saturation]).toEqual([1, 1]);
+    const model = stateForMeta(art1, defaultsFor(base, meta), meta);
+    expect(model).toEqual({ ...base, layers: 87, texels: 120 });
+  });
+
+  it("Reset goes back to the pixel art look", () => {
+    const base = defaultsFromSearch("");
+    const d = defaultsFor(base, art);
+    const s = resetState({ ...d, round: 0.3, main: true, shade: true, contrast: 1.5 }, d, art);
+    expect([s.flat, s.round, s.main, s.shade, s.contrast, s.texels]).toEqual([true, 0, false, false, 1, 43]);
+  });
+
+  it("no Round or Texels slider (both resample the art); the label says Pixel art", () => {
+    const d = defaultsFor(defaultsFromSearch(""), art);
+    expect(slidersFor(d).map((s) => s.key)).toEqual(["pixelSize", "spacing", "height", "layers", "brightness", "contrast", "saturation"]);
+    expect(slidersFor(d).find((s) => s.key === "layers")!.min).toBe(1);
+    expect(slidersFor(defaultsFromSearch(""))).toBe(SLIDERS);
+    expect(lookLabel(d)).toBe("Voxel · Pixel art");
   });
 });
 
