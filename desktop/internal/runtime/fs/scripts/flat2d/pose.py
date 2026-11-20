@@ -200,3 +200,39 @@ def sheet_prompt(text: str, kind: str | None = None, layout: str = "grid") -> st
 def canonical_view(kind: str | None) -> str:
     """The panel that becomes flat/source.png: the head-right profile for a side-on creature, the front otherwise."""
     return "right" if kind and FACING.get(kind) == "right" else "front"
+
+
+# ---------------------------------------------------------------- the pixel art sheet (sprite stacking)
+
+# Panel order on the pixel art sheet, row by row in a 2x2 grid. The layout and wording follow the sprite-stacking
+# write-up Stephen picked (spritecook.ai, "sprite stacking pixel art"): top view at top left with the nose toward the
+# bottom edge, side view at top right with the nose toward the left edge, front at bottom left, back at bottom right.
+# Its first try without outlines came back with soft grey edges that smeared, so a 1 px dark outline is asked for.
+PIXEL_PANELS = ("top", "side", "front", "back")
+PIXEL_VIEWS = {
+    "top": "top view, looking straight down from directly above, the front of the object pointing DOWN toward the "
+           "bottom edge",
+    "side": "side view, seen exactly from the side in strict profile, the front of the object pointing LEFT toward "
+            "the left edge",
+    "front": "front view, seen exactly from the front, facing the viewer",
+    "back": "back view, seen exactly from behind",
+}
+PIXEL_CELLS = (" (top left)", " (top right)", " (bottom left)", " (bottom right)")
+PIXEL_STYLE = ("Retro pixel art game sprite, about 32 pixels long, big square pixels on a regular pixel grid, crisp "
+               "hard pixel edges, a 1 pixel dark outline around the object and its parts, solid flat colour fills, "
+               "a small limited palette, no anti-aliasing, no soft edges, no gradients, no blur.")
+PIXEL_TAIL = ("Strictly orthographic, no perspective, every view at the same scale so the length, width and height "
+              "match between views. Each view whole and separate in its own quarter, with wide empty gaps between "
+              "them. No shadows, no ground, no floor, no text, no labels, no numbers, no grid lines, no borders. "
+              "Plain flat uniform magenta #FF00FF background.")
+
+
+def pixel_sheet_prompt(text: str) -> str:
+    """One picture holding four orthographic pixel art views of the subject in PIXEL_PANELS order, row by row in a
+    2x2 grid, for carving a sprite stack (flat2d/pixelart.py cleans it to true pixels). Beside sheet_prompt: the
+    turnaround sheet (front | right | back | left) is unchanged."""
+    listing = " ".join(f"View {i + 1}{PIXEL_CELLS[i]}: {PIXEL_VIEWS[pid]}." for i, pid in enumerate(PIXEL_PANELS))
+    head = ("Pixel art sprite sheet for sprite stacking, in a 2 by 2 grid, the same single object four times, four "
+            "orthographic views.")
+    return " ".join([" ".join((text or "").split()).rstrip(".") + ".", head, listing,
+                     "One object in each view, the same proportions and colours.", PIXEL_STYLE, PIXEL_TAIL])

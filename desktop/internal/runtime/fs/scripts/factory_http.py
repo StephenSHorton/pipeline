@@ -928,6 +928,9 @@ class Factory:
         if not want or str(want).lower() != file_sha256(img):
             return None, [degraded_entry("views", "stale",
                                          "flat/views.json was drawn for another picture; using one picture")]
+        if doc.get("layout") == "pixel":
+            # The pixel art sheet (top, side, front, back) is for a sprite stack, not a turnaround to build from.
+            return None, [degraded_entry("shape", "single_view", "a pixel art sheet is not a turnaround; one picture")]
         views = doc.get("views")
         if not isinstance(views, list) or not views:
             return None, [degraded_entry("shape", "single_view", "views.json lists no views")]
@@ -1132,10 +1135,18 @@ class Factory:
         if reference is not None:
             payload["reference"] = str(reference)
         views = body.get("views")
-        if views not in (None, ""):  # API-only opt-in (plan 1.1): views 1 is the old single draw, 4 the sheet
-            if str(views).strip() not in ("1", "4"):
-                raise ValueError("views must be 1 or 4")
-            payload["views"] = int(str(views).strip())
+        pixel = False
+        if views not in (None, ""):  # API-only opt-in (plan 1.1): views 1 is the old single draw, 4 the sheet,
+            # pixel the pixel art sheet for a sprite stack (top, side, front, back; flat2d/pixelart.py)
+            if str(views).strip().lower() == "pixel":
+                if kind != "flat2d" or drop or reference is not None:
+                    raise ValueError("views pixel is a flat2d draw from words")
+                payload["views"] = "pixel"
+                pixel = True
+            elif str(views).strip() not in ("1", "4"):
+                raise ValueError("views must be 1, 4 or pixel")
+            else:
+                payload["views"] = int(str(views).strip())
         for key in ("pieces", "motion", "say", "sound"):
             if isinstance(body.get(key), str):
                 payload[key] = body[key]
@@ -1146,7 +1157,7 @@ class Factory:
         from flat2d.optional import model_loaded
 
         plan = drawjob.plan_for(kind, loaded=drop or model_loaded(photo=reference is not None), steps=steps,
-                                count=count, drop=drop, views=reference is not None)
+                                count=count, drop=drop, views=reference is not None or pixel)
         job_id = uuid.uuid4().hex[:8]
         spec = {
             "job_id": job_id,

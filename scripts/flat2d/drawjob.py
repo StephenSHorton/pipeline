@@ -44,11 +44,16 @@ FLAW_TEXT = {"cloudy": "Ground is cloudy.", "shadow": "There is a shadow on the 
              "facing": "The head points the wrong way.", "profile": "It is not a side view.",
              "height": "The views are not the same height.", "colour": "The views are not the same colours.",
              "side": "The two side views do not match.", "empty": "A view is missing.",
-             "pieces": "A view holds more than one subject.", "drift": "The views drift from your photo."}
+             "pieces": "A view holds more than one subject.", "drift": "The views drift from your photo.",
+             "top_short": "The top view is not the longest drawing.", "side_narrow": "The side view is not the "
+             "widest drawing.", "top_sideways": "The top view lies sideways.", "side_upright": "The side view "
+             "stands upright."}
 FLAW_PAST = {"cloudy": "ground was cloudy", "shadow": "ground had a shadow", "facing": "head pointed the wrong way",
              "profile": "not a side view", "height": "views were different heights", "colour": "views were "
              "different colours", "side": "side views did not match", "empty": "a view was missing",
-             "pieces": "a view held more than one subject", "drift": "views drifted from your photo"}
+             "pieces": "a view held more than one subject", "drift": "views drifted from your photo",
+             "top_short": "top view was short", "side_narrow": "side view was narrow",
+             "top_sideways": "top view lay sideways", "side_upright": "side view stood upright"}
 VIEW_STAGES = ("views_split", "views_check")
 
 
@@ -420,7 +425,8 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
     if stem_dir(root, stem).is_dir() and not drop:
         autosave(root, stem, ("concept",))
     had_parts = (flat_dir(root, stem) / "parts.json").is_file() and "pieces" not in steps
-    views = not drop and optional.wants_views(payload.get("intent"), payload.get("views"))
+    views = not drop and (optional.is_pixel(payload.get("views"))
+                          or optional.wants_views(payload.get("intent"), payload.get("views")))
     reference = payload.get("reference") or None
     plan = plan_for("flat2d", loaded=optional.model_loaded(photo=bool(reference)), steps=steps, drop=drop,
                     views=views)
@@ -460,8 +466,12 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
             if note:
                 result["notes"].append(note)
                 hook.line(note)
+        if saved.get("pixel"):
+            result["pixel"] = saved["pixel"]
         hook.line("Picture saved.")
         autosave(root, stem, ("concept",))
+        if saved.get("pixel"):
+            autosave(root, stem, ("flat",))  # flat/pixel/: the cleaned views
     texts = {k: payload[k] for k in TEXTS if isinstance(payload.get(k), str)}
     for clip in ("video", "frames"):
         if payload.get(clip):

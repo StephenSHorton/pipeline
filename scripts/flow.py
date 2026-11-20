@@ -63,6 +63,8 @@ FILES: dict[str, tuple[str, ...]] = {
         "flat/sheets/*",
         "flat/sounds/*",
         "flat/voices/*",
+        # The pixel art sheet's cleaned views (flat2d/pixelart.py), which a sprite stack is carved from.
+        "flat/pixel/*",
     ),
     "mesh": (
         "mesh*.glb",

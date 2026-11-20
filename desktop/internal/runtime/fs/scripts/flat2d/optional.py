@@ -944,9 +944,16 @@ def wants_views(intent: dict | None, views=None) -> bool:
     return isinstance(intent, dict) and intent.get("output") in CREATURE_OUTPUTS
 
 
+def is_pixel(views) -> bool:
+    """views 'pixel': the pixel art sheet for a sprite stack (generate_pixel_views)."""
+    return str(views or "").strip().lower() == "pixel"
+
+
 def draw(root: Path, stem: str, prompt: str, intent: dict | None = None, views=None, reference=None) -> dict:
-    """The draw a request gets: generate_views for a 3D-bound intent, else (or with views: 1) generate_still.
+    """views 'pixel' draws the pixel art sheet (generate_pixel_views). The draw a request gets: generate_views for a 3D-bound intent, else (or with views: 1) generate_still.
     reference: the user's photo, drawn from (never kept as a view); only a 3D-bound draw takes one."""
+    if is_pixel(views):
+        return generate_pixel_views(root, stem, prompt)
     if reference:
         return generate_views(root, stem, prompt, intent, reference=reference)
     if wants_views(intent, views):
@@ -1139,6 +1146,105 @@ def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = Non
     if posed:
         saved.update(posed)
         saved["kind"] = kind
+    return saved
+
+
+def generate_pixel_views(root: Path, stem: str, prompt: str) -> dict:
+    """The pixel art sheet for a sprite stack: one 2x2 picture, top | side over front | back (pose.pixel_sheet_prompt),
+    split at its magenta gaps and checked (flat2d/pixelart.py: one subject per view, the top view the tallest
+    drawing, the side view the widest). At most SHEET_REDRAWS new sheets for those flaws; the best is kept.
+    Then cleaned to true pixel art (pixelart.clean_folder).
+    Writes flat/sheet.png, flat/views/{top,side,front,back}.png, flat/views.json (layout 'pixel'), flat/source.png
+    (the side view), key.json and prompt.txt (the concept take), and flat/pixel/ (the flat take)."""
+    from flat2d import pixelart as PA
+    from flat2d.pose import PIXEL_PANELS, pixel_sheet_prompt
+    from flat2d.sheet import SHEET_REDRAWS, SHEET_SIZE, still_info
+    from flat2d.store import save_source
+    from flat2d.views import sha256_file
+
+    text = " ".join((prompt or "").split())
+    if not text:
+        raise FlatUnavailable("empty prompt")
+    backend = still_backend()
+    if not backend:
+        raise FlatUnavailable("No local image model. Install mflux.")
+    w, h = SHEET_SIZE
+    ask = pixel_sheet_prompt(text)
+    seed = random.randint(1, 2**31 - 1)
+    tries: list[dict] = []
+    redrawn: list[str] = []
+    for attempt in range(SHEET_REDRAWS + 1):
+        _check_cancel()
+        if attempt and DRAW is not None:
+            DRAW.attempt(attempt + 1, SHEET_REDRAWS + 1, tries[-1]["again"])
+        image = still_image(ask, seed=seed, width=w, height=h)
+        image = getattr(image, "image", image).convert("RGB")
+        if DRAW is not None:
+            DRAW.preview(image)
+        key = ground_key(image)
+        _check_cancel()
+        _phase("views_split")
+        result = PA.check_sheet(image, key)
+        _phase("views_check")
+        again = PA.redrawable(result["flaws"])
+        tries.append({"image": image, "seed": seed, "key": key, "result": result, "again": again})
+        if DRAW is not None and hasattr(DRAW, "line"):
+            DRAW.line("Views: " + (", ".join(result["flaws"]) if result["flaws"] else "one subject each, "
+                                   "top tallest, side widest") + ".")
+        if not again or attempt == SHEET_REDRAWS:
+            break
+        redrawn.extend(again)
+        seed = random.randint(1, 2**31 - 1)
+    best = min(tries, key=lambda t: len(t["again"]))
+    image, result, key = best["image"], best["result"], best["key"]
+    if DRAW is not None and best is not tries[-1]:
+        DRAW.preview(image)
+    folder = flat_dir(root, stem)
+    clear_views(root, stem)
+    import shutil
+
+    shutil.rmtree(folder / "pixel", ignore_errors=True)
+    buf = __import__("io").BytesIO()
+    result["panels"]["side"].save(buf, format="PNG")
+    saved = save_source(root, stem, buf.getvalue())
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "views").mkdir(exist_ok=True)
+    image.save(folder / "sheet.png", format="PNG")
+    for pid in PIXEL_PANELS:
+        result["panels"][pid].save(folder / "views" / f"{pid}.png", format="PNG")
+    info = still_info(backend)
+    doc = {"version": 1, "layout": "pixel", "canonical": "side", "source_sha256": sha256_file(folder / "source.png"),
+           "views": [{"id": pid, "file": f"views/{pid}.png", "box": result["boxes"][pid],
+                      "size": result["sizes"][pid]} for pid in PIXEL_PANELS],
+           "split": result["how"], "consistent": not result["flaws"], "flaws": list(result["flaws"]),
+           "notes": list(result["notes"]),
+           "sheet": {"w": w, "h": h, "layout": "pixel", "seed": best["seed"], "redraws": len(tries) - 1,
+                     "model": info["model"], "licence": info["licence"], "backend": backend, "prompt": ask}}
+    write_json(folder / "views.json", doc)
+    write_json(folder / "key.json", {**ground_key(result["panels"]["side"]), "views": "flat/views.json"})
+    (folder / "prompt.txt").write_text(text + "\n", encoding="utf-8")
+    if DRAW is not None and hasattr(DRAW, "line"):
+        DRAW.line("Cleaning the views into pixel art.")
+    notes = [f"Sheet: {f}." for f in result["flaws"]]
+    try:
+        pixel = PA.clean_folder(folder)
+    except ValueError as e:
+        pixel = None
+        notes.append(f"Could not clean the views: {e}.")
+    if pixel is not None:
+        g, s = pixel["grid"], pixel["sizes"]["final"]
+        cells = f"{g['cell_px']} px cells" if g["how"] == "found" else "cut to size"
+        notes.append(f"Pixel art: {len(pixel['palette'])} colours, {cells}, top "
+                     f"{s['top'][0]}x{s['top'][1]}, side {s['side'][0]}x{s['side'][1]}, front "
+                     f"{s['front'][0]}x{s['front'][1]}.")
+        notes.extend(pixel["notes"])
+        notes.extend(f"Pixel art: {f}." for f in pixel["flaws"])
+        if not pixel.get("ok"):
+            notes.append("The views disagree on a size: draw again before carving a stack.")
+    saved.update({"prompt": text, "key": key["rgb"], "still": backend, "seed": best["seed"], "redrawn": redrawn,
+                  "views": "flat/views.json", "consistent": doc["consistent"], "flaws": doc["flaws"],
+                  "notes": notes, "degraded": list(still_degraded(backend)), "sheet": "flat/sheet.png",
+                  "canonical_view": "side", "pixel": "flat/pixel/pixel.json" if pixel is not None else None})
     return saved
 
 
