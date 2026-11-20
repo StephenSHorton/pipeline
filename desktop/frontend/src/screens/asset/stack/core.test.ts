@@ -15,6 +15,7 @@ import {
   rebuildIslandMask,
   restBox,
   restOutline,
+  keptOutline,
   fitDistance,
   sampleVoxel,
   sheetPixels,
@@ -341,6 +342,51 @@ describe("framing", () => {
     }
     expect(worst).toBeCloseTo(1, 6);
     expect(fitDistance(pts, c, view, fov, aspect, 1.1)).toBeGreaterThan(long);
+  });
+
+  it("keptOutline is the cells Main keeps: specks it hides add nothing, and Main off counts them", () => {
+    // A 3-texel bar on two slabs, and a lone speck in the far corner of the first.
+    const bar: [number, number][] = [[2, 3], [3, 3], [4, 3]];
+    const core = coreOf(8, [[...bar, [7, 7]], bar]);
+    rebuildIslandMask(core, 8);
+    const pts = keptOutline(core, 8);
+    const zs = pts.filter((_, i) => i % 3 === 2);
+    const xs = pts.filter((_, i) => i % 3 === 0);
+    // pitch 0.01, res 8: the grid runs -0.04..0.04; the bar is x 2..4, z 3.
+    expect(Math.min(...xs)).toBeCloseTo(-0.02);
+    expect(Math.max(...xs)).toBeCloseTo(0.01);
+    expect(Math.min(...zs)).toBeCloseTo(-0.01);
+    expect(Math.max(...zs)).toBeCloseTo(0);
+    expect(pts.filter((_, i) => i % 3 === 1).reduce((a, b) => Math.max(a, b))).toBeCloseTo(0.02);
+    core.state.main = false;
+    rebuildIslandMask(core, 8);
+    const all = keptOutline(core, 8);
+    expect(Math.max(...all.filter((_, i) => i % 3 === 2))).toBeCloseTo(0.04);
+    // A mask for another Texels grid is not used.
+    expect(keptOutline(core, 4)).toEqual([]);
+  });
+
+  it("keptOutline at a coarser Texels grid covers the same texels, in wider cells", () => {
+    const core = coreOf(8, [[[1, 1], [6, 6], [1, 6], [6, 1], [2, 2], [3, 3], [4, 4], [5, 5], [2, 5], [5, 2], [3, 4], [4, 3]]]);
+    core.state.main = false;
+    rebuildIslandMask(core, 4);
+    const pts = keptOutline(core, 4);
+    const xs = pts.filter((_, i) => i % 3 === 0);
+    expect([Math.min(...xs), Math.max(...xs)].map((v) => +v.toFixed(6))).toEqual([-0.04, 0.04]);
+  });
+
+  it("with Main on, a far speck does not push the fit back; with Main off it does", () => {
+    const body: [number, number][] = [];
+    for (let z = 4; z < 12; z++) for (let x = 6; x < 10; x++) body.push([x, z]);
+    const fit = (cells: [number, number][], main: boolean) => {
+      const core = coreOf(16, [cells, cells]);
+      core.state.main = main;
+      rebuildIslandMask(core, 16);
+      return fitDistance(keptOutline(core, 16), [0, 0.01, 0], view, 35, 1.6, 1.1);
+    };
+    const speck: [number, number][] = [...body, [15, 15]];
+    expect(fit(speck, true)).toBe(fit(body, true));
+    expect(fit(speck, false)).toBeGreaterThan(fit(body, false));
   });
 });
 

@@ -922,6 +922,42 @@ export function restOutline(meta: StackMeta, slabs: readonly (Pick<Native, "n" |
 }
 
 /**
+ * restOutline for what the Stack stage shows of a stack: the cells of the island mask (rebuildIslandMask at `crunch`
+ * first), so with Main on, the specks it hides do not count. Each cell is res/crunch texels across, one pitch tall.
+ */
+export function keptOutline(core: Core, crunch: number): number[] {
+  const { meta, islandMask } = core;
+  const out: number[] = [];
+  if (!islandMask || core.islandCrunch !== crunch) return out;
+  const n = crunch;
+  const ny = islandMask.length / (n * n);
+  const half = (meta.resolution * meta.pitch) / 2;
+  const cellX = (meta.resolution * meta.pitch) / n;
+  const cellY = meta.pitch;
+  for (let y = 0; y < ny; y++) {
+    const y0 = y * cellY;
+    const y1 = y0 + cellY;
+    for (let z = 0; z < n; z++) {
+      let lo = -1;
+      let hi = -1;
+      const row = (y * n + z) * n;
+      for (let x = 0; x < n; x++) {
+        if (!islandMask[row + x]) continue;
+        if (lo < 0) lo = x;
+        hi = x;
+      }
+      if (hi < 0) continue;
+      const z0 = z * cellX - half;
+      const z1 = z0 + cellX;
+      for (const x of [lo * cellX - half, (hi + 1) * cellX - half]) {
+        out.push(x, y0, z0, x, y0, z1, x, y1, z0, x, y1, z1);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * How far from `center`, along `dir`, a perspective camera looking at `center` must stand to see every one of
  * `points` (x, y, z, ...) with `pad` room around it. Each point is checked as the camera sees it, so a point nearer
  * the camera (the near end of a stack long front-to-back) counts for more, as it does on screen.
