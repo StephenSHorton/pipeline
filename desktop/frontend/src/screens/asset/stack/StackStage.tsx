@@ -35,7 +35,7 @@ import {
   resetState,
   rgbToHex,
   sliderMax,
-  SLIDERS,
+  slidersFor,
   sliderValue,
   STACK_COPY,
   stateForMeta,
@@ -290,7 +290,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
               <Cubby id={cubbyId(stem, "stack-sliders")} cubby="stack-sliders" open={open === "stack-sliders"} onClose={() => closeCubby("stack-sliders")}>
                 {/* One column of 32 px rows: the panel's own gap between nine sliders made it ~450 px tall. */}
                 <div className="flex flex-col">
-                  {SLIDERS.map((s) => (
+                  {slidersFor(state).map((s) => (
                     <Slider
                       key={s.key}
                       label={s.label}

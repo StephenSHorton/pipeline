@@ -1,0 +1,35 @@
+{
+  "name": "pixel-mushroom",
+  "stem": "pixel-mushroom",
+  "sheet": "sheet.png",
+  "resolution": 43,
+  "layers": 15,
+  "pitch": 0.02,
+  "origin": [
+    -0.43,
+    0,
+    -0.43
+  ],
+  "extents": [
+    0.86,
+    0.3,
+    0.86
+  ],
+  "axis": {
+    "right": "x",
+    "up": "y",
+    "forward": "z",
+    "slice": "y"
+  },
+  "sheet_layout": "horizontal-bottom-to-top",
+  "defaults": {
+    "texels": 120,
+    "spacing": 1,
+    "height": 1,
+    "brightness": 1.0,
+    "contrast": 1.2,
+    "saturation": 1.2
+  },
+  "kind": "stack",
+  "maker": "views"
+}
