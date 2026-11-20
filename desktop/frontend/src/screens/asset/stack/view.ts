@@ -67,13 +67,18 @@ import {
   restBox,
   sampleVoxel,
   sheetPixels,
+  fitDistance,
+  restOutline,
   srgbToLinear,
   type Slice,
   undoStroke,
 } from "./core";
 import { createGameLook, type GameLookState } from "./gameLook";
 import { injectGrade, injectPixelBlit, injectVoxelPbr } from "./shaders";
-import { hexToRgb, ORBIT, type PaletteEntry, type StackMeta, type StackState, worldPaintRadius } from "./stack";
+import { hexToRgb, isPixelArt, ORBIT, type PaletteEntry, type StackMeta, type StackState, worldPaintRadius } from "./stack";
+
+/** Room around the stack when the camera must back off to show all of it (1.1: a tenth of a margin each side). */
+const FRAME_PAD = 1.1;
 
 export interface PaintMode {
   on: boolean;
@@ -333,8 +338,18 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     const halfV = Math.tan(fov / 2);
     const fitH = (size.y * pad) / (2 * halfV);
     const fitW = (Math.max(size.x, size.z) * pad) / (2 * halfV * aspect);
-    const dist = Math.max(fitH, fitW, 0.8);
-    const dir = new Vector3(0.72, 0.38, 1).normalize();
+    const view: [number, number, number] = [0.72, 0.38, 1];
+    // The old fit by the box's sides. A pixel art stack (small, every texel shown) is pushed back further when a
+    // filled cube would still be off screen: one long front-to-back has its near end swing toward the camera.
+    // Model stacks keep the old framing exactly (their specks that Main hides would otherwise push them back).
+    let fitAll = 0;
+    if (isPixelArt(meta)) {
+      for (const rec of stackSlices) if (!rec.native) cacheNative(rec);
+      const outline = restOutline(meta, stackSlices.map((r) => r.native));
+      fitAll = fitDistance(outline, center.toArray(), view, camera.fov, aspect, FRAME_PAD);
+    }
+    const dist = Math.max(fitH, fitW, 0.8, fitAll);
+    const dir = new Vector3(...view).normalize();
     camera.position.copy(center).addScaledVector(dir, dist);
     camera.lookAt(center);
     controls.target.copy(center);

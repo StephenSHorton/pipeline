@@ -884,3 +884,74 @@ export function restBox(meta: StackMeta): { min: [number, number, number]; max: 
   const max: [number, number, number] = [worldX * 0.5, restH, worldZ * 0.5];
   return { min, max, diagonal: Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) };
 }
+
+/**
+ * The outline of the stack at rest, as world points (x, y, z, x, y, z, ...): for each layer and each row of the
+ * sheet, the outer corners of its first and last opaque texel. Every filled cube lies between these, so a camera that
+ * sees them all sees the whole stack, without the empty corners of its box.
+ */
+export function restOutline(meta: StackMeta, slabs: readonly (Pick<Native, "n" | "ix" | "iz"> | null | undefined)[]): number[] {
+  const res = meta.resolution;
+  const cell = meta.pitch;
+  const half = (res * cell) / 2;
+  const out: number[] = [];
+  const lo = new Int32Array(res);
+  const hi = new Int32Array(res);
+  slabs.forEach((native, layer) => {
+    if (!native || !native.n) return;
+    lo.fill(res);
+    hi.fill(-1);
+    for (let i = 0; i < native.n; i++) {
+      const z = native.iz[i];
+      const x = native.ix[i];
+      if (x < lo[z]) lo[z] = x;
+      if (x > hi[z]) hi[z] = x;
+    }
+    const y0 = layer * cell;
+    const y1 = y0 + cell;
+    for (let z = 0; z < res; z++) {
+      if (hi[z] < 0) continue;
+      const z0 = z * cell - half;
+      const z1 = z0 + cell;
+      for (const x of [lo[z] * cell - half, (hi[z] + 1) * cell - half]) {
+        out.push(x, y0, z0, x, y0, z1, x, y1, z0, x, y1, z1);
+      }
+    }
+  });
+  return out;
+}
+
+/**
+ * How far from `center`, along `dir`, a perspective camera looking at `center` must stand to see every one of
+ * `points` (x, y, z, ...) with `pad` room around it. Each point is checked as the camera sees it, so a point nearer
+ * the camera (the near end of a stack long front-to-back) counts for more, as it does on screen.
+ */
+export function fitDistance(
+  points: ArrayLike<number>,
+  center: readonly number[],
+  dir: readonly [number, number, number],
+  fovDeg: number,
+  aspect: number,
+  pad: number,
+): number {
+  const dl = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+  const d = [dir[0] / dl, dir[1] / dl, dir[2] / dl];
+  // The camera's right and up (world up is +y, as Object3D.lookAt uses).
+  const rl = Math.hypot(d[0], d[2]) || 1;
+  const right = [d[2] / rl, 0, -d[0] / rl];
+  const up = [d[1] * right[2] - d[2] * right[1], d[2] * right[0] - d[0] * right[2], d[0] * right[1] - d[1] * right[0]];
+  const tanV = Math.tan((fovDeg * Math.PI) / 360);
+  const tanH = tanV * aspect;
+  let need = 0;
+  for (let i = 0; i + 2 < points.length; i += 3) {
+    const rx = points[i] - center[0];
+    const ry = points[i + 1] - center[1];
+    const rz = points[i + 2] - center[2];
+    // The point sits `toward` nearer the camera, so its depth is dist - toward; it shows while |side| <= depth * tan.
+    const toward = rx * d[0] + ry * d[1] + rz * d[2];
+    const side = Math.abs(rx * right[0] + rz * right[2]);
+    const lift = Math.abs(rx * up[0] + ry * up[1] + rz * up[2]);
+    need = Math.max(need, (side * pad) / tanH + toward, (lift * pad) / tanV + toward);
+  }
+  return need;
+}

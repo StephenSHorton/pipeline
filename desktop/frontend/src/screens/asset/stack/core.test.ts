@@ -14,6 +14,8 @@ import {
   quantize,
   rebuildIslandMask,
   restBox,
+  restOutline,
+  fitDistance,
   sampleVoxel,
   sheetPixels,
   signedArea,
@@ -290,6 +292,55 @@ describe("restBox", () => {
     expect(b.min).toEqual([-0.2, 0, -0.15]);
     expect(b.max).toEqual([0.2, 1, 0.15]);
     expect(b.diagonal).toBeCloseTo(Math.hypot(0.4, 1, 0.3));
+  });
+});
+
+describe("framing", () => {
+  const view: [number, number, number] = [0.72, 0.38, 1];
+  const nat = (cells: [number, number][]) => ({ n: cells.length, ix: Uint16Array.from(cells, (c) => c[0]), iz: Uint16Array.from(cells, (c) => c[1]) });
+
+  it("restOutline keeps the outer corners of each row's first and last texel, layer by layer", () => {
+    const m: StackMeta = { layers: 2, resolution: 4, pitch: 0.25, extents: [1, 0.5, 1] };
+    const pts = restOutline(m, [nat([[1, 0], [2, 0], [3, 0]]), null]);
+    // One row, two ends, four corners each; the second layer is empty.
+    expect(pts.length).toBe(2 * 4 * 3);
+    const xs = pts.filter((_, i) => i % 3 === 0);
+    const ys = pts.filter((_, i) => i % 3 === 1);
+    const zs = pts.filter((_, i) => i % 3 === 2);
+    expect([Math.min(...xs), Math.max(...xs)]).toEqual([-0.25, 0.5]);
+    expect([Math.min(...ys), Math.max(...ys)]).toEqual([0, 0.25]);
+    expect([Math.min(...zs), Math.max(...zs)]).toEqual([-0.5, -0.25]);
+  });
+
+  it("fitDistance shows every point with the given room, and a long front-to-back box needs more than a wide one", () => {
+    const fov = 35;
+    const aspect = 1.6;
+    const box = (x: number, z: number) => {
+      const out: number[] = [];
+      for (const a of [-x / 2, x / 2]) for (const b of [0, 0.4]) for (const c of [-z / 2, z / 2]) out.push(a, b, c);
+      return out;
+    };
+    const c = [0, 0.2, 0];
+    const long = fitDistance(box(0.5, 1), c, view, fov, aspect, 1);
+    const wide = fitDistance(box(1, 0.5), c, view, fov, aspect, 1);
+    expect(long).toBeGreaterThan(wide);
+    // At that distance, every corner projects inside the frame (within rounding), and one sits right on its edge.
+    const d = Math.hypot(...view);
+    const dir = view.map((v) => v / d);
+    const rl = Math.hypot(dir[0], dir[2]);
+    const right = [dir[2] / rl, 0, -dir[0] / rl];
+    const up = [dir[1] * right[2] - dir[2] * right[1], dir[2] * right[0] - dir[0] * right[2], dir[0] * right[1] - dir[1] * right[0]];
+    const tanV = Math.tan((fov * Math.PI) / 360);
+    const pts = box(0.5, 1);
+    let worst = 0;
+    for (let i = 0; i < pts.length; i += 3) {
+      const r = [pts[i] - c[0], pts[i + 1] - c[1], pts[i + 2] - c[2]];
+      const dot = (v: number[]) => r[0] * v[0] + r[1] * v[1] + r[2] * v[2];
+      const depth = long - dot(dir);
+      worst = Math.max(worst, Math.abs(dot(right)) / (depth * tanV * aspect), Math.abs(dot(up)) / (depth * tanV));
+    }
+    expect(worst).toBeCloseTo(1, 6);
+    expect(fitDistance(pts, c, view, fov, aspect, 1.1)).toBeGreaterThan(long);
   });
 });
 
