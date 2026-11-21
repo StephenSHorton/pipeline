@@ -72,6 +72,21 @@ class PromptTest(unittest.TestCase):
                       "No shadows", "no ground", "no text", "no grid lines", "magenta #FF00FF"):
             self.assertIn(words, p)
 
+    def test_a_chosen_size_is_asked_for(self) -> None:
+        self.assertIn("about 32 pixels long", pose.pixel_sheet_prompt("a car"))
+        self.assertIn("about 128 pixels long", pose.pixel_sheet_prompt("a car", 128))
+        self.assertNotIn("32 pixels", pose.pixel_sheet_prompt("a car", 96))
+        self.assertEqual(pose.pixel_size(None), pose.PIXEL_SIZE)
+        self.assertEqual(pose.pixel_size("96"), 96)
+        for bad in ("big", 8, 1000, "9.5"):
+            with self.assertRaises(ValueError):
+                pose.pixel_size(bad)
+
+    def test_front_and_back_are_asked_level_and_to_scale(self) -> None:
+        p = pose.pixel_sheet_prompt("a car")
+        self.assertIn("level, facing the viewer, its top not visible", p)
+        self.assertEqual(p.count("exactly as wide as the top view and exactly as tall as the side view"), 2)
+
     def test_the_turnaround_is_unchanged(self) -> None:
         self.assertEqual(pose.PANELS, ("front", "right", "back", "left"))
         self.assertNotIn("pixel", pose.sheet_prompt("a lantern", None, "grid").lower())
@@ -81,11 +96,11 @@ class CleanTest(unittest.TestCase):
     def setUp(self) -> None:
         self.cells = car_views()
 
-    def clean(self, sheet: Image.Image) -> dict:
+    def clean(self, sheet: Image.Image, allow: tuple[str, ...] = (), target: int = pixelart.TARGET) -> dict:
         key = ground_key(sheet)
         checked = pixelart.check_sheet(sheet, key)
-        self.assertEqual(checked["flaws"], [])
-        return pixelart.clean(checked["panels"], key)
+        self.assertEqual([f for f in checked["flaws"] if f not in allow], [])
+        return pixelart.clean(checked["panels"], key, target=target)
 
     def test_a_soft_drawing_comes_back_as_its_true_pixels(self) -> None:
         got = self.clean(soft_sheet(self.cells))
@@ -119,9 +134,35 @@ class CleanTest(unittest.TestCase):
         self.assertIn("top", got["sizes"]["fitted"])
 
     def test_views_that_disagree_are_a_flaw(self) -> None:
-        got = self.clean(soft_sheet(self.cells, stretch={"front": (W + 6, H), "back": (W + 6, H)}))
+        got = self.clean(soft_sheet(self.cells, stretch={"front": (W + 6, H), "back": (W + 6, H)}),
+                         allow=("stretch:front", "stretch:back"))
         self.assertIn("disagree:width", got["flaws"])
         self.assertFalse(got["ok"])
+
+    def test_a_front_drawn_too_tall_is_a_redrawable_sheet_flaw(self) -> None:
+        sheet = soft_sheet(self.cells, stretch={"front": (W, H + 5)})
+        got = pixelart.check_sheet(sheet, ground_key(sheet))
+        self.assertIn("stretch:front", got["flaws"])
+        self.assertNotIn("stretch:back", got["flaws"])
+        self.assertGreater(got["stretch"]["front"], 0.4)
+        self.assertLess(abs(got["stretch"]["back"]), pixelart.AGREE)
+        self.assertEqual(pixelart.redrawable(got["flaws"]), ["stretch:front"])
+
+    def test_a_finer_drawing_is_found_at_a_finer_target(self) -> None:
+        # A 96-cell car with detail in every cell (a 32-cell car blown up would read as its 32 cells).
+        rng = np.random.default_rng(5)
+        big = {}
+        for pid, a in self.cells.items():
+            a = np.repeat(np.repeat(a, 3, 0), 3, 1)
+            inner = np.zeros(a.shape[:2], bool)
+            inner[1:-1, 1:-1] = True
+            dots = inner & (rng.random(a.shape[:2]) < 0.3)
+            a[dots] = GLASS
+            big[pid] = a
+        got = self.clean(soft_sheet(big, cell=5.0, blur=0.8), target=96)
+        self.assertEqual(got["grid"]["how"], "found")
+        self.assertEqual(got["sizes"]["final"]["side"], [3 * L, 3 * H])
+        self.assertEqual(got["flaws"], [])
 
     def test_a_short_top_view_is_a_sheet_flaw(self) -> None:
         sheet = soft_sheet(self.cells, stretch={"top": (W, 6)})
@@ -170,8 +211,23 @@ class DrawTest(unittest.TestCase):
             pix = json.loads((flat / "pixel" / "pixel.json").read_text())
             self.assertEqual(pix["sizes"]["final"]["side"], [L, H])
             self.assertTrue((flat / "pixel" / "preview.png").is_file())
+            self.assertEqual(doc["sheet"]["size"], 32)
             self.assertIn("flat/pixel/top.png", flow.stage_files(root / "out" / "car", "flat"))
             self.assertIn("flat/sheet.png", flow.stage_files(root / "out" / "car", "concept"))
+
+    def test_a_chosen_size_reaches_the_prompt_and_the_cleaner(self) -> None:
+        sheet = soft_sheet(car_views())
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"FLAT2D_STILL": "stub"}), \
+                mock.patch.object(optional, "still_image", return_value=sheet) as drawn, \
+                mock.patch.object(pixelart, "clean_folder", wraps=pixelart.clean_folder) as cleaned:
+            root = Path(tmp)
+            (root / "out" / "car").mkdir(parents=True)
+            optional.draw(root, "car", "a car", views="pixel", size=96)
+            self.assertIn("about 96 pixels long", drawn.call_args.args[0])
+            self.assertEqual(cleaned.call_args.kwargs["target"], 96)
+            doc = json.loads((root / "out" / "car" / "flat" / "views.json").read_text())
+            self.assertEqual(doc["sheet"]["size"], 96)
 
 
 if __name__ == "__main__":

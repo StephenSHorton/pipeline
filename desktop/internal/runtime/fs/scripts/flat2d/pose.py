@@ -214,11 +214,15 @@ PIXEL_VIEWS = {
            "bottom edge",
     "side": "side view, seen exactly from the side in strict profile, the front of the object pointing LEFT toward "
             "the left edge",
-    "front": "front view, seen exactly from the front, facing the viewer",
-    "back": "back view, seen exactly from behind",
+    "front": "front view, seen exactly from the front at the object's own mid height, level, facing the viewer, "
+             "its top not visible, exactly as wide as the top view and exactly as tall as the side view",
+    "back": "back view, seen exactly from behind at the object's own mid height, level, its top not visible, "
+            "exactly as wide as the top view and exactly as tall as the side view",
 }
 PIXEL_CELLS = (" (top left)", " (top right)", " (bottom left)", " (bottom right)")
-PIXEL_STYLE = ("Retro pixel art game sprite, about 32 pixels long, big square pixels on a regular pixel grid, crisp "
+PIXEL_SIZE = 32  # the sprite's length in pixels the sheet asks for (pixelart.TARGET cleans it at the same count)
+PIXEL_SIZES = (16, 256)  # the smallest and largest size a draw may ask for
+PIXEL_STYLE = ("Retro pixel art game sprite, about {size} pixels long, square pixels on a regular pixel grid, crisp "
                "hard pixel edges, a 1 pixel dark outline around the object and its parts, solid flat colour fills, "
                "a small limited palette, no anti-aliasing, no soft edges, no gradients, no blur.")
 PIXEL_TAIL = ("Strictly orthographic, no perspective, every view at the same scale so the length, width and height "
@@ -227,12 +231,27 @@ PIXEL_TAIL = ("Strictly orthographic, no perspective, every view at the same sca
               "Plain flat uniform magenta #FF00FF background.")
 
 
-def pixel_sheet_prompt(text: str) -> str:
+def pixel_size(size) -> int:
+    """A sprite size from a request (None: PIXEL_SIZE). Raises ValueError outside PIXEL_SIZES."""
+    if size in (None, ""):
+        return PIXEL_SIZE
+    try:
+        n = int(str(size).strip())
+    except ValueError:
+        raise ValueError(f"size must be a whole number of pixels, {PIXEL_SIZES[0]} to {PIXEL_SIZES[1]}") from None
+    if not PIXEL_SIZES[0] <= n <= PIXEL_SIZES[1]:
+        raise ValueError(f"size must be a whole number of pixels, {PIXEL_SIZES[0]} to {PIXEL_SIZES[1]}")
+    return n
+
+
+def pixel_sheet_prompt(text: str, size: int = PIXEL_SIZE) -> str:
     """One picture holding four orthographic pixel art views of the subject in PIXEL_PANELS order, row by row in a
-    2x2 grid, for carving a sprite stack (flat2d/pixelart.py cleans it to true pixels). Beside sheet_prompt: the
-    turnaround sheet (front | right | back | left) is unchanged."""
+    2x2 grid, for carving a sprite stack (flat2d/pixelart.py cleans it to true pixels). size: the sprite's length in
+    pixels the picture is asked for. Beside sheet_prompt: the turnaround sheet (front | right | back | left) is
+    unchanged."""
     listing = " ".join(f"View {i + 1}{PIXEL_CELLS[i]}: {PIXEL_VIEWS[pid]}." for i, pid in enumerate(PIXEL_PANELS))
     head = ("Pixel art sprite sheet for sprite stacking, in a 2 by 2 grid, the same single object four times, four "
             "orthographic views.")
     return " ".join([" ".join((text or "").split()).rstrip(".") + ".", head, listing,
-                     "One object in each view, the same proportions and colours.", PIXEL_STYLE, PIXEL_TAIL])
+                     "One object in each view, the same proportions and colours.",
+                     PIXEL_STYLE.format(size=pixel_size(size)), PIXEL_TAIL])

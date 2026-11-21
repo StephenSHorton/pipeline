@@ -42,7 +42,7 @@ TARGET = 32  # cells along the subject's length when no grid is found
 MIN_CELL, MAX_CELL = 3.0, 64.0
 CELL_STEP = 0.25
 GRID_MIN_SCORE = 0.2  # a grid must catch this much more of the colour changes than random lines
-MAX_LONG = 72  # a "grid" finer than this many cells along the length is noise, not the drawing's pixels
+MAX_LONG = 72  # a "grid" finer than this many cells along the length (or 1.5x the target) is noise, not pixels
 EDGE_MIN = 60  # summed RGB step that counts as a colour change for the grid
 OUTLINE_SHARE = 0.4  # share of the drawing's rim in the darkest colour that means it has an outline
 CORE = 0.2  # share of a cell cut from each side before its colour is voted
@@ -102,7 +102,9 @@ def split(image: Image.Image, key: dict) -> dict[str, list[int]]:
 
 def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
     """Split the sheet and check its views: each holds one subject; the top view is the tallest drawing and the
-    side view the widest. Returns {boxes, how, sizes {id: [w, h]}, flaws, notes, panels {id: crop}}."""
+    side view the widest; the front and back are within AGREE of the proportion the side and top views allow
+    (height over width: side height / side length x top length / top width). Returns {boxes, how, sizes {id: [w, h]},
+    stretch {front, back}, flaws, notes, panels {id: crop}}."""
     from scipy import ndimage
 
     from flat2d.views import _close_gaps
@@ -144,11 +146,26 @@ def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
             flaws.append("top_sideways")
         if sizes["side"][0] <= sizes["side"][1]:
             flaws.append("side_upright")
-    return {"boxes": boxes, "how": how, "sizes": sizes, "flaws": flaws, "notes": notes, "panels": panels,
-            "keys": keys}
+    stretch = sheet_stretch(sizes)
+    for pid, v in stretch.items():
+        if abs(v) > AGREE:
+            flaws.append(f"stretch:{pid}")
+    return {"boxes": boxes, "how": how, "sizes": sizes, "stretch": stretch, "flaws": flaws, "notes": notes,
+            "panels": panels, "keys": keys}
 
 
-REDRAW_FLAWS = ("empty", "pieces", "top_short", "side_narrow", "top_sideways", "side_upright")
+def sheet_stretch(sizes: dict[str, list[int]]) -> dict[str, float]:
+    """How much taller (+) or shorter (-) for its width the front and back views are drawn than the side and top
+    views allow, as a share ({} when a view is empty)."""
+    (tw, tl), (sl, sh) = sizes["top"], sizes["side"]
+    if min(tw, tl, sl, sh) <= 0:
+        return {}
+    allowed = (sh / sl) * (tl / tw)
+    return {pid: round((sizes[pid][1] / sizes[pid][0]) / allowed - 1.0, 3)
+            for pid in ("front", "back") if min(sizes[pid]) > 0}
+
+
+REDRAW_FLAWS = ("empty", "pieces", "top_short", "side_narrow", "top_sideways", "side_upright", "stretch")
 
 
 def redrawable(flaws: list[str]) -> list[str]:
@@ -384,7 +401,8 @@ def clean(panels: dict[str, Image.Image], key: dict | None = None, *, colours: i
     notes: list[str] = []
     flaws: list[str] = []
     fitted: dict[str, Any] = {}
-    if grid["score"] >= GRID_MIN_SCORE and length_px / max(grid["cell"], 1e-6) <= MAX_LONG:
+    max_long = max(MAX_LONG, int(round(1.5 * target)))
+    if grid["score"] >= GRID_MIN_SCORE and length_px / max(grid["cell"], 1e-6) <= max_long:
         how = "found"
         cells = {pid: trim(to_cells(idx[pid], views[pid][1], grid["cell"], tuple(grid["offsets"][pid])))
                  for pid in PIXEL_PANELS}
