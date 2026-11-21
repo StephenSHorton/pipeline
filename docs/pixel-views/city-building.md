@@ -54,6 +54,9 @@ layers, 24 colours.
 | `city-building-stack-roof-top-down.png` | the stack's top colour per column, Version 2 left, Version 7 right |
 | `city-building-roof-drawing.png` | Version 5's roof picture, as drawn |
 | `city-building-roof-drawing-first-try.png` | Version 4's roof picture: the first wording |
+| `city-building-drawings.jpg` | every picture the model drew for Versions 2 and 4 to 7, labelled, with the top views made from them |
+| `city-building-drawn-sheet-v5.png` | Version 5's drawn sheet (scaled to 864 px) |
+| `city-building-roof-drawing-v6.png` | Version 6's roof picture |
 
 - **Roof picture:** a tall object (`pixelart.tall`: side and front taller than wide) whose sheet top view is not as
   long as the side view is wide (`top_length`, now a note, not a redraw flaw: a facade seen from above is as tall as
