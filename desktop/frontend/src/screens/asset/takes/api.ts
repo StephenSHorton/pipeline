@@ -4,12 +4,12 @@ import { create } from "zustand";
 import { navigate } from "@/app/router";
 import { enc, factoryJson, readOutJson, saveIntentQuiet, type AssetOutput } from "@/lib/api";
 import { useFlow, type Stage } from "@/lib/flow";
-import type { JobOpts } from "@/lib/jobs";
+import { displayStem, type JobOpts } from "@/lib/jobs";
 import { toast } from "@/lib/ui";
 import { startHomeJob } from "@/screens/home/chain";
 import { intentBody, type NestedIntent } from "@/screens/home/make";
 import { reloadIntent, useStage } from "../stage";
-import { buildIntent, buildSpec, buildStage, buildTitle, withKeyFacing, type FlatKey } from "./logic";
+import { buildIntent, buildSpec, buildStage, buildTitle, drawStackSpec, withKeyFacing, type FlatKey } from "./logic";
 
 export interface BuildDeps {
   readKey: (stem: string) => Promise<FlatKey | null>;
@@ -101,4 +101,18 @@ export async function stackFromPicture(stem: string, deps: StackDeps = stackDeps
   }
   await deps.reload(stem);
   return error;
+}
+
+export type DrawStackDeps = Pick<BuildDeps, "start" | "enter" | "showJob">;
+
+/** Draw views & stack: a factory job (POST /2d/draw, views pixel, stack) with its stages, log and Cancel on Home's job
+ * card, like Build. Home's starter finishes it: the asset opens on Stack with the new version (screens/home/chain.ts). */
+export async function drawStack(stem: string, size: number, deps: DrawStackDeps = buildDeps): Promise<void> {
+  try {
+    deps.enter(stem, "stack");
+    deps.showJob();
+    await deps.start(drawStackSpec(stem, size), { path: "/2d/draw", kind: "flat2d", title: `Stacking ${displayStem(stem)} · ${size} cells long` });
+  } catch (err) {
+    toast(`Could not start: ${(err as Error)?.message || String(err)}`);
+  }
 }

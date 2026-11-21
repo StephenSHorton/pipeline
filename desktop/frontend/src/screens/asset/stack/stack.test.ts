@@ -44,7 +44,7 @@ describe("copy", () => {
   it("empty states, stats failure and the blurbs, in plain English", () => {
     expect(STACK_COPY).toEqual({
       pane: "Sprite stack",
-      empty: "No sprite stack yet. Use Build sprite stack or Stack from picture (bottom left).",
+      empty: "No sprite stack yet. Use Build sprite stack, Stack from picture or Draw views & stack (bottom left).",
       slicing: "Slicing…",
       generating: "Generating…",
       noStack: "No sprite stack",
@@ -52,7 +52,7 @@ describe("copy", () => {
       paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
       paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
     });
-    expect(phaseText("empty")).toBe("No sprite stack yet. Use Build sprite stack or Stack from picture (bottom left).");
+    expect(phaseText("empty")).toBe("No sprite stack yet. Use Build sprite stack, Stack from picture or Draw views & stack (bottom left).");
     expect(phaseText("slicing")).toBe("Slicing…");
     expect(phaseText("generating")).toBe("Generating…");
     expect(phaseText("ready")).toBe("");

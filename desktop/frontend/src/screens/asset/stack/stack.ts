@@ -194,7 +194,7 @@ export const statsText = (parts: StatsPart[]) => parts.map((p) => p.text).join("
 export const STACK_COPY = {
   pane: "Sprite stack",
   /** #stack-empty: initial, on any load failure, and after unload. It names the Versions panel's two actions. */
-  empty: "No sprite stack yet. Use Build sprite stack or Stack from picture (bottom left).",
+  empty: "No sprite stack yet. Use Build sprite stack, Stack from picture or Draw views & stack (bottom left).",
   slicing: "Slicing…",
   generating: "Generating…",
   /** #stack-stats when the stack would not load. */

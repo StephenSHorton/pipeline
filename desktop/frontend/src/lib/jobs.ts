@@ -210,19 +210,28 @@ export interface Job extends JobTiming {
   prompt?: string;
   count?: number;
   revise?: boolean;
+  /** A stack draw: the four views drawn, then a sprite stack carved from them (POST /2d/draw with stack). */
+  stack?: boolean;
   source?: string;
   degraded?: DegradedEntry[];
   /** Set while a screen chains the next job from this finished one (draw → build): the card says it, not "Opening". */
   next?: string;
 }
 
+/** A draw that carves a sprite stack from its views (the Stack stage's Draw views & stack), started here or picked
+ * back up after a reload (no spec then: /status says stack). */
+export function isStackDraw(j: Pick<Job, "kind" | "spec" | "stack">): boolean {
+  return j.kind === "flat2d" && !!(j.stack || (j.spec as { stack?: boolean } | undefined)?.stack);
+}
+
 /** What the job is doing, for the chip and the overlay title: the same words in both. */
-export function jobDoing(j: Pick<Job, "stem" | "kind" | "spec" | "opts" | "revise" | "source">): string {
+export function jobDoing(j: Pick<Job, "stem" | "kind" | "spec" | "opts" | "revise" | "source" | "stack">): string {
   const name = displayStem(j.stem);
   const spec = (j.spec || {}) as { revise?: boolean; source?: string };
   if (j.kind === "rig" || j.opts?.rig) return `Rigging ${name}`;
   if (j.kind === "ideas") return `Drawing ideas for ${name}`;
   if (j.kind === "flat2d") {
+    if (isStackDraw(j)) return `Stacking ${name}`;
     if (j.revise || spec.revise) return `Redrawing ${name}`;
     if ((j.source || spec.source) === "drop") return `Finishing ${name}`;
     return `Drawing ${name}`;
@@ -320,7 +329,7 @@ const POLL_MS = 1200;
 /** Newest follow wins: an older poll loop (StrictMode double reattach, 409 follow racing reattach) stops. */
 let followGen = 0;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const COPIED = ["preview_url", "stage_times", "stage_est", "estimate_s", "result", "started", "prompt", "count", "revise", "source", "degraded"] as const;
+const COPIED = ["preview_url", "stage_times", "stage_est", "estimate_s", "result", "started", "prompt", "count", "revise", "stack", "source", "degraded"] as const;
 
 /** Start a job. On 409 (the slot is taken) ask /health and follow the running job instead. */
 export async function startJob(spec: Record<string, unknown>, opts: JobOpts = {}): Promise<void> {

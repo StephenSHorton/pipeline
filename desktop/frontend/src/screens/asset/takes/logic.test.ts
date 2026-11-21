@@ -2,7 +2,7 @@
 // of buildFromConcept (3542-3577).
 import { describe, expect, it } from "vitest";
 import type { FlowEntry, FlowState, FlowTake, Stage } from "@/lib/flow";
-import { buildIntent, buildSpec, buildTitle, groupItems, NEXT_HEADING, panelHeading, stripItems, takeTitle, versionsSummary, withKeyFacing, type StripItem } from "./logic";
+import { buildIntent, buildSpec, buildTitle, DEFAULT_STACK_SIZE, DRAW_STACK_TITLE, drawStackSpec, groupItems, STACK_SIZES, NEXT_HEADING, panelHeading, stripItems, takeTitle, versionsSummary, withKeyFacing, type StripItem } from "./logic";
 
 const take = (id: string, files: string[] = [], extra: Partial<FlowTake> = {}): FlowTake => ({ id, made: 0, files, ...extra });
 const entry = (stage: Stage, e: Partial<FlowEntry> = {}): FlowEntry => ({
@@ -83,19 +83,27 @@ describe("concept: what to make from the picture", () => {
 });
 
 describe("mesh and stack rows", () => {
-  it("stack with a picture and no mesh: Stack from picture, then Build <intent>", () => {
+  it("stack with a picture and no mesh: Stack from picture, Draw views & stack, then Build <intent>", () => {
     const f = flowOf(concept, entry("stack", { live: true }));
     const items = stripItems({ stem: "s", stage: "stack", flow: f });
-    expect(texts(items)).toEqual(["Stack from picture", "Build sprite stack"]);
+    expect(texts(items)).toEqual(["Stack from picture", "Draw views & stack", "Build sprite stack"]);
     expect(items[0]).toMatchObject({ title: "Build the sprite stack straight from the concept picture. No 3D needed." });
-    expect(items[1]).toMatchObject({ title: "Make the sprite stack from the picked concept.", primary: true });
+    expect(items[1]).toMatchObject({ action: { do: "drawstack" }, title: DRAW_STACK_TITLE });
+    expect(items[2]).toMatchObject({ title: "Make the sprite stack from the picked concept.", primary: true });
     expect(texts(stripItems({ stem: "s", stage: "stack", flow: f, stacking: true }))[0]).toBe("Stacking the picture…");
+    expect(texts(stripItems({ stem: "s", stage: "stack", flow: f, drawingStack: true }))[1]).toBe("Drawing views for the stack…");
+  });
+
+  it("Draw views & stack posts the clean drawing at the size, with no prompt", () => {
+    expect(drawStackSpec("s", 192)).toEqual({ kind: "flat2d", stem: "s", views: "pixel", style: "clean", size: 192, stack: true });
+    expect(STACK_SIZES).toContain(DEFAULT_STACK_SIZE);
+    expect(Math.max(...STACK_SIZES)).toBe(256);
   });
 
   it("mesh live and fresh: Change settings & remake… only on Mesh", () => {
     const f = flowOf(concept, entry("mesh", { live: true }), entry("stack", { live: true }));
     expect(texts(stripItems({ stem: "s", stage: "mesh", flow: f, output: "ps1" }))).toEqual(["Change settings & remake…"]);
-    expect(texts(stripItems({ stem: "s", stage: "stack", flow: f, output: "ps1" }))).toEqual(["Stack from picture"]);
+    expect(texts(stripItems({ stem: "s", stage: "stack", flow: f, output: "ps1" }))).toEqual(["Stack from picture", "Draw views & stack"]);
   });
 
   it("mesh stale: Rebuild <name>", () => {
