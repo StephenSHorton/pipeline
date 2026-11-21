@@ -279,3 +279,46 @@ def pixel_sheet_prompt(text: str, size: int = PIXEL_SIZE, style: str = "pixel") 
     look = PIXEL_STYLE.format(size=pixel_size(size)) if style == "pixel" else CLEAN_STYLE
     return " ".join([" ".join((text or "").split()).rstrip(".") + ".", head, listing,
                      "One object in each view, the same proportions and colours.", look, PIXEL_TAIL])
+
+
+# The roof picture (pipeline#16): for a tall object (a building) the model draws the sheet's "top" view as the facade
+# seen from a little above, whatever the words, so the roof is drawn as a picture of its own and replaces it. The
+# straight-down plan leads the prompt, ahead of the description (whose shop front and windows pulled the sheet's top
+# toward the facade), and the walls and what hangs on them are ruled out by name.
+ROOF_SIZE = (1024, 1024)
+ROOF_VIEW = ("Top-down plan view looking straight down from directly above, like a tile of a top-down city map: "
+             "the flat roof of {what}. Only the roof is visible, as a plain flat rectangle seen from directly above: "
+             "the roof surface, the low parapet along its edge, and whatever stands on the roof, each seen from "
+             "directly above as its own top. No walls or sides are visible at all, no perspective, no tilt. The "
+             "front edge of the roof toward the bottom edge of the picture.")
+ROOF_TAIL = ("Strictly orthographic plan view. One object, centred, with a wide empty margin around it. No shadows, "
+             "no ground, no floor, no text, no labels, no numbers, no grid lines, no borders. "
+             "Plain flat uniform magenta #FF00FF background.")
+# The description's clauses that are about the roof. The first try at the roof picture (pipeline#16) carried the
+# whole description, and its shop front, awning and window rows pulled the model into a three-quarter view of the
+# whole building; the roof picture now hears only these.
+ROOF_WORDS = ("roof", "rooftop", "parapet", "chimney", "skylight", "tank", "antenna", "on top", "dome", "spire",
+              "vent", "solar")
+
+
+def roof_text(text: str) -> str:
+    """The description's clauses about the roof (split at commas and semicolons, kept when they name ROOF_WORDS),
+    or '' when none do."""
+    parts = [p.strip() for p in " ".join((text or "").split()).replace(";", ",").split(",")]
+    return ", ".join(p for p in parts if p and any(w in p.lower() for w in ROOF_WORDS)).rstrip(".")
+
+
+def pixel_roof_prompt(text: str, size: int = PIXEL_SIZE, style: str = "pixel", ratio: float | None = None) -> str:
+    """The roof picture's prompt: ROOF_VIEW naming only the description's roof clauses (roof_text; an object with
+    none is 'the object'), the sheet's look (pixel_sheet_prompt's style) and ROOF_TAIL. ratio: the roof's length
+    over its width (top to bottom over left to right), from the sheet's side and front views (pixelart.roof_size)."""
+    style = pixel_style(style)
+    look = PIXEL_STYLE.format(size=pixel_size(size)) if style == "pixel" else CLEAN_STYLE
+    roof = roof_text(text)
+    what = f"a building, seen from above: {roof}" if roof else "the object"
+    shape = ""
+    if ratio:
+        shape = (f" The roof is about {ratio:.1f} times as long from top to bottom as it is wide." if ratio >= 1.05
+                 else f" The roof is about {1 / ratio:.1f} times as wide as it is long from top to bottom."
+                 if ratio <= 0.95 else " The roof is about as wide as it is long.")
+    return " ".join([ROOF_VIEW.format(what=what) + shape, look, ROOF_TAIL])

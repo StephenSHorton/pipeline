@@ -100,11 +100,82 @@ def split(image: Image.Image, key: dict) -> dict[str, list[int]]:
     return {pid: got["boxes"][old] for pid, old in zip(PIXEL_PANELS, PANELS)} | {"_how": got["how"]}
 
 
+BASE_BAND = 0.06  # a strip under the object (pavement, ground line) is at most this share of its height
+BASE_REF = 0.2  # ... and is judged against the wall rows in this share of the height above it
+BASE_TOL = 0.02  # a row reaching this share of the width past those walls (either side) is strip, not wall
+
+
+def base_rows(fg: np.ndarray) -> int:
+    """How many of the subject's bottom rows are a strip drawn under it (the grey pavement the model puts under a
+    building, the ground line under a car, despite being told not to): rows that reach past the walls above them
+    on either side. The walls are the median left and right ends of the rows in the BASE_REF band above the
+    bottom BASE_BAND (a cornice or an awning higher up, wider than the wall, does not count). At most BASE_BAND of
+    the height; 0 when the bottom rows are as wide as the walls or narrower (wheels, a plinth flush with them)."""
+    rows = np.nonzero(fg.any(1))[0]
+    if len(rows) < 10:
+        return 0
+    top, bottom = int(rows[0]), int(rows[-1])
+    h = bottom - top + 1
+    cap = max(2, int(round(BASE_BAND * h)))
+    ref = [r for r in range(bottom - int(round(BASE_REF * h)), bottom - cap + 1) if fg[r].any()]
+    if len(ref) < 3:
+        return 0
+    lefts = [int(np.argmax(fg[r])) for r in ref]
+    rights = [fg.shape[1] - 1 - int(np.argmax(fg[r][::-1])) for r in ref]
+    left, right = float(np.median(lefts)), float(np.median(rights))
+    tol = max(2.0, BASE_TOL * (right - left + 1))
+    cut = 0
+    for r in range(bottom, bottom - cap, -1):
+        if not fg[r].any():
+            cut += 1
+            continue
+        xs = np.nonzero(fg[r])[0]
+        if xs[0] < left - tol or xs[-1] > right + tol:
+            cut += 1
+            continue
+        break
+    # Only empty rows at the bottom is not a strip.
+    return cut if cut and any(fg[r].any() for r in range(bottom - cut + 1, bottom + 1)) else 0
+
+
+def trim_base(crop: np.ndarray, fg: np.ndarray, key: dict) -> tuple[np.ndarray, np.ndarray, int]:
+    """The panel with its base strip (base_rows) painted over in the ground colour, so every later step (sizes,
+    tall, the cleaner, flat/source.png) sees it gone. Returns (crop, subject mask, rows cut)."""
+    n = base_rows(fg)
+    if not n:
+        return crop, fg, 0
+    rows = np.nonzero(fg.any(1))[0]
+    bottom = int(rows[-1])
+    crop = crop.copy()
+    fg = fg.copy()
+    band = slice(bottom - n + 1, bottom + 1)
+    # The strip's soft rim (shading and blend just below the subject mask) goes too.
+    crop[band.start: min(crop.shape[0], bottom + 1 + 3)] = np.where(
+        ~ground_mask(crop[band.start: bottom + 4], key)[..., None],
+        np.array(key["rgb"], np.uint8), crop[band.start: bottom + 4])
+    fg[band] = False
+    return crop, fg, n
+
+
+def roof_size(sizes: dict[str, list[int]]) -> tuple[int, int]:
+    """The top view a tall object's roof picture is fitted to, in the side view's pixels: (width, length). The
+    length is the side view's width; the width is the front view's width at the side view's scale (the model draws
+    each view at its own scale, so only the front's proportion is used: front width / front height x side height).
+    (0, 0) when a view is empty."""
+    (sl, sh), (fw, fh) = sizes["side"], sizes["front"]
+    if min(sl, sh, fw, fh) <= 0:
+        return 0, 0
+    return max(1, int(round(fw / fh * sh))), int(sl)
+
+
 def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
     """Split the sheet and check its views: each holds one subject; the top view is the tallest drawing and the
     side view the widest; the front and back are within AGREE of the proportion the side and top views allow
-    (height over width: side height / side length x top length / top width). Returns {boxes, how, sizes {id: [w, h]},
-    stretch {front, back}, flaws, notes, panels {id: crop}}."""
+    (height over width: side height / side length x top length / top width). A strip drawn under the side, front
+    or back view (base_rows) is painted out of its panel first. For a tall object (tall) the top view is not
+    judged: it is replaced by a roof picture drawn on its own (roof_panel), so the front and back are checked
+    against the roof's size (roof_size). Returns {boxes, how, sizes {id: [w, h]}, stretch {front, back}, flaws,
+    notes, panels {id: crop}, keys, tall, base {id: rows cut}}."""
     from scipy import ndimage
 
     from flat2d.views import _close_gaps
@@ -119,12 +190,18 @@ def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
     from flat2d.parts import ground_key
 
     keys: dict[str, dict] = {}
+    base: dict[str, int] = {}
     for pid, (x0, y0, x1, y1) in boxes.items():
         crop = rgb[y0:y1, x0:x1]
         panels[pid] = Image.fromarray(crop)
         # Each panel's own ground: a graded ground is darker on the bottom row than the sheet's border median.
         keys[pid] = ground_key(panels[pid])
         fg = subject_mask(crop, keys[pid])
+        if pid != "top":
+            crop, fg, cut = trim_base(crop, fg, keys[pid])
+            if cut:
+                base[pid] = cut
+                panels[pid] = Image.fromarray(crop)
         box = bbox(fg)
         if box is None or fg.mean() < 0.01:
             flaws.append(f"empty:{pid}")
@@ -135,13 +212,16 @@ def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
         if len(big) > 1 and big[1] > PIECE_SHARE * big[0]:
             flaws.append(f"pieces:{pid}")
         sizes[pid] = [box[2] - box[0], box[3] - box[1]]
-    if not any(f.startswith("empty") for f in flaws) and tall(sizes):
+    is_tall = not any(f.startswith("empty") for f in flaws) and tall(sizes)
+    if is_tall:
         # A tall object (a building): its side, front and back are rightly taller than the top view is long, and
-        # its front may be wider than its side, so the long-object checks below would flag a good sheet. What is
-        # checked instead is the length the top and side views share (top height, side width): a top view drawn
-        # as a facade seen from above (pipeline#15) is as tall as the walls, not as long as the side.
+        # its front may be wider than its side, so the long-object checks below would flag a good sheet. Its top
+        # view is not judged at all: the model draws it as the facade seen from above whatever the words
+        # (pipeline#15), so a roof picture drawn on its own replaces it (pipeline#16) when its length (top height)
+        # disagrees with the side view's width: a facade seen from above is as tall as the walls. top_length is a
+        # note, not a redraw flaw: the roof picture is the remedy.
         if abs(sizes["top"][1] / sizes["side"][0] - 1.0) > AGREE:
-            flaws.append("top_length")
+            notes.append("top_length")
     elif not any(f.startswith("empty") for f in flaws):
         if sizes["top"][1] < max(s[1] for s in sizes.values()) * 0.97:
             flaws.append("top_short")
@@ -153,12 +233,19 @@ def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
             flaws.append("top_sideways")
         if sizes["side"][0] <= sizes["side"][1]:
             flaws.append("side_upright")
-    stretch = sheet_stretch(sizes)
+    if is_tall and "top_length" in notes:
+        stretch = sheet_stretch({**sizes, "top": list(roof_size(sizes))})
+        flaws = [f for f in flaws if not f.startswith("pieces:top")]  # the top is redrawn on its own
+    else:
+        stretch = sheet_stretch(sizes)
     for pid, v in stretch.items():
         if abs(v) > AGREE:
             flaws.append(f"stretch:{pid}")
+    for pid, n in base.items():
+        notes.append(f"base:{pid}:{n}")
     return {"boxes": boxes, "how": how, "sizes": sizes, "stretch": stretch, "flaws": flaws, "notes": notes,
-            "panels": panels, "keys": keys}
+            "panels": panels, "keys": keys, "tall": is_tall, "base": base,
+            "roof": is_tall and "top_length" in notes}
 
 
 def tall(sizes: dict[str, list[int]]) -> bool:
@@ -178,11 +265,88 @@ def sheet_stretch(sizes: dict[str, list[int]]) -> dict[str, float]:
             for pid in ("front", "back") if min(sizes[pid]) > 0}
 
 
-REDRAW_FLAWS = ("empty", "pieces", "top_short", "side_narrow", "top_sideways", "side_upright", "top_length", "stretch")
+REDRAW_FLAWS = ("empty", "pieces", "top_short", "side_narrow", "top_sideways", "side_upright", "stretch")
 
 
 def redrawable(flaws: list[str]) -> list[str]:
     return [f for f in flaws if f.split(":", 1)[0] in REDRAW_FLAWS]
+
+
+ROOF_MARGIN = 24  # ground (px) left around the fitted roof in its panel
+
+
+def check_roof(image: Image.Image) -> dict[str, Any]:
+    """The roof picture (a tall object's top view, drawn on its own): one subject on the ground. Returns {key, box,
+    flaws}: empty, pieces."""
+    from scipy import ndimage
+
+    from flat2d.parts import ground_key
+    from flat2d.views import _close_gaps
+
+    rgb = np.asarray(image.convert("RGB"))
+    key = ground_key(image)
+    fg = subject_mask(rgb, key)
+    box = bbox(fg)
+    if box is None or fg.mean() < 0.01:
+        return {"key": key, "box": None, "flaws": ["empty:roof"]}
+    labels, n = ndimage.label(_close_gaps(fg, max(2, int(0.02 * rgb.shape[0]))))
+    big = sorted(np.bincount(labels.ravel())[1:], reverse=True)
+    flaws = ["pieces:roof"] if len(big) > 1 and big[1] > PIECE_SHARE * big[0] else []
+    return {"key": key, "box": box, "flaws": flaws}
+
+
+ROOF_EDGE = 0.12  # the front wall peeking out under a roof plan is at most this share of the roof's length
+ROOF_EDGE_TOL = 0.03  # ... and its rows are this share of the roof's width narrower than the roof (either side)
+
+
+def roof_edge_rows(fg: np.ndarray) -> int:
+    """How many bottom rows of the roof picture's subject are the front wall peeking out under the roof (Version 5 of
+    city_building: a thin band of facade, set in from the roof's sides): rows narrower than the roof's body (the
+    median left and right ends of its rows) on either side, at most ROOF_EDGE of its length."""
+    rows = np.nonzero(fg.any(1))[0]
+    if len(rows) < 10:
+        return 0
+    top, bottom = int(rows[0]), int(rows[-1])
+    h = bottom - top + 1
+    body = [r for r in range(top + h // 4, bottom - h // 4) if fg[r].any()]
+    if len(body) < 3:
+        return 0
+    left = float(np.median([int(np.argmax(fg[r])) for r in body]))
+    right = float(np.median([fg.shape[1] - 1 - int(np.argmax(fg[r][::-1])) for r in body]))
+    tol = max(2.0, ROOF_EDGE_TOL * (right - left + 1))
+    cut = 0
+    for r in range(bottom, bottom - int(ROOF_EDGE * h), -1):
+        xs = np.nonzero(fg[r])[0]
+        if len(xs) and xs[0] <= left + tol and xs[-1] >= right - tol:
+            break
+        cut += 1
+    return 0 if cut >= int(ROOF_EDGE * h) else cut  # narrow all the way up the cap: not a roof edge
+
+
+def roof_panel(image: Image.Image, size: tuple[int, int], key: dict | None = None) -> Image.Image:
+    """The roof picture as the sheet's top view: its subject cropped (less the front wall peeking out under it,
+    roof_edge_rows) and resized to size (width, length; roof_size), on the plain ground colour with ROOF_MARGIN
+    around it, so the cleaner reads it like any other panel."""
+    from flat2d.parts import ground_key
+
+    key = key or ground_key(image)
+    rgb = np.asarray(image.convert("RGB"))
+    fg = subject_mask(rgb, key)
+    box = bbox(fg)
+    if box is None:
+        raise ValueError("the roof picture is empty")
+    edge = roof_edge_rows(fg)
+    if edge:
+        box = [box[0], box[1], box[2], box[3] - edge]
+        sub = fg[box[1]:box[3], box[0]:box[2]]
+        rgb = np.where(np.pad(sub, ((box[1], rgb.shape[0] - box[3]), (box[0], rgb.shape[1] - box[2])))[..., None],
+                       rgb, np.array(key["rgb"], np.uint8))
+        image = Image.fromarray(rgb.astype(np.uint8))
+    w, h = max(1, int(size[0])), max(1, int(size[1]))
+    roof = image.convert("RGB").crop(tuple(box)).resize((w, h), Image.Resampling.LANCZOS)
+    out = Image.new("RGB", (w + 2 * ROOF_MARGIN, h + 2 * ROOF_MARGIN), tuple(int(v) for v in key["rgb"]))
+    out.paste(roof, (ROOF_MARGIN, ROOF_MARGIN))
+    return out
 
 
 # ---------------------------------------------------------------- palette and grid
@@ -403,6 +567,8 @@ def clean(panels: dict[str, Image.Image], key: dict | None = None, *, colours: i
     for pid in PIXEL_PANELS:
         rgb = np.asarray(panels[pid].convert("RGB"))
         fg = subject_mask(rgb, key or ground_key(panels[pid]))
+        if pid != "top":
+            rgb, fg, _ = trim_base(rgb, fg, key or ground_key(panels[pid]))  # check_sheet already did, for a sheet
         box = bbox(fg)
         if box is None:
             raise ValueError(f"the {pid} view is empty")

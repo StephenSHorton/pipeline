@@ -1206,6 +1206,17 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
     image, result, key = best["image"], best["result"], best["key"]
     if DRAW is not None and best is not tries[-1]:
         DRAW.preview(image)
+    base = result.get("base") or {}
+    if base and DRAW is not None and hasattr(DRAW, "line"):
+        DRAW.line("Cut a strip drawn under the " + ", ".join(f"{pid} ({n} px)" for pid, n in base.items()) + ".")
+    roof = None
+    if result.get("roof"):
+        # A tall object whose top view is as long as its walls are tall: the facade seen from above, so the roof is
+        # drawn on its own
+        # (pose.pixel_roof_prompt) and fitted to the side's length and the front's width as the top view.
+        roof = _draw_roof(text, size, style, result, seed)
+        result["panels"]["top"] = roof["panel"]
+        result["sizes"]["top"] = list(PA.roof_size(result["sizes"]))
     folder = flat_dir(root, stem)
     clear_views(root, stem)
     import shutil
@@ -1219,6 +1230,8 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
     image.save(folder / "sheet.png", format="PNG")
     for pid in PIXEL_PANELS:
         result["panels"][pid].save(folder / "views" / f"{pid}.png", format="PNG")
+    if roof is not None:
+        roof["image"].save(folder / "views" / "roof.png", format="PNG")
     info = still_info(backend)
     doc = {"version": 1, "layout": "pixel", "canonical": "side", "source_sha256": sha256_file(folder / "source.png"),
            "views": [{"id": pid, "file": f"views/{pid}.png", "box": result["boxes"][pid],
@@ -1228,6 +1241,12 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
            "sheet": {"w": w, "h": h, "layout": "pixel", "seed": best["seed"], "redraws": len(tries) - 1,
                      "model": info["model"], "licence": info["licence"], "backend": backend, "prompt": ask,
                      "size": size, "style": style}}
+    if roof is not None:
+        doc["roof"] = {"file": "views/roof.png", "seed": roof["seed"], "redraws": roof["redraws"],
+                       "flaws": roof["flaws"], "prompt": roof["prompt"], "fitted": list(roof["panel"].size),
+                       "why": "a tall object: the top view is the roof picture, not the sheet's top"}
+    if base:
+        doc["base_cut"] = base  # rows of a strip under the view, painted out (pixelart.base_rows)
     write_json(folder / "views.json", doc)
     write_json(folder / "key.json", {**ground_key(result["panels"]["side"]), "views": "flat/views.json"})
     (folder / "prompt.txt").write_text(text + "\n", encoding="utf-8")
@@ -1254,6 +1273,41 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
                   "notes": notes, "degraded": list(still_degraded(backend)), "sheet": "flat/sheet.png",
                   "canonical_view": "side", "pixel": "flat/pixel/pixel.json" if pixel is not None else None})
     return saved
+
+
+def _draw_roof(text: str, size: int, style: str, result: dict, seed: int) -> dict:
+    """The roof picture for a tall object's top view: pose.pixel_roof_prompt, checked (pixelart.check_roof: one
+    subject), at most SHEET_REDRAWS redraws, then fitted to pixelart.roof_size. Returns {image, panel, seed,
+    redraws, flaws, prompt}."""
+    from flat2d import pixelart as PA
+    from flat2d.pose import ROOF_SIZE, pixel_roof_prompt
+    from flat2d.sheet import SHEET_REDRAWS
+
+    w, length = PA.roof_size(result["sizes"])
+    ask = pixel_roof_prompt(text, size, style, ratio=length / max(1, w))
+    tries = []
+    for attempt in range(SHEET_REDRAWS + 1):
+        _check_cancel()
+        if DRAW is not None and hasattr(DRAW, "line"):
+            DRAW.line("Drawing the roof on its own: the sheet's top view shows the walls." if not attempt
+                      else "Drawing the roof again: " + ", ".join(tries[-1]["check"]["flaws"]) + ".")
+        roof_seed = (seed + 7919 * (attempt + 1)) % (2**31 - 1) or 1
+        image = still_image(ask, seed=roof_seed, width=ROOF_SIZE[0], height=ROOF_SIZE[1])
+        image = getattr(image, "image", image).convert("RGB")
+        if DRAW is not None:
+            DRAW.preview(image)
+        check = PA.check_roof(image)
+        tries.append({"image": image, "seed": roof_seed, "check": check})
+        if not check["flaws"]:
+            break
+    pick = min(tries, key=lambda t: len(t["check"]["flaws"]))
+    if pick["check"]["box"] is None:
+        raise FlatUnavailable("the roof picture came out empty; draw again")
+    panel = PA.roof_panel(pick["image"], (w, length), pick["check"]["key"])
+    if DRAW is not None and hasattr(DRAW, "line"):
+        DRAW.line(f"Roof fitted as the top view: {w} x {length} px, the front's width by the side's length.")
+    return {"image": pick["image"], "panel": panel, "seed": pick["seed"], "redraws": len(tries) - 1,
+            "flaws": pick["check"]["flaws"], "prompt": ask}
 
 
 def write_stub_wav(dest: Path, sentence: str) -> str:

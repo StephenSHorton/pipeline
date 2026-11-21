@@ -72,6 +72,20 @@ class PromptTest(unittest.TestCase):
                       "No shadows", "no ground", "no text", "no grid lines", "magenta #FF00FF"):
             self.assertIn(words, p)
 
+    def test_the_roof_prompt_leads_with_a_plan_and_rules_out_the_walls(self) -> None:
+        text = "a red brick shop, a shop front with a green awning, a flat roof with a low parapet, a water tank"
+        p = pose.pixel_roof_prompt(text, 160, "clean", ratio=1.2)
+        self.assertTrue(p.startswith("Top-down plan view"))
+        for words in ("straight down", "No walls or sides are visible", "1.2 times as long",
+                      "a flat roof with a low parapet, a water tank.", "magenta #FF00FF"):
+            self.assertIn(words, p)
+        for words in ("awning", "shop front", "red brick"):  # the walls' words pulled the model into the facade
+            self.assertNotIn(words, p)
+        self.assertIn("flat roof of the object", pose.pixel_roof_prompt("a tall red box"))
+        self.assertNotIn("pixel", p.lower())
+        self.assertIn("about 160 pixels long", pose.pixel_roof_prompt("a shop", 160, "pixel"))
+        self.assertIn("about as wide as it is long", pose.pixel_roof_prompt("a shop", ratio=1.0))
+
     def test_a_chosen_size_is_asked_for(self) -> None:
         self.assertIn("about 32 pixels long", pose.pixel_sheet_prompt("a car"))
         self.assertIn("about 128 pixels long", pose.pixel_sheet_prompt("a car", 128))
@@ -209,16 +223,78 @@ class CleanTest(unittest.TestCase):
         for c in cells.values():
             c[0, :] = c[-1, :] = c[:, 0] = c[:, -1] = OUT
         sheet = soft_sheet(cells, cell=10.0)
-        self.assertEqual(pixelart.check_sheet(sheet, ground_key(sheet))["flaws"], [])
+        got = pixelart.check_sheet(sheet, ground_key(sheet))
+        self.assertEqual(got["flaws"], [])
 
-    def test_a_top_view_drawn_as_a_facade_is_a_sheet_flaw_for_a_tall_object(self) -> None:
-        # The top view drawn as the front seen from above: as tall as the walls, not as long as the side view.
+    def test_a_top_view_drawn_as_a_facade_is_not_judged_for_a_tall_object(self) -> None:
+        # The top view drawn as the front seen from above (pipeline#15): not a flaw any more, the roof picture
+        # replaces it (pipeline#16); the front and back are judged against the roof's size instead.
         side = np.full((20, 12, 3), BODY, np.uint8)
         front = np.full((20, 14, 3), BODY, np.uint8)
         cells = {"top": front.copy(), "side": side, "front": front, "back": front.copy()}
         sheet = soft_sheet(cells, cell=10.0)
-        self.assertIn("top_length", pixelart.check_sheet(sheet, ground_key(sheet))["flaws"])
-        self.assertEqual(pixelart.redrawable(["top_length"]), ["top_length"])
+        got = pixelart.check_sheet(sheet, ground_key(sheet))
+        self.assertTrue(got["tall"] and got["roof"])
+        self.assertEqual(got["flaws"], [])
+        self.assertIn("top_length", got["notes"])
+        self.assertEqual(pixelart.roof_size(got["sizes"]), (got["sizes"]["front"][0], got["sizes"]["side"][0]))
+
+    def test_a_tall_object_whose_top_view_fits_keeps_it(self) -> None:
+        a = car_views()
+        cells = {"top": a["top"][:12, :], "side": np.full((20, 12, 3), BODY, np.uint8),
+                 "front": np.full((20, 14, 3), BODY, np.uint8), "back": np.full((20, 14, 3), BODY, np.uint8)}
+        sheet = soft_sheet(cells, cell=10.0)
+        got = pixelart.check_sheet(sheet, ground_key(sheet))
+        self.assertTrue(got["tall"])
+        self.assertFalse(got["roof"])
+
+    def test_the_front_wall_under_a_roof_plan_is_cut(self) -> None:
+        roof = Image.new("RGB", (1024, 1024), MAGENTA)
+        roof.paste(Image.new("RGB", (600, 400), GLASS), (200, 300))
+        roof.paste(Image.new("RGB", (560, 30), RED), (220, 700))  # the facade peeking out, set in from the sides
+        fg = pixelart.subject_mask(np.asarray(roof), ground_key(roof))
+        self.assertEqual(pixelart.roof_edge_rows(fg), 30)
+        panel = pixelart.roof_panel(roof, (100, 100))
+        px = np.asarray(panel).reshape(-1, 3).astype(int)
+        self.assertFalse((np.abs(px - RED).sum(1) < 60).any())
+        square = Image.new("RGB", (1024, 1024), MAGENTA)
+        square.paste(Image.new("RGB", (600, 400), GLASS), (200, 300))
+        self.assertEqual(pixelart.roof_edge_rows(pixelart.subject_mask(np.asarray(square), ground_key(square))), 0)
+
+    def test_a_strip_under_the_views_is_painted_out(self) -> None:
+        # pipeline#15: a grey pavement strip wider than the walls under the side, front and back views.
+        def building(w, h):
+            a = np.full((h + 1, w + 6, 3), MAGENTA, np.uint8)
+            a[:h, 3:3 + w] = BODY
+            a[h:, :] = TYRE  # the strip: one cell, three cells wider on each side
+            return a
+
+        cells = {"top": np.full((12, 14, 3), BODY, np.uint8), "side": building(12, 20),
+                 "front": building(14, 20), "back": building(14, 20)}
+        sheet = soft_sheet(cells, cell=10.0, blur=0.6)
+        got = pixelart.check_sheet(sheet, ground_key(sheet))
+        self.assertEqual(set(got["base"]), {"side", "front", "back"})
+        self.assertTrue(all(8 <= n <= 14 for n in got["base"].values()), got["base"])
+        self.assertAlmostEqual(got["sizes"]["side"][0], 120, delta=6)  # the walls, not the strip
+        self.assertAlmostEqual(got["sizes"]["front"][1], 200, delta=6)
+        side = np.asarray(got["panels"]["side"])
+        self.assertFalse(pixelart.subject_mask(side, ground_key(got["panels"]["side"]))[-60:].any(1).sum() > 25)
+
+    def test_wheels_under_a_car_are_not_a_strip(self) -> None:
+        sheet = soft_sheet(self.cells)
+        self.assertEqual(pixelart.check_sheet(sheet, ground_key(sheet))["base"], {})
+
+    def test_the_roof_picture_is_fitted_as_the_top_view(self) -> None:
+        roof = Image.new("RGB", (1024, 1024), MAGENTA)
+        roof.paste(Image.new("RGB", (600, 500), BODY), (200, 260))
+        check = pixelart.check_roof(roof)
+        self.assertEqual(check["flaws"], [])
+        panel = pixelart.roof_panel(roof, (140, 120), check["key"])
+        self.assertEqual(panel.size, (140 + 2 * pixelart.ROOF_MARGIN, 120 + 2 * pixelart.ROOF_MARGIN))
+        fg = pixelart.subject_mask(np.asarray(panel), ground_key(panel))
+        box = pixelart.bbox(fg)
+        self.assertEqual((box[2] - box[0], box[3] - box[1]), (140, 120))
+        self.assertIn("empty:roof", pixelart.check_roof(Image.new("RGB", (256, 256), MAGENTA))["flaws"])
 
     def test_no_grid_search_cuts_to_the_target_even_when_a_grid_is_there(self) -> None:
         # The clean style has no pixel grid by design; brickwork that lines up must not set the size (pipeline#15).
@@ -261,6 +337,34 @@ class DrawTest(unittest.TestCase):
             self.assertEqual(doc["sheet"]["size"], 32)
             self.assertIn("flat/pixel/top.png", flow.stage_files(root / "out" / "car", "flat"))
             self.assertIn("flat/sheet.png", flow.stage_files(root / "out" / "car", "concept"))
+
+    def test_a_tall_object_gets_its_top_view_from_a_roof_picture(self) -> None:
+        side = np.full((20, 12, 3), BODY, np.uint8)
+        front = np.full((20, 14, 3), BODY, np.uint8)
+        for c in (side, front):
+            c[0, :] = c[-1, :] = c[:, 0] = c[:, -1] = OUT
+        sheet = soft_sheet({"top": front.copy(), "side": side, "front": front, "back": front.copy()}, cell=10.0)
+        roof = Image.new("RGB", (1024, 1024), MAGENTA)
+        roof.paste(Image.new("RGB", (500, 500), GLASS), (262, 262))
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"FLAT2D_STILL": "stub"}), \
+                mock.patch.object(optional, "still_image", side_effect=[sheet, roof]) as drawn:
+            root = Path(tmp)
+            (root / "out" / "shop").mkdir(parents=True)
+            optional.draw(root, "shop", "a shop", views="pixel", size=40, style="clean")
+            self.assertEqual(drawn.call_count, 2)
+            self.assertTrue(drawn.call_args_list[1].args[0].startswith("Top-down plan view"))
+            self.assertEqual(drawn.call_args_list[1].kwargs["width"], pose.ROOF_SIZE[0])
+            flat = root / "out" / "shop" / "flat"
+            doc = json.loads((flat / "views.json").read_text())
+            self.assertEqual(doc["roof"]["file"], "views/roof.png")
+            self.assertTrue((flat / "views" / "roof.png").is_file())
+            top = np.asarray(Image.open(flat / "pixel" / "top.png"))
+            colours = {tuple(int(v) for v in px[:3]) for px in top.reshape(-1, 4) if px[3]}
+            self.assertTrue(any(sum(abs(a - b) for a, b in zip(c, GLASS)) < 40 for c in colours))  # the roof's
+            self.assertFalse(any(sum(abs(a - b) for a, b in zip(c, BODY)) < 40 for c in colours))  # not the walls'
+            self.assertEqual(Image.open(flat / "pixel" / "top.png").size[1], 40)
+            self.assertIn("flat/views/roof.png", flow.stage_files(root / "out" / "shop", "concept"))
 
     def test_a_chosen_size_reaches_the_prompt_and_the_cleaner(self) -> None:
         sheet = soft_sheet(car_views())
