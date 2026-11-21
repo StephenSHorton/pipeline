@@ -446,7 +446,7 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
         with optional.drawing(hook):
             saved = optional.draw(root, stem, str(payload.get("prompt") or ""), intent=payload.get("intent"),
                                   views=payload.get("views"), reference=reference,
-                                  size=payload.get("size"))
+                                  size=payload.get("size"), style=payload.get("style"))
         hook.ground_done()
         result["seed"] = saved.get("seed")
         result["redrawn"] = list(saved.get("redrawn") or [])

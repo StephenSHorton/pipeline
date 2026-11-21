@@ -225,6 +225,16 @@ PIXEL_SIZES = (16, 256)  # the smallest and largest size a draw may ask for
 PIXEL_STYLE = ("Retro pixel art game sprite, about {size} pixels long, square pixels on a regular pixel grid, crisp "
                "hard pixel edges, a 1 pixel dark outline around the object and its parts, solid flat colour fills, "
                "a small limited palette, no anti-aliasing, no soft edges, no gradients, no blur.")
+# The clean game-art look (pipeline#14): the same sheet with no pixel wording at all (no "pixel art", no "square
+# pixels", no "about N pixels long"), to see whether asking for pixels helps the stack or only costs detail. The
+# cleaner still cuts it at the asked-for size; only the drawing differs. Its first draw put a thin dark ground line
+# under the side, front and back views, which carves into a solid plate on the stack's bottom layer, so the line
+# under the object is ruled out by name.
+CLEAN_STYLE = ("Clean digital game art sprite, crisp clean hard edges, a thin dark outline around the object and its "
+               "parts, solid flat colour fills with no lighting, no shading and no shadows, a small limited palette, "
+               "no gradients, no blur. Nothing under the object: no ground line, no road, no shadow line beneath "
+               "the wheels. Not a photo, not hand drawn, not cartoonish.")
+PIXEL_STYLES = ("pixel", "clean")  # the sheet's drawing style: PIXEL_STYLE (the default) or CLEAN_STYLE
 PIXEL_TAIL = ("Strictly orthographic, no perspective, every view at the same scale so the length, width and height "
               "match between views. Each view whole and separate in its own quarter, with wide empty gaps between "
               "them. No shadows, no ground, no floor, no text, no labels, no numbers, no grid lines, no borders. "
@@ -244,14 +254,27 @@ def pixel_size(size) -> int:
     return n
 
 
-def pixel_sheet_prompt(text: str, size: int = PIXEL_SIZE) -> str:
-    """One picture holding four orthographic pixel art views of the subject in PIXEL_PANELS order, row by row in a
-    2x2 grid, for carving a sprite stack (flat2d/pixelart.py cleans it to true pixels). size: the sprite's length in
-    pixels the picture is asked for. Beside sheet_prompt: the turnaround sheet (front | right | back | left) is
-    unchanged."""
+def pixel_style(style) -> str:
+    """A sheet style from a request (None: 'pixel'). Raises ValueError outside PIXEL_STYLES."""
+    if style in (None, ""):
+        return PIXEL_STYLES[0]
+    s = str(style).strip().lower()
+    if s not in PIXEL_STYLES:
+        raise ValueError("style must be " + " or ".join(PIXEL_STYLES))
+    return s
+
+
+def pixel_sheet_prompt(text: str, size: int = PIXEL_SIZE, style: str = "pixel") -> str:
+    """One picture holding four orthographic views of the subject in PIXEL_PANELS order, row by row in a 2x2 grid,
+    for carving a sprite stack (flat2d/pixelart.py cleans it to true pixels). size: the sprite's length in pixels
+    the picture is asked for (style 'pixel' only). style 'clean' asks for clean digital game art with no pixel
+    wording (CLEAN_STYLE); the layout, views and tail are the same. Beside sheet_prompt: the turnaround sheet
+    (front | right | back | left) is unchanged."""
     listing = " ".join(f"View {i + 1}{PIXEL_CELLS[i]}: {PIXEL_VIEWS[pid]}." for i, pid in enumerate(PIXEL_PANELS))
-    head = ("Pixel art sprite sheet for sprite stacking, in a 2 by 2 grid, the same single object four times, four "
+    style = pixel_style(style)
+    kind = "Pixel art sprite sheet" if style == "pixel" else "Game art sprite sheet"
+    head = (f"{kind} for sprite stacking, in a 2 by 2 grid, the same single object four times, four "
             "orthographic views.")
+    look = PIXEL_STYLE.format(size=pixel_size(size)) if style == "pixel" else CLEAN_STYLE
     return " ".join([" ".join((text or "").split()).rstrip(".") + ".", head, listing,
-                     "One object in each view, the same proportions and colours.",
-                     PIXEL_STYLE.format(size=pixel_size(size)), PIXEL_TAIL])
+                     "One object in each view, the same proportions and colours.", look, PIXEL_TAIL])

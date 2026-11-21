@@ -82,6 +82,23 @@ class PromptTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pose.pixel_size(bad)
 
+    def test_the_clean_style_has_no_pixel_wording(self) -> None:
+        pixel = pose.pixel_sheet_prompt("a small blue 90s sports race car", 96)
+        clean = pose.pixel_sheet_prompt("a small blue 90s sports race car", 96, "clean")
+        self.assertNotIn("pixel", clean.lower())
+        self.assertNotIn("96", clean)
+        for words in ("2 by 2 grid", "View 1 (top left): top view", "View 2 (top right): side view",
+                      "View 3 (bottom left): front view", "View 4 (bottom right): back view", "orthographic",
+                      "same scale", "level, facing the viewer", "hard edges", "solid flat colour fills",
+                      "no lighting", "no ground line", "No shadows", "magenta #FF00FF", "digital game art"):
+            self.assertIn(words, clean)
+        self.assertEqual(pose.pixel_sheet_prompt("a car", 96, None), pose.pixel_sheet_prompt("a car", 96))
+        self.assertIn("about 96 pixels long", pixel)
+        self.assertEqual(pose.pixel_style(" Clean "), "clean")
+        for bad in ("photo", 3):
+            with self.assertRaises(ValueError):
+                pose.pixel_style(bad)
+
     def test_front_and_back_are_asked_level_and_to_scale(self) -> None:
         p = pose.pixel_sheet_prompt("a car")
         self.assertIn("level, facing the viewer, its top not visible", p)
@@ -228,6 +245,21 @@ class DrawTest(unittest.TestCase):
             self.assertEqual(cleaned.call_args.kwargs["target"], 96)
             doc = json.loads((root / "out" / "car" / "flat" / "views.json").read_text())
             self.assertEqual(doc["sheet"]["size"], 96)
+            self.assertEqual(doc["sheet"]["style"], "pixel")
+
+    def test_the_clean_style_reaches_the_prompt_and_is_cleaned_the_same(self) -> None:
+        sheet = soft_sheet(car_views())
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"FLAT2D_STILL": "stub"}), \
+                mock.patch.object(optional, "still_image", return_value=sheet) as drawn, \
+                mock.patch.object(pixelart, "clean_folder", wraps=pixelart.clean_folder) as cleaned:
+            root = Path(tmp)
+            (root / "out" / "car").mkdir(parents=True)
+            optional.draw(root, "car", "a car", views="pixel", size=96, style="clean")
+            self.assertNotIn("pixel", drawn.call_args.args[0].lower())
+            self.assertEqual(cleaned.call_args.kwargs["target"], 96)
+            doc = json.loads((root / "out" / "car" / "flat" / "views.json").read_text())
+            self.assertEqual((doc["sheet"]["size"], doc["sheet"]["style"]), (96, "clean"))
 
 
 if __name__ == "__main__":
