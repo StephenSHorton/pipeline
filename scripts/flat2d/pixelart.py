@@ -91,13 +91,64 @@ def bbox(mask: np.ndarray) -> list[int] | None:
     return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
 
 
-def split(image: Image.Image, key: dict) -> dict[str, list[int]]:
-    """{view id: [x0, y0, x1, y1]} on the sheet, at its magenta gaps (or in quarters), in PIXEL_PANELS order."""
+def split(image: Image.Image, key: dict, order: tuple[str, ...] = PIXEL_PANELS) -> dict[str, list[int]]:
+    """{view id: [x0, y0, x1, y1]} on the sheet, at its magenta gaps (or in quarters), in `order` (row by row)."""
     from flat2d.views import split_sheet
 
     rgb = np.asarray(image.convert("RGB"))
     got = split_sheet(image, key, "grid", subject_mask(rgb, key))
-    return {pid: got["boxes"][old] for pid, old in zip(PIXEL_PANELS, PANELS)} | {"_how": got["how"]}
+    return {pid: got["boxes"][old] for pid, old in zip(order, PANELS)} | {"_how": got["how"]}
+
+
+def check_walls(image: Image.Image, key: dict) -> dict[str, Any]:
+    """A building's sheet (pose.pixel_walls_prompt: front, side, back, side2 row by row, no top view): split it, paint
+    out a strip drawn under each wall (base_rows), and check each view holds one subject and that the walls agree:
+    the back as tall for its width as the front, the second side as tall for its width as the first (stretch:back,
+    stretch:side2 past AGREE). Returns check_sheet's fields (no top view; tall is True)."""
+    from scipy import ndimage
+
+    from flat2d.parts import ground_key
+    from flat2d.pose import WALL_PANELS
+    from flat2d.views import _close_gaps
+
+    boxes = split(image, key, WALL_PANELS)
+    how = boxes.pop("_how")
+    rgb = np.asarray(image.convert("RGB"))
+    flaws: list[str] = []
+    notes: list[str] = [] if how == "gaps" else ["quarters"]
+    sizes: dict[str, list[int]] = {}
+    panels: dict[str, Image.Image] = {}
+    keys: dict[str, dict] = {}
+    base: dict[str, int] = {}
+    for pid, (x0, y0, x1, y1) in boxes.items():
+        crop = rgb[y0:y1, x0:x1]
+        panels[pid] = Image.fromarray(crop)
+        keys[pid] = ground_key(panels[pid])
+        fg = subject_mask(crop, keys[pid])
+        crop, fg, cut = trim_base(crop, fg, keys[pid])
+        if cut:
+            base[pid] = cut
+            panels[pid] = Image.fromarray(crop)
+        box = bbox(fg)
+        if box is None or fg.mean() < 0.01:
+            flaws.append(f"empty:{pid}")
+            sizes[pid] = [0, 0]
+            continue
+        labels, n = ndimage.label(_close_gaps(fg, max(2, int(0.02 * crop.shape[0]))))
+        big = sorted(np.bincount(labels.ravel())[1:], reverse=True)
+        if len(big) > 1 and big[1] > PIECE_SHARE * big[0]:
+            flaws.append(f"pieces:{pid}")
+        sizes[pid] = [box[2] - box[0], box[3] - box[1]]
+    stretch: dict[str, float] = {}
+    for pid, ref in (("back", "front"), ("side2", "side")):
+        if min(sizes[pid]) > 0 and min(sizes[ref]) > 0:
+            stretch[pid] = round((sizes[pid][1] / sizes[pid][0]) / (sizes[ref][1] / sizes[ref][0]) - 1.0, 3)
+            if abs(stretch[pid]) > AGREE:
+                flaws.append(f"stretch:{pid}")
+    for pid, n in base.items():
+        notes.append(f"base:{pid}:{n}")
+    return {"boxes": boxes, "how": how, "sizes": sizes, "stretch": stretch, "flaws": flaws, "notes": notes,
+            "panels": panels, "keys": keys, "tall": True, "base": base, "roof": True, "walls": True}
 
 
 BASE_BAND = 0.06  # a strip under the object (pavement, ground line) is at most this share of its height

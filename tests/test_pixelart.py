@@ -86,6 +86,12 @@ class PromptTest(unittest.TestCase):
         self.assertIn("about 160 pixels long", pose.pixel_roof_prompt("a shop", 160, "pixel"))
         self.assertIn("about as wide as it is long", pose.pixel_roof_prompt("a shop", ratio=1.0))
 
+    def test_a_building_is_told_apart_from_a_car(self) -> None:
+        self.assertTrue(pose.is_building({"subject": "building"}, "anything"))
+        self.assertTrue(pose.is_building(None, "a small three storey city building, red brick"))
+        self.assertFalse(pose.is_building(None, "a small blue 90s sports race car"))
+        self.assertFalse(pose.is_building(None, "a mailbox, with a little house painted on it"))
+
     def test_a_chosen_size_is_asked_for(self) -> None:
         self.assertIn("about 32 pixels long", pose.pixel_sheet_prompt("a car"))
         self.assertIn("about 128 pixels long", pose.pixel_sheet_prompt("a car", 128))
@@ -351,7 +357,7 @@ class DrawTest(unittest.TestCase):
                 mock.patch.object(optional, "still_image", side_effect=[sheet, roof]) as drawn:
             root = Path(tmp)
             (root / "out" / "shop").mkdir(parents=True)
-            optional.draw(root, "shop", "a shop", views="pixel", size=40, style="clean")
+            optional.draw(root, "shop", "a tall box", views="pixel", size=40, style="clean")
             self.assertEqual(drawn.call_count, 2)
             self.assertTrue(drawn.call_args_list[1].args[0].startswith("Top-down plan view"))
             self.assertEqual(drawn.call_args_list[1].kwargs["width"], pose.ROOF_SIZE[0])
@@ -365,6 +371,39 @@ class DrawTest(unittest.TestCase):
             self.assertFalse(any(sum(abs(a - b) for a, b in zip(c, BODY)) < 40 for c in colours))  # not the walls'
             self.assertEqual(Image.open(flat / "pixel" / "top.png").size[1], 40)
             self.assertIn("flat/views/roof.png", flow.stage_files(root / "out" / "shop", "concept"))
+
+    def test_a_building_gets_four_wall_views_and_a_roof_picture(self) -> None:
+        # pipeline#16, Stephen's word: a building's sheet has no view from above at all.
+        side = np.full((20, 12, 3), BODY, np.uint8)
+        front = np.full((20, 14, 3), BODY, np.uint8)
+        for c in (side, front):
+            c[0, :] = c[-1, :] = c[:, 0] = c[:, -1] = OUT
+        sheet = soft_sheet({"top": front, "side": side, "front": front.copy(), "back": side.copy()}, cell=10.0)
+        roof = Image.new("RGB", (1024, 1024), MAGENTA)
+        roof.paste(Image.new("RGB", (500, 500), GLASS), (262, 262))
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, {"FLAT2D_STILL": "stub"}), \
+                mock.patch.object(optional, "still_image", side_effect=[sheet, roof]) as drawn:
+            root = Path(tmp)
+            (root / "out" / "shop").mkdir(parents=True)
+            optional.draw(root, "shop", "a small city building, red brick", intent={"subject": "building"},
+                          views="pixel", size=40, style="clean")
+            self.assertEqual(drawn.call_count, 2)
+            ask = drawn.call_args_list[0].args[0]
+            self.assertIn("View 1 (top left): front elevation", ask)
+            self.assertIn("View 4 (bottom right): side elevation", ask)
+            self.assertIn("never visible in any view", ask)
+            self.assertNotIn("top view", ask)
+            self.assertTrue(drawn.call_args_list[1].args[0].startswith("Top-down plan view"))
+            flat = root / "out" / "shop" / "flat"
+            doc = json.loads((flat / "views.json").read_text())
+            self.assertEqual(doc["sheet"]["kind"], "walls")
+            self.assertEqual({v["id"] for v in doc["views"]}, {"top", "side", "front", "back", "side2"})
+            for name in ("top", "side", "front", "back", "side2", "roof"):
+                self.assertTrue((flat / "views" / f"{name}.png").is_file(), name)
+            top = np.asarray(Image.open(flat / "pixel" / "top.png"))
+            colours = {tuple(int(v) for v in px[:3]) for px in top.reshape(-1, 4) if px[3]}
+            self.assertTrue(any(sum(abs(a - b) for a, b in zip(c, GLASS)) < 40 for c in colours))
 
     def test_a_chosen_size_reaches_the_prompt_and_the_cleaner(self) -> None:
         sheet = soft_sheet(car_views())

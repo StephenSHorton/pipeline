@@ -289,8 +289,9 @@ ROOF_SIZE = (1024, 1024)
 ROOF_VIEW = ("Top-down plan view looking straight down from directly above, like a tile of a top-down city map: "
              "the flat roof of {what}. Only the roof is visible, as a plain flat rectangle seen from directly above: "
              "the roof surface, the low parapet along its edge, and whatever stands on the roof, each seen from "
-             "directly above as its own top. No walls or sides are visible at all, no perspective, no tilt. The "
-             "front edge of the roof toward the bottom edge of the picture.")
+             "directly above as its own top. The outer edge of the parapet is the outline of the picture's object: "
+             "nothing shows outside or below it on any side, no strip of wall and no ledge along any edge. "
+             "No walls or sides are visible at all, no perspective, no tilt. The front edge of the roof toward the bottom edge of the picture.")
 ROOF_TAIL = ("Strictly orthographic plan view. One object, centred, with a wide empty margin around it. No shadows, "
              "no ground, no floor, no text, no labels, no numbers, no grid lines, no borders. "
              "Plain flat uniform magenta #FF00FF background.")
@@ -322,3 +323,52 @@ def pixel_roof_prompt(text: str, size: int = PIXEL_SIZE, style: str = "pixel", r
                  else f" The roof is about {1 / ratio:.1f} times as wide as it is long from top to bottom."
                  if ratio <= 0.95 else " The roof is about as wide as it is long.")
     return " ".join([ROOF_VIEW.format(what=what) + shape, look, ROOF_TAIL])
+
+
+# The building sheet (pipeline#16, Stephen's word on the card): a building's four-view sheet asks for four
+# straight-on wall views and no top view at all. Asked for a top view, the model always drew the front again with the
+# roof tilted into view; the roof is drawn as a picture of its own (pixel_roof_prompt) and is the stack's top view.
+# Panel order row by row in the 2x2 grid; 'side' is the same view as the pixel sheet's side (front toward the left
+# edge), 'side2' is the other side (front toward the right edge).
+WALL_PANELS = ("front", "side", "back", "side2")
+WALL_VIEWS = {
+    "front": "front elevation, the front wall seen exactly straight on, level, at the building's own mid height",
+    "side": "side elevation, the left side wall seen exactly straight on, level, the front of the building toward "
+            "the LEFT edge",
+    "back": "back elevation, the building's rear wall seen exactly straight on from behind, level, at its own mid "
+            "height: the wall opposite the front, drawn as the description gives the back, not the front again",
+    "side2": "side elevation, the right side wall seen exactly straight on, level, the front of the building toward "
+             "the RIGHT edge, facing the opposite way from view 2",
+}
+WALL_TAIL = ("Each is a flat elevation drawing: the camera level with the building, so the top surface of the roof is "
+             "never visible in any view; the roof shows only as the straight top edge of the parapet, with anything "
+             "standing on the roof seen from the side above that edge.")
+BUILDING_WORDS = ("building", "house", "shop", "store", "tower", "skyscraper", "apartment", "apartments", "office",
+                  "warehouse", "factory", "church", "hotel", "station", "school", "hospital", "bank", "garage",
+                  "storey", "story", "bakery", "cafe", "restaurant", "theatre", "theater", "library", "townhouse",
+                  "cottage", "mansion", "temple", "castle", "barn")
+
+
+def is_building(intent: Any = None, prompt: str | None = None) -> bool:
+    """Whether a pixel draw is of a building, which gets the wall sheet (pixel_walls_prompt) and a roof picture: the
+    intent's subject, else the description's first clause (the thing itself, not what is on it), names one of
+    BUILDING_WORDS."""
+    if isinstance(intent, dict) and intent.get("subject"):
+        if set(_words(str(intent["subject"]))) & set(BUILDING_WORDS):
+            return True
+    head = (prompt or "").split(",")[0]
+    return bool(set(_words(head)) & set(BUILDING_WORDS))
+
+
+def pixel_walls_prompt(text: str, size: int = PIXEL_SIZE, style: str = "pixel") -> str:
+    """A building's sheet: four straight-on wall views (WALL_PANELS) in a 2x2 grid, no top view, the same look and
+    tail as pixel_sheet_prompt."""
+    listing = " ".join(f"View {i + 1}{PIXEL_CELLS[i]}: {WALL_VIEWS[pid]}." for i, pid in enumerate(WALL_PANELS))
+    style = pixel_style(style)
+    kind = "Pixel art sprite sheet" if style == "pixel" else "Game art sprite sheet"
+    head = (f"{kind} of building elevations for sprite stacking, in a 2 by 2 grid, the same single building four "
+            "times, four straight-on wall views and no view from above.")
+    look = PIXEL_STYLE.format(size=pixel_size(size)) if style == "pixel" else CLEAN_STYLE
+    return " ".join([" ".join((text or "").split()).rstrip(".") + ".", head, listing, WALL_TAIL,
+                     "One building in each view, the same proportions and colours; the front and back the same "
+                     "width, the two sides the same width, all four the same height.", look, PIXEL_TAIL])

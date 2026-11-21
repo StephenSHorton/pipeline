@@ -955,7 +955,7 @@ def draw(root: Path, stem: str, prompt: str, intent: dict | None = None, views=N
     'pixel' or 'clean', pose.PIXEL_STYLES). The draw a request gets: generate_views for a 3D-bound intent, else (or with views: 1) generate_still.
     reference: the user's photo, drawn from (never kept as a view); only a 3D-bound draw takes one."""
     if is_pixel(views):
-        return generate_pixel_views(root, stem, prompt, size=size, style=style)
+        return generate_pixel_views(root, stem, prompt, size=size, style=style, intent=intent)
     if reference:
         return generate_views(root, stem, prompt, intent, reference=reference)
     if wants_views(intent, views):
@@ -1151,7 +1151,7 @@ def generate_views(root: Path, stem: str, prompt: str, intent: dict | None = Non
     return saved
 
 
-def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=None) -> dict:
+def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=None, intent=None) -> dict:
     """The pixel art sheet for a sprite stack: one 2x2 picture, top | side over front | back (pose.pixel_sheet_prompt),
     split at its magenta gaps and checked (flat2d/pixelart.py: one subject per view, the top view the tallest
     drawing, the side view the widest). At most SHEET_REDRAWS new sheets for those flaws; the best is kept.
@@ -1159,9 +1159,13 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
     and the cleaner cuts at (pose.pixel_size; None is pose.PIXEL_SIZE). style: 'pixel' (None) asks for pixel art,
     'clean' for clean digital game art with no pixel wording (pose.pixel_style); both are cleaned the same way.
     Writes flat/sheet.png, flat/views/{top,side,front,back}.png, flat/views.json (layout 'pixel'), flat/source.png
-    (the side view), key.json and prompt.txt (the concept take), and flat/pixel/ (the flat take)."""
+    (the side view), key.json and prompt.txt (the concept take), and flat/pixel/ (the flat take).
+    A building (pose.is_building: the intent's subject or the description) gets the wall sheet instead
+    (pose.pixel_walls_prompt: front, side, back and the other side, straight on, no view from above; checked by
+    pixelart.check_walls), and its top view is always the roof picture (_draw_roof). flat/views/ then also holds
+    side2.png (the other side) and roof.png."""
     from flat2d import pixelart as PA
-    from flat2d.pose import PIXEL_PANELS, pixel_sheet_prompt, pixel_size, pixel_style
+    from flat2d.pose import PIXEL_PANELS, is_building, pixel_sheet_prompt, pixel_size, pixel_style, pixel_walls_prompt
     from flat2d.sheet import SHEET_REDRAWS, SHEET_SIZE, still_info
     from flat2d.store import save_source
     from flat2d.views import sha256_file
@@ -1175,7 +1179,9 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
     w, h = SHEET_SIZE
     size = pixel_size(size)
     style = pixel_style(style)
-    ask = pixel_sheet_prompt(text, size, style)
+    walls = is_building(intent, text)
+    ask = pixel_walls_prompt(text, size, style) if walls else pixel_sheet_prompt(text, size, style)
+    check = PA.check_walls if walls else PA.check_sheet
     seed = random.randint(1, 2**31 - 1)
     tries: list[dict] = []
     redrawn: list[str] = []
@@ -1190,7 +1196,7 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
         key = ground_key(image)
         _check_cancel()
         _phase("views_split")
-        result = PA.check_sheet(image, key)
+        result = check(image, key)
         _phase("views_check")
         again = PA.redrawable(result["flaws"])
         tries.append({"image": image, "seed": seed, "key": key, "result": result, "again": again})
@@ -1232,15 +1238,19 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
         result["panels"][pid].save(folder / "views" / f"{pid}.png", format="PNG")
     if roof is not None:
         roof["image"].save(folder / "views" / "roof.png", format="PNG")
+    if "side2" in result["panels"]:
+        result["panels"]["side2"].save(folder / "views" / "side2.png", format="PNG")
     info = still_info(backend)
     doc = {"version": 1, "layout": "pixel", "canonical": "side", "source_sha256": sha256_file(folder / "source.png"),
-           "views": [{"id": pid, "file": f"views/{pid}.png", "box": result["boxes"][pid],
-                      "size": result["sizes"][pid]} for pid in PIXEL_PANELS],
+           "views": [{"id": pid, "file": f"views/{pid}.png", "box": result["boxes"].get(pid),
+                      "size": result["sizes"][pid]} for pid in (*PIXEL_PANELS, "side2") if pid in result["sizes"]],
            "split": result["how"], "consistent": not result["flaws"], "flaws": list(result["flaws"]),
            "notes": list(result["notes"]),
            "sheet": {"w": w, "h": h, "layout": "pixel", "seed": best["seed"], "redraws": len(tries) - 1,
                      "model": info["model"], "licence": info["licence"], "backend": backend, "prompt": ask,
                      "size": size, "style": style}}
+    if result.get("walls"):
+        doc["sheet"]["kind"] = "walls"  # four wall views, no view from above (pose.pixel_walls_prompt)
     if roof is not None:
         doc["roof"] = {"file": "views/roof.png", "seed": roof["seed"], "redraws": roof["redraws"],
                        "flaws": roof["flaws"], "prompt": roof["prompt"], "fitted": list(roof["panel"].size),
@@ -1289,7 +1299,8 @@ def _draw_roof(text: str, size: int, style: str, result: dict, seed: int) -> dic
     for attempt in range(SHEET_REDRAWS + 1):
         _check_cancel()
         if DRAW is not None and hasattr(DRAW, "line"):
-            DRAW.line("Drawing the roof on its own: the sheet's top view shows the walls." if not attempt
+            DRAW.line(("Drawing the roof on its own: the sheet shows only the walls." if result.get("walls") else
+                       "Drawing the roof on its own: the sheet's top view shows the walls.") if not attempt
                       else "Drawing the roof again: " + ", ".join(tries[-1]["check"]["flaws"]) + ".")
         roof_seed = (seed + 7919 * (attempt + 1)) % (2**31 - 1) or 1
         image = still_image(ask, seed=roof_seed, width=ROOF_SIZE[0], height=ROOF_SIZE[1])

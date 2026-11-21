@@ -35,47 +35,48 @@ layers, 24 colours.
   view's width. That catches a facade drawn as the top, unless a pavement strip widens the side view.
 - Prompt: the top view asks for only upper surfaces; the clean style rules out pavement and base strips by name.
 
-## The roof as its own picture (pipeline#16)
+## Four wall views and a roof picture (pipeline#16)
 
-**Version 7 is picked**: Version 5's drawings re-cut with the finished code (the front wall under the roof cut off),
-160 long x 156 wide x 212 layers, 24 colours. Versions 4 to 6 were drawn the same way (`POST /2d/draw`,
-`views: "pixel"`, `style: "clean"`, `size: 160`, `stack: true`, the asset's own description):
+**Version 9 is picked**: 160 long x 162 wide x 204 layers, 22 colours. Drawn on the Mac's model (`POST /2d/draw`,
+`views: "pixel"`, `style: "clean"`, `size: 160`, `stack: true`, the asset's own description).
+
+A building's sheet no longer asks for a view from above at all. Asked for one, the model always drew the front again
+with the roof tilted into view (Versions 1 to 7 all have that picture top left). Now:
+
+- **Wall sheet** (`pose.pixel_walls_prompt`, used when `pose.is_building`: the intent's subject or the description's
+  first clause names a building): four straight-on elevations in the 2x2 grid, front, left side (front toward the
+  left edge), back, right side (front toward the right edge), the camera level so the top of the roof is never
+  visible. `pixelart.check_walls` splits it, paints out a strip drawn under each wall (`pixelart.base_rows`), and
+  checks one subject per view and that the back agrees with the front and the two sides with each other. The second
+  side is kept as `flat/views/side2.png`; the stack uses the front, left side and back.
+- **Roof picture** (`pose.pixel_roof_prompt`): only the description's roof clauses, straight down, the parapet's
+  outer edge the outline with no wall strip along any edge. It becomes the top view, fitted to the side's length
+  and the front's width (`pixelart.roof_size`), less any front wall still peeking out under it
+  (`pixelart.roof_edge_rows`). Kept as `flat/views/roof.png`.
+- A tall object that is not a building keeps the old sheet, and gets the roof picture only when its top view is as
+  long as its walls are tall (`top_length`).
 
 | Version | What happened |
 | --- | --- |
-| 4 | first roof wording: the roof picture came back as the whole building in three-quarter view |
-| 5 | roof clauses only: a roof plan (grey roof, parapet, AC unit, stair hut with water tank) |
-| 6 | roof clauses only: a roof plan again, but a band of facade across its whole front edge, and the sheet's back view 15% too tall (the views disagree on width) |
-| 7 | Version 5 re-cut (no new drawing) |
+| 4 | first roof wording: the roof picture came back as the whole building at an angle |
+| 5, 6, 7 | old sheet (top-left still the front seen from above) with a roof picture as the top view |
+| 8 | wall sheet: four straight-on walls, no roof top; but the back drawn as a second shop front, and the right side facing the same way as the left |
+| 9 | wall sheet with clearer back and right-side wording: the back is plain brick; the right side still faces the same way as the left |
 
 | Picture | What it shows |
 | --- | --- |
-| `city-building-roof-before-after.png` | Version 2 and Version 7 in the app's Stack stage, from the side and from above |
-| `city-building-stack-roof-top-down.png` | the stack's top colour per column, Version 2 left, Version 7 right |
-| `city-building-roof-drawing.png` | Version 5's roof picture, as drawn |
-| `city-building-roof-drawing-first-try.png` | Version 4's roof picture: the first wording |
-| `city-building-version-7.jpg` | Version 7 alone: the drawn sheet and roof picture, the top view, the cleaned views, the stack in the app |
-| `city-building-drawings.jpg` | every picture the model drew for Versions 2 and 4 to 7, labelled, with the top views made from them |
-| `city-building-drawn-sheet-v5.png` | Version 5's drawn sheet (scaled to 864 px) |
-| `city-building-roof-drawing-v6.png` | Version 6's roof picture |
+| `city-building-v9-sheet.jpg` | Version 9's sheet, as drawn |
+| `city-building-v9-roof.jpg` | Version 9's roof picture, as drawn |
+| `city-building-roof-before-after.png` | Version 2 and Version 9 in the app's Stack stage, from the side and from above |
+| `city-building-stack-roof-top-down.png` | the stack's top colour per column, Version 2 left, Version 9 right |
+| `city-building-drawings.jpg` | the drawings of Versions 2 and 4 to 7 (also on their own: `city-building-drawn-sheet-v5.png`, `city-building-roof-drawing.png` for Version 5, `-first-try.png` for Version 4, `-v6.png` for Version 6) |
 
-- **Roof picture:** a tall object (`pixelart.tall`: side and front taller than wide) whose sheet top view is not as
-  long as the side view is wide (`top_length`, now a note, not a redraw flaw: a facade seen from above is as tall as
-  the walls) gets a second picture, the roof only, straight down (`pose.pixel_roof_prompt`). It replaces the sheet's
-  top view: cropped to its subject, less the front wall peeking out under it (`pixelart.roof_edge_rows`: bottom rows
-  set in from the roof's sides), and fitted to the side view's length and the front view's width at the side's scale
-  (`pixelart.roof_size`), then cleaned with the other three. Kept as `flat/views/roof.png`; `views.json` says so
-  under `roof`. The front and back are then checked against the roof's size.
-- **Its wording:** the first try handed the model the whole description; the shop front, awning and window rows won.
-  The roof picture now hears only the description's clauses about the roof (`pose.roof_text`), framed as a tile of
-  a top-down city map. 2 of 2 draws with it came back as plans.
-- **Pavement strip:** `pixelart.base_rows` finds bottom rows of the side, front and back views that reach past the
-  walls above them (the median wall edges a little higher up, so a cornice or awning does not count), at most 6% of
-  the height, and paints them out in the ground colour before anything is measured. On Version 5 it cut 13-14 px
-  under each view; the bottom layers are now 1-2 cells wider than the walls (the plinth), where Version 2's bottom 4
-  layers filled the whole 160 x 149 footprint. On the race car sheets it cuts only the dark ground line under one
-  side view (6 and 5 rows on one sheet, none on the other three).
-- **Still not right:** the AC unit and stair hut stand up only where the side and front silhouettes put them, so
-  they read mostly as paint on the roof, with a few thin streaks; the roof was drawn about 1.5 times as wide as long
-  and squeezed to near square, so the units look narrow; the parapet is grey where the walls' cornice is cream; a
-  facade band right across the roof's front (Version 6) is not cut.
+**Still not what was asked, in Version 9's drawings:**
+- The right side (bottom right) faces the same way as the left side; it is not used by the stack.
+- The roof picture still has a thin band of front wall along its bottom edge, a small hatch on its back edge and a
+  vent on its left edge. The band is cut off before fitting, not fixed in the drawing; the hatch and vent stay.
+- The roof was drawn wider than long and is squeezed to the walls' footprint.
+
+**Pavement strip:** every wall view still came with a grey pavement strip (12-17 px); it is painted out, and the
+stack's bottom layer is 131 x 138 cells over walls of 129 x 135 (Version 2's was 149 x 160 over 102 x 110).
+**Rooftop units** stand up only where the wall views show them, so on the roof they read partly as paint.
