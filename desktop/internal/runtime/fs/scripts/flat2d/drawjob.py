@@ -47,13 +47,14 @@ FLAW_TEXT = {"cloudy": "Ground is cloudy.", "shadow": "There is a shadow on the 
              "pieces": "A view holds more than one subject.", "drift": "The views drift from your photo.",
              "top_short": "The top view is not the longest drawing.", "side_narrow": "The side view is not the "
              "widest drawing.", "top_sideways": "The top view lies sideways.", "side_upright": "The side view "
-             "stands upright."}
+             "stands upright.", "stretch": "The front or back view is out of proportion with the side and top."}
 FLAW_PAST = {"cloudy": "ground was cloudy", "shadow": "ground had a shadow", "facing": "head pointed the wrong way",
              "profile": "not a side view", "height": "views were different heights", "colour": "views were "
              "different colours", "side": "side views did not match", "empty": "a view was missing",
              "pieces": "a view held more than one subject", "drift": "views drifted from your photo",
              "top_short": "top view was short", "side_narrow": "side view was narrow",
-             "top_sideways": "top view lay sideways", "side_upright": "side view stood upright"}
+             "top_sideways": "top view lay sideways", "side_upright": "side view stood upright",
+             "stretch": "front or back view was out of proportion"}
 VIEW_STAGES = ("views_split", "views_check")
 
 
@@ -444,7 +445,8 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
             hook.attempt_t0 = time.time()
         with optional.drawing(hook):
             saved = optional.draw(root, stem, str(payload.get("prompt") or ""), intent=payload.get("intent"),
-                                  views=payload.get("views"), reference=reference)
+                                  views=payload.get("views"), reference=reference,
+                                  size=payload.get("size"))
         hook.ground_done()
         result["seed"] = saved.get("seed")
         result["redrawn"] = list(saved.get("redrawn") or [])

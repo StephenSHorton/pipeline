@@ -1143,10 +1143,16 @@ class Factory:
                     raise ValueError("views pixel is a flat2d draw from words")
                 payload["views"] = "pixel"
                 pixel = True
+                if body.get("size") not in (None, ""):
+                    from flat2d.pose import pixel_size
+
+                    payload["size"] = pixel_size(body.get("size"))  # the sprite's length in pixels
             elif str(views).strip() not in ("1", "4"):
                 raise ValueError("views must be 1, 4 or pixel")
             else:
                 payload["views"] = int(str(views).strip())
+        if body.get("size") not in (None, "") and not pixel:
+            raise ValueError("size is for views pixel")
         for key in ("pieces", "motion", "say", "sound"):
             if isinstance(body.get(key), str):
                 payload[key] = body[key]

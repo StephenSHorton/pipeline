@@ -419,6 +419,20 @@ class DrawJobTests(unittest.TestCase):
         self.assertEqual(seen[0]["views"], 1)
         self.assertFalse(optional.wants_views(seen[0]["intent"], seen[0]["views"]))
 
+    def test_a_pixel_size_reaches_the_draw_payload(self) -> None:
+        seen: list[dict] = []
+        with mock.patch.object(drawjob, "run", lambda factory, spec, payload, **k: seen.append(payload)):
+            self.factory.start_flat({"kind": "flat2d", "stem": "car", "prompt": "a car", "views": "pixel",
+                                     "size": 96})
+            with self.factory._lock:
+                self.factory._job["state"] = "ok"
+            for bad in ({"views": "pixel", "size": 4}, {"views": "pixel", "size": "big"}, {"views": 4, "size": 96},
+                        {"size": 96}):
+                with self.assertRaises(ValueError, msg=bad):
+                    self.factory.start_flat({"kind": "flat2d", "stem": "car", "prompt": "a car", **bad})
+        self.assertEqual(seen[0]["views"], "pixel")
+        self.assertEqual(seen[0]["size"], 96)
+
     def test_a_photo_reference_reaches_the_draw_payload(self) -> None:
         from PIL import Image
 
