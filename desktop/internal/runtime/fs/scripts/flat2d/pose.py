@@ -211,7 +211,8 @@ def canonical_view(kind: str | None) -> str:
 PIXEL_PANELS = ("top", "side", "front", "back")
 PIXEL_VIEWS = {
     "top": "top view, looking straight down from directly above, the front of the object pointing DOWN toward the "
-           "bottom edge",
+           "bottom edge, only its upper surfaces visible as a flat plan of its roof or top, none of its sides or "
+           "walls visible",
     "side": "side view, seen exactly from the side in strict profile, the front of the object pointing LEFT toward "
             "the left edge",
     "front": "front view, seen exactly from the front at the object's own mid height, level, facing the viewer, "
@@ -232,8 +233,8 @@ PIXEL_STYLE = ("Retro pixel art game sprite, about {size} pixels long, square pi
 # under the object is ruled out by name.
 CLEAN_STYLE = ("Clean digital game art sprite, crisp clean hard edges, a thin dark outline around the object and its "
                "parts, solid flat colour fills with no lighting, no shading and no shadows, a small limited palette, "
-               "no gradients, no blur. Nothing under the object: no ground line, no road, no shadow line beneath "
-               "the wheels. Not a photo, not hand drawn, not cartoonish.")
+               "no gradients, no blur. Nothing under the object: no ground line, no road, no pavement, no base strip, "
+               "no shadow line beneath it. Not a photo, not hand drawn, not cartoonish.")
 PIXEL_STYLES = ("pixel", "clean")  # the sheet's drawing style: PIXEL_STYLE (the default) or CLEAN_STYLE
 PIXEL_TAIL = ("Strictly orthographic, no perspective, every view at the same scale so the length, width and height "
               "match between views. Each view whole and separate in its own quarter, with wide empty gaps between "

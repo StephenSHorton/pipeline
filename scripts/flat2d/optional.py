@@ -1196,7 +1196,7 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
         tries.append({"image": image, "seed": seed, "key": key, "result": result, "again": again})
         if DRAW is not None and hasattr(DRAW, "line"):
             DRAW.line("Views: " + (", ".join(result["flaws"]) if result["flaws"] else "one subject each, "
-                                   "top tallest, side widest, front and back in proportion") + ".")
+                                   "views in proportion") + ".")
         if not again or attempt == SHEET_REDRAWS:
             break
         redrawn.extend(again)
@@ -1235,7 +1235,7 @@ def generate_pixel_views(root: Path, stem: str, prompt: str, size=None, style=No
         DRAW.line("Cleaning the views into pixel art.")
     notes = [f"Sheet: {f}." for f in result["flaws"]]
     try:
-        pixel = PA.clean_folder(folder, target=size)
+        pixel = PA.clean_folder(folder, target=size, grid=style == "pixel")  # clean art has no grid
     except ValueError as e:
         pixel = None
         notes.append(f"Could not clean the views: {e}.")

@@ -90,7 +90,8 @@ class PromptTest(unittest.TestCase):
         for words in ("2 by 2 grid", "View 1 (top left): top view", "View 2 (top right): side view",
                       "View 3 (bottom left): front view", "View 4 (bottom right): back view", "orthographic",
                       "same scale", "level, facing the viewer", "hard edges", "solid flat colour fills",
-                      "no lighting", "no ground line", "No shadows", "magenta #FF00FF", "digital game art"):
+                      "no lighting", "no ground line", "no pavement", "No shadows", "magenta #FF00FF",
+                      "digital game art", "only its upper surfaces visible"):
             self.assertIn(words, clean)
         self.assertEqual(pose.pixel_sheet_prompt("a car", 96, None), pose.pixel_sheet_prompt("a car", 96))
         self.assertIn("about 96 pixels long", pixel)
@@ -199,6 +200,35 @@ class CleanTest(unittest.TestCase):
         sheet = soft_sheet(cells)
         self.assertIn("top_sideways", pixelart.check_sheet(sheet, ground_key(sheet))["flaws"])
 
+    def test_a_tall_building_is_not_flagged_by_the_long_object_checks(self) -> None:
+        # pipeline#15: a building's side and front are taller than its top view is long, and its front is wider than
+        # its side. A good sheet of one is not a flaw.
+        a = car_views()
+        cells = {"top": a["top"][:12, :], "side": np.full((20, 12, 3), BODY, np.uint8),
+                 "front": np.full((20, 14, 3), BODY, np.uint8), "back": np.full((20, 14, 3), BODY, np.uint8)}
+        for c in cells.values():
+            c[0, :] = c[-1, :] = c[:, 0] = c[:, -1] = OUT
+        sheet = soft_sheet(cells, cell=10.0)
+        self.assertEqual(pixelart.check_sheet(sheet, ground_key(sheet))["flaws"], [])
+
+    def test_a_top_view_drawn_as_a_facade_is_a_sheet_flaw_for_a_tall_object(self) -> None:
+        # The top view drawn as the front seen from above: as tall as the walls, not as long as the side view.
+        side = np.full((20, 12, 3), BODY, np.uint8)
+        front = np.full((20, 14, 3), BODY, np.uint8)
+        cells = {"top": front.copy(), "side": side, "front": front, "back": front.copy()}
+        sheet = soft_sheet(cells, cell=10.0)
+        self.assertIn("top_length", pixelart.check_sheet(sheet, ground_key(sheet))["flaws"])
+        self.assertEqual(pixelart.redrawable(["top_length"]), ["top_length"])
+
+    def test_no_grid_search_cuts_to_the_target_even_when_a_grid_is_there(self) -> None:
+        # The clean style has no pixel grid by design; brickwork that lines up must not set the size (pipeline#15).
+        sheet = soft_sheet(self.cells)
+        key = ground_key(sheet)
+        got = pixelart.clean(pixelart.check_sheet(sheet, key)["panels"], key, target=40, grid=False)
+        self.assertEqual(got["grid"]["how"], "fallback")
+        self.assertEqual(got["sizes"]["final"]["side"][0], 40)
+        self.assertIn("no pixel grid", got["notes"][0])
+
     def test_fit_repeats_or_drops_rows_only(self) -> None:
         a = np.arange(12).reshape(3, 4)
         b = pixelart.fit(a, 4, 4)
@@ -243,6 +273,7 @@ class DrawTest(unittest.TestCase):
             optional.draw(root, "car", "a car", views="pixel", size=96)
             self.assertIn("about 96 pixels long", drawn.call_args.args[0])
             self.assertEqual(cleaned.call_args.kwargs["target"], 96)
+            self.assertTrue(cleaned.call_args.kwargs["grid"])
             doc = json.loads((root / "out" / "car" / "flat" / "views.json").read_text())
             self.assertEqual(doc["sheet"]["size"], 96)
             self.assertEqual(doc["sheet"]["style"], "pixel")
@@ -258,6 +289,7 @@ class DrawTest(unittest.TestCase):
             optional.draw(root, "car", "a car", views="pixel", size=96, style="clean")
             self.assertNotIn("pixel", drawn.call_args.args[0].lower())
             self.assertEqual(cleaned.call_args.kwargs["target"], 96)
+            self.assertFalse(cleaned.call_args.kwargs["grid"])
             doc = json.loads((root / "out" / "car" / "flat" / "views.json").read_text())
             self.assertEqual((doc["sheet"]["size"], doc["sheet"]["style"]), (96, "clean"))
 
