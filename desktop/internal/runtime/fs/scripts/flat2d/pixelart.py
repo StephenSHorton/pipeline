@@ -135,7 +135,14 @@ def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
         if len(big) > 1 and big[1] > PIECE_SHARE * big[0]:
             flaws.append(f"pieces:{pid}")
         sizes[pid] = [box[2] - box[0], box[3] - box[1]]
-    if not any(f.startswith("empty") for f in flaws):
+    if not any(f.startswith("empty") for f in flaws) and tall(sizes):
+        # A tall object (a building): its side, front and back are rightly taller than the top view is long, and
+        # its front may be wider than its side, so the long-object checks below would flag a good sheet. What is
+        # checked instead is the length the top and side views share (top height, side width): a top view drawn
+        # as a facade seen from above (pipeline#15) is as tall as the walls, not as long as the side.
+        if abs(sizes["top"][1] / sizes["side"][0] - 1.0) > AGREE:
+            flaws.append("top_length")
+    elif not any(f.startswith("empty") for f in flaws):
         if sizes["top"][1] < max(s[1] for s in sizes.values()) * 0.97:
             flaws.append("top_short")
         if sizes["side"][0] < max(s[0] for s in sizes.values()) * 0.97:
@@ -154,6 +161,12 @@ def check_sheet(image: Image.Image, key: dict) -> dict[str, Any]:
             "panels": panels, "keys": keys}
 
 
+def tall(sizes: dict[str, list[int]]) -> bool:
+    """Whether the drawn object stands taller than it is long and wide: its side and front views are both taller
+    than they are wide. A car (long and low) never is; a city building is."""
+    return all(sizes[pid][1] > sizes[pid][0] > 0 for pid in ("side", "front"))
+
+
 def sheet_stretch(sizes: dict[str, list[int]]) -> dict[str, float]:
     """How much taller (+) or shorter (-) for its width the front and back views are drawn than the side and top
     views allow, as a share ({} when a view is empty)."""
@@ -165,7 +178,7 @@ def sheet_stretch(sizes: dict[str, list[int]]) -> dict[str, float]:
             for pid in ("front", "back") if min(sizes[pid]) > 0}
 
 
-REDRAW_FLAWS = ("empty", "pieces", "top_short", "side_narrow", "top_sideways", "side_upright", "stretch")
+REDRAW_FLAWS = ("empty", "pieces", "top_short", "side_narrow", "top_sideways", "side_upright", "top_length", "stretch")
 
 
 def redrawable(flaws: list[str]) -> list[str]:
@@ -377,11 +390,13 @@ def agree(sizes: dict[str, tuple[int, int]]) -> dict[str, Any]:
 
 
 def clean(panels: dict[str, Image.Image], key: dict | None = None, *, colours: int = PALETTE,
-          target: int = TARGET) -> dict:
+          target: int = TARGET, grid: bool = True) -> dict:
     """The four drawn views (crops of the sheet on its magenta ground, PIXEL_PANELS ids) as true pixel art.
     key: one ground key for every panel; None reads each panel's own (flat2d.parts.ground_key).
     Returns {views {id: RGBA image}, palette, grid, sizes, checks, flaws, notes, ok}. ok is False when the views
-    disagree by more than AGREE on a size: the views are still written, fitted, but must not be carved."""
+    disagree by more than AGREE on a size: the views are still written, fitted, but must not be carved.
+    grid: False for a drawing that has no pixel grid by design (the clean style): every view is cut straight into
+    target cells along the length, so a texture that happens to line up (brickwork) never sets the size."""
     from flat2d.parts import ground_key
 
     views: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -395,6 +410,7 @@ def clean(panels: dict[str, Image.Image], key: dict | None = None, *, colours: i
         views[pid] = (rgb[y0:y1, x0:x1], fg[y0:y1, x0:x1])
     pal = build_palette(views, colours)
     idx = {pid: snap(rgb, pal) for pid, (rgb, _) in views.items()}
+    want_grid = grid
     grid = find_grid(views)
     px = {pid: (int(v[0].shape[1]), int(v[0].shape[0])) for pid, v in views.items()}
     length_px = max(px["top"][1], px["side"][0])
@@ -402,7 +418,7 @@ def clean(panels: dict[str, Image.Image], key: dict | None = None, *, colours: i
     flaws: list[str] = []
     fitted: dict[str, Any] = {}
     max_long = max(MAX_LONG, int(round(1.5 * target)))
-    if grid["score"] >= GRID_MIN_SCORE and length_px / max(grid["cell"], 1e-6) <= max_long:
+    if want_grid and grid["score"] >= GRID_MIN_SCORE and length_px / max(grid["cell"], 1e-6) <= max_long:
         how = "found"
         cells = {pid: trim(to_cells(idx[pid], views[pid][1], grid["cell"], tuple(grid["offsets"][pid])))
                  for pid in PIXEL_PANELS}
@@ -447,7 +463,8 @@ def clean(panels: dict[str, Image.Image], key: dict | None = None, *, colours: i
         sizes = {"agreed": {"length": L, "width": Wc, "height": Hc}, "drawn_px": {k: list(v) for k, v in px.items()},
                  "stretch": stretch}
         found = length_px / max(grid["cell"], 1e-6)
-        why = (f"its pixels are finer than a sprite (about {found:.0f} along the length)"
+        why = ("a drawing with no pixel grid" if not want_grid
+               else f"its pixels are finer than a sprite (about {found:.0f} along the length)"
                if grid["score"] >= GRID_MIN_SCORE else f"no clear pixel grid (score {grid['score']:.2f})")
         notes.insert(0, f"{why}; each view cut straight into {L} cells along the length")
         grid = {**grid, "found_cell": grid["cell"]}
@@ -506,9 +523,10 @@ def write(folder: Path, result: dict, meta: dict | None = None) -> dict:
     return doc
 
 
-def clean_folder(folder: Path, *, colours: int = PALETTE, target: int = TARGET) -> dict:
-    """Clean flat/views/<id>.png (written by optional.generate_pixel_views) into flat/pixel/. Returns pixel.json."""
+def clean_folder(folder: Path, *, colours: int = PALETTE, target: int = TARGET, grid: bool = True) -> dict:
+    """Clean flat/views/<id>.png (written by optional.generate_pixel_views) into flat/pixel/. Returns pixel.json.
+    grid: False skips the pixel grid search (see clean)."""
     folder = Path(folder)
     panels = {pid: Image.open(folder / "views" / f"{pid}.png").convert("RGB") for pid in PIXEL_PANELS}
-    result = clean(panels, None, colours=colours, target=target)
+    result = clean(panels, None, colours=colours, target=target, grid=grid)
     return write(folder, result, {"colours_asked": colours})
