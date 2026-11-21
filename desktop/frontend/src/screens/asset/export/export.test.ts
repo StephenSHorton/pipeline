@@ -124,6 +124,8 @@ describe("cards", () => {
     expect(pic[0]).toMatchObject({ lines: ["32 layers of 64×64", "built from the picture"], img: "stack/preview.png" });
     const mesh = exportCards(exported, { output: "stack" }, { made: 1, stack: { layers: 16, resolution: 32 } });
     expect((mesh[0] as PlainCard).lines[1]).toBe("sliced from the mesh");
+    const views = exportCards(exported, { output: "stack" }, { made: 1, stack: { layers: 30, resolution: 96, maker: "views" } });
+    expect((views[0] as PlainCard).lines[1]).toBe("carved from drawn views");
   });
 
   it("before an export: Ready / Nothing yet placeholders for wanted stages, PS1 model for ps1", () => {

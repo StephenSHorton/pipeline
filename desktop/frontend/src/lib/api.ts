@@ -168,6 +168,7 @@ export interface JobSnapshot {
   prompt?: string;
   count?: number;
   revise?: boolean;
+  stack?: boolean;
   source?: string;
   quality?: string;
   poly?: string;
@@ -187,6 +188,8 @@ export interface JobResult {
   seed?: number;
   redrawn?: boolean;
   ran?: string[];
+  /** A stack draw (POST /2d/draw with stack): the stack it carved. */
+  stack?: { file: string; size: { width: number; length: number; height: number }; colors: number; layers: number };
 }
 
 export interface CancelResponse {

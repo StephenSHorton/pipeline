@@ -13,19 +13,43 @@ import { navigate } from "@/app/router";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { conceptStill, flowEntry, pickTake, snapshotTake, useFlow, type Stage } from "@/lib/flow";
+import { isStackDraw, useJobs } from "@/lib/jobs";
 import { toast } from "@/lib/ui";
 import { useNarrow } from "@/lib/useNarrow";
 import { cn } from "@/lib/utils";
 import type { NestedIntent } from "@/screens/home/make";
 import { MUTE, PANEL } from "@/screens/viewer/classes";
 import { comparing, currentTake, leftTake, shiftLeft, useCompare } from "@/screens/viewer/compare";
-import { buildFromConcept, stackFromPicture, useStacking } from "./takes/api";
-import { groupItems, panelHeading, stripItems, versionsSummary, type StripAction, type StripItem } from "./takes/logic";
+import { buildFromConcept, drawStack, stackFromPicture, useStacking } from "./takes/api";
+import {
+  DEFAULT_STACK_SIZE,
+  groupItems,
+  panelHeading,
+  STACK_SIZES,
+  stripItems,
+  versionsSummary,
+  type StripAction,
+  type StripItem,
+} from "./takes/logic";
 import type { StageProps } from "./types";
 
 const ACT =
   "hit-44 h-auto min-h-8 w-full justify-start rounded-[9px] px-2.5 py-1.5 text-left text-[length:calc(13px*var(--fs))] font-semibold whitespace-normal";
 // A rig version's check: pass green, warn the signal yellow, fail red (the rail and the HUD use the same three).
+const SELECT =
+  "hit-44 h-8 shrink-0 cursor-pointer rounded-[8px] border border-input bg-white px-1.5 text-[length:calc(12.5px*var(--fs))] text-ink tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const SIZE_KEY = "pipeline.stackSize";
+
+/** The cells-long a Draw views & stack asks for: the last one picked on this computer, else the default. */
+function savedStackSize(): number {
+  try {
+    const n = Number(localStorage.getItem(SIZE_KEY));
+    return (STACK_SIZES as readonly number[]).includes(n) ? n : DEFAULT_STACK_SIZE;
+  } catch {
+    return DEFAULT_STACK_SIZE;
+  }
+}
+
 const DOT: Record<string, string> = {
   pass: "bg-success",
   ok: "bg-success",
@@ -36,6 +60,16 @@ const DOT: Record<string, string> = {
 export function VersionsPanel({ stem, stage, flow, intent, className }: StageProps & { className?: string }) {
   // Module level (takes/api.ts): survives a remount, and only this stem's panel shows it.
   const stacking = useStacking((s) => s.stem === stem);
+  const drawingStack = useJobs((s) => !!s.job && s.job.state === "running" && s.job.stem === stem && isStackDraw(s.job));
+  const [stackSize, setStackSize] = useState(savedStackSize);
+  const pickSize = (n: number) => {
+    setStackSize(n);
+    try {
+      localStorage.setItem(SIZE_KEY, String(n));
+    } catch {
+      // Not kept: the default comes back next time.
+    }
+  };
   // The stem whose pick or snapshot is in flight: its version buttons hold until the flow answers. Keyed by stem
   // so a request still running on the last asset never holds this one's buttons.
   const [pendingStem, setPendingStem] = useState("");
@@ -51,6 +85,7 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
     flow,
     output: intent?.output,
     stacking,
+    drawingStack,
   });
   // The current version may sit below the body's fold (many versions, or a short column): scroll the body, only the
   // body, to it.
@@ -118,6 +153,8 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
     } else if (a.do === "stack") {
       if (useStacking.getState().stem === stem) return;
       await stackFromPicture(stem);
+    } else if (a.do === "drawstack") {
+      await drawStack(stem, stackSize);
     } else {
       // The Make form's remake (settings and picture prefilled, the job reusing this stem) is not on Home yet.
       navigate({ name: "home", section: "make" });
@@ -167,7 +204,27 @@ export function VersionsPanel({ stem, stage, flow, intent, className }: StagePro
         {g.rest.length ? (
           <div className="flex flex-col gap-1">
             {g.rest.map((it, i) =>
-              it.type === "act" ? (
+              it.type === "act" && it.action.do === "drawstack" ? (
+                // The size beside its button: how many cells long the drawn views are cut, and so the stack.
+                <div key={i} className="flex items-stretch gap-1">
+                  <Button type="button" variant="outline" title={it.title} onClick={() => void run(it.action)} className={cn(ACT, "w-auto min-w-0 flex-1")}>
+                    {it.text}
+                  </Button>
+                  <select
+                    aria-label="Cells long"
+                    title="How many cells long the stack is. More is finer and takes longer to draw."
+                    value={stackSize}
+                    onChange={(e) => pickSize(Number(e.target.value))}
+                    className={SELECT}
+                  >
+                    {STACK_SIZES.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : it.type === "act" ? (
                 <Button
                   key={i}
                   type="button"

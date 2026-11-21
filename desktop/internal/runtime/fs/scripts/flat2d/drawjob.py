@@ -34,6 +34,9 @@ LABELS = {
     "motion": "Pack the motion",
     "say": "Speak the line",
     "sound": "Make the sound",
+    # A sprite stack from the drawn flat views (views pixel with stack: scripts/stack_views.py). Not "stack": that is
+    # generate.sh's "Sprite stack" (sliced from the mesh).
+    "carve": "Carve the stack",
     **{f"idea{i}": f"Picture {i}" for i in range(1, 9)},
 }
 STEPS = ("pieces", "motion", "say", "sound")
@@ -56,6 +59,7 @@ FLAW_PAST = {"cloudy": "ground was cloudy", "shadow": "ground had a shadow", "fa
              "top_sideways": "top view lay sideways", "side_upright": "side view stood upright",
              "stretch": "front or back view was out of proportion"}
 VIEW_STAGES = ("views_split", "views_check")
+CARVE = "carve"
 
 
 def times_path(root: Path) -> Path:
@@ -132,14 +136,15 @@ def write_times(root: Path, backend: str, seconds: dict[str, float]) -> None:
 
 
 def plan_for(kind: str, *, loaded: bool, steps: list[str] | None = None, count: int = 1, drop: bool = False,
-             views: bool = False) -> list[str]:
-    """The stages a draw job shows. views: the four-view sheet (draw, split, check) instead of a still's ground."""
+             views: bool = False, stack: bool = False) -> list[str]:
+    """The stages a draw job shows. views: the four-view sheet (draw, split, check) instead of a still's ground.
+    stack: then carve a sprite stack from the cleaned views."""
     head = [] if loaded else ["load"]
     if kind == "ideas":
         return head + [f"idea{i}" for i in range(1, count + 1)]
     if drop:
         return list(steps or [])
-    return head + ["draw", *(VIEW_STAGES if views else ("ground",))] + list(steps or [])
+    return head + ["draw", *(VIEW_STAGES if views else ("ground",))] + ([CARVE] if stack else []) + list(steps or [])
 
 
 class Hook:
@@ -294,7 +299,10 @@ class Hook:
             self.target = "redraw"
             self.redraws += 1
             if "redraw" not in self.plan:
-                at = self.plan.index("ground") + 1 if "ground" in self.plan else len(self.plan)
+                # After the check that found the flaw: a still's ground, a sheet's views_check (so a stack's carve
+                # stays last), else the end.
+                after = next((k for k in ("ground", "views_check") if k in self.plan), None)
+                at = self.plan.index(after) + 1 if after else len(self.plan)
                 self.set_plan(self.plan[:at] + ["redraw"] + self.plan[at:])
                 self.stage("redraw")
             else:
@@ -367,7 +375,7 @@ def _remember(root: Path, backend: str, hook: Hook | None) -> None:
         out["attempt"] = hook.attempts[-1]
     if hook.grounds:
         out["ground"] = hook.grounds[-1]
-    for step in (*STEPS, *VIEW_STAGES):
+    for step in (*STEPS, *VIEW_STAGES, CARVE):
         s = hook.seconds(step)
         if s is not None:
             out[step] = s
@@ -425,12 +433,15 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
     steps = list(spec.get("steps") or [])
     if stem_dir(root, stem).is_dir() and not drop:
         autosave(root, stem, ("concept",))
+    stack = bool(spec.get("stack")) and optional.is_pixel(payload.get("views"))
+    if stack and stem_dir(root, stem).is_dir():
+        autosave(root, stem, ("stack",))  # the stack on screen, if never saved, before a new concept is picked
     had_parts = (flat_dir(root, stem) / "parts.json").is_file() and "pieces" not in steps
     views = not drop and (optional.is_pixel(payload.get("views"))
                           or optional.wants_views(payload.get("intent"), payload.get("views")))
     reference = payload.get("reference") or None
     plan = plan_for("flat2d", loaded=optional.model_loaded(photo=bool(reference)), steps=steps, drop=drop,
-                    views=views)
+                    views=views, stack=stack)
     hook = Hook(factory, job_id, stem, stem_dir(root, stem) / "draw.log", plan, "flat2d", spec.get("backend") or "")
     hooks.append(hook)
     hook.set_plan(plan)
@@ -474,6 +485,11 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
         autosave(root, stem, ("concept",))
         if saved.get("pixel"):
             autosave(root, stem, ("flat",))  # flat/pixel/: the cleaned views
+        if stack:
+            hook.check()
+            hook.stage(CARVE)
+            result["stack"] = carve_stack(root, stem, hook)
+            autosave(root, stem, ("stack",), made_from=("concept",))
     texts = {k: payload[k] for k in TEXTS if isinstance(payload.get(k), str)}
     for clip in ("video", "frames"):
         if payload.get(clip):
@@ -500,6 +516,28 @@ def _run_flat(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: lis
     if had_parts:
         result["notes"].append("Pieces still show the previous still.")
     return result
+
+
+def carve_stack(root: Path, stem: str, hook: Hook) -> dict[str, Any]:
+    """Carve out/<stem>/stack/ from the cleaned views in flat/pixel/ (scripts/stack_views.py); _run_flat saved the
+    stack there before as a version when the job began. Returns the stack's size for the job's result. Raises FlatError when it cannot."""
+    import stack_views as SV
+
+    asset = stem_dir(root, stem)
+    paths = {n: asset / "flat" / "pixel" / f"{n}.png" for n in SV.VIEWS}
+    if not all(p.is_file() for p in paths.values()):
+        raise FlatError("The views could not be cleaned, so no stack was carved. Try again or pick another size.")
+    hook.line("Carving the stack from the four views.")
+    try:
+        result = SV.stack_views(SV.prepare(SV.read_views(paths), fit=True))
+    except SV.ViewsError as e:
+        raise FlatError(f"Could not carve the stack: {e}") from None
+    hook.check()
+    SV.write_stack(result, asset / "stack", "flat/pixel", stem)
+    size = result["size"]
+    hook.line(f"Stack carved: {size['length']} long, {size['width']} wide, {size['height']} layers, "
+              f"{result['colors']} colours.")
+    return {"file": "stack/stack.json", "size": size, "colors": result["colors"], "layers": result["layers"]}
 
 
 def _run_ideas(factory, spec: dict[str, Any], payload: dict[str, Any], hooks: list[Hook]) -> dict[str, Any]:

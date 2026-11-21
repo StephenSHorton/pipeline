@@ -1,7 +1,7 @@
 // Jobs Home started, at module scope so they outlive the Home screen: the draw → 3D chain (a description with no
 // picture is drawn as a four-view sheet first, then built like legacy buildFromConcept) and the finish toast.
 import { flowFiles, listAssets, readIntent as readIntentJson, readOutJson, type Facing, type FacingSource } from "@/lib/api";
-import { degradedLine, displayStem, onJobFinished, startJob, useJobs, type Job, type JobOpts } from "@/lib/jobs";
+import { degradedLine, displayStem, isStackDraw, onJobFinished, startJob, useJobs, type Job, type JobOpts } from "@/lib/jobs";
 import { toast } from "@/lib/ui";
 import { jobStage, openAsset } from "@/app/open";
 import { buildFromDrawingBody, isThreeD, kindDef, NO_PICTURE, recoverDrawIntent, type NestedIntent } from "./make";
@@ -64,7 +64,10 @@ async function finish(job: Job) {
   const stem = job.stem;
   const name = displayStem(stem);
   let text: string;
-  if (job.kind === "flat2d") {
+  if (isStackDraw(job)) {
+    const size = job.result?.stack?.size;
+    text = `Sprite stack ready: ${name}${size ? ` · ${size.length} cells long, ${size.height} layers` : ""}`;
+  } else if (job.kind === "flat2d") {
     text = `${job.revise ? "Redrawn" : "Sprite ready"}: ${name}`;
   } else if (job.kind === "ideas") {
     return; // screens/asset/ideas/more.ts owns every ideas finish (legacy finishIdeasJob)
@@ -98,6 +101,8 @@ async function finish(job: Job) {
 /** After a draw: build the 3D kind it was drawn for (this page's pick, else the intent the draw saved), unless the
  * asset already has a mesh. Otherwise it was a sprite: the plain finish. */
 async function afterDraw(job: Job) {
+  // A stack draw made its stack itself: never a 3D build after it, even when the asset's kind is a sprite stack.
+  if (isStackDraw(job)) return finish(job);
   const known = drawThen3d.get(job.stem);
   drawThen3d.delete(job.stem);
   let want = known;

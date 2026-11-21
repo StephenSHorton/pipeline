@@ -44,6 +44,8 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(drawjob.plan_for("flat2d", loaded=False, views=True),
                          ["load", "draw", "views_split", "views_check"])
         self.assertEqual(drawjob.plan_for("flat2d", loaded=True), ["draw", "ground"])
+        self.assertEqual(drawjob.plan_for("flat2d", loaded=True, views=True, stack=True),
+                         ["draw", "views_split", "views_check", "carve"])
 
 
 class DrawJobTests(unittest.TestCase):
@@ -444,6 +446,117 @@ class DrawJobTests(unittest.TestCase):
                 with self.assertRaises(ValueError, msg=bad):
                     self.factory.start_flat({"kind": "flat2d", "stem": "car", "prompt": "a car", **bad})
         self.assertEqual((seen[0]["views"], seen[0]["size"], seen[0]["style"]), ("pixel", 96, "clean"))
+
+    def test_stack_needs_pixel_views_and_draws_the_assets_description(self) -> None:
+        seen: list[tuple[dict, dict]] = []
+        with mock.patch.object(drawjob, "run", lambda factory, spec, payload, **k: seen.append((spec, payload))):
+            with self.assertRaises(ValueError):  # no description saved yet
+                self.factory.start_flat({"kind": "flat2d", "stem": "car", "views": "pixel", "stack": True})
+            (self.root / "out" / "car" / "flat").mkdir(parents=True)
+            (self.root / "out" / "car" / "flat" / "prompt.txt").write_text("a blue race car\n", encoding="utf-8")
+            for bad in ({"views": 4}, {}, {"kind": "ideas", "views": "pixel"}):
+                with self.assertRaises(ValueError, msg=bad):
+                    self.factory.start_flat({"kind": "flat2d", "stem": "car", "stack": True, **bad})
+            self.factory.start_flat({"kind": "flat2d", "stem": "car", "views": "pixel", "stack": True,
+                                     "style": "clean", "size": 128})
+            with self.factory._lock:
+                self.factory._job["state"] = "ok"
+        spec, payload = seen[0]
+        self.assertTrue(spec["stack"])
+        self.assertEqual((payload["prompt"], payload["size"], payload["style"]), ("a blue race car", 128, "clean"))
+
+    def test_a_redraw_on_a_stack_plan_comes_before_the_carve(self) -> None:
+        plan = drawjob.plan_for("flat2d", loaded=True, views=True, stack=True)
+        log = self.root / "out" / "car" / "draw.log"
+        hook = drawjob.Hook(self.factory, "j", "car", log, plan, "flat2d")
+        try:
+            hook.attempt(2, 2, ["stretch"])
+        finally:
+            hook.close("done")
+        self.assertEqual(hook.plan, ["draw", "views_split", "views_check", "redraw", "carve"])
+
+    def _fake_pixel_draw(self, views: bool = True):
+        """optional.draw for views pixel: writes four matching cleaned views to flat/pixel/ (or none)."""
+        from PIL import Image
+
+        def draw(root, stem, prompt, **kw):
+            folder = Path(root) / "out" / stem / "flat"
+            (folder / "pixel").mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (16, 16), (255, 0, 255)).save(folder / "source.png")
+            (folder / "prompt.txt").write_text(prompt + "\n", encoding="utf-8")
+            if views:
+                for name, (w, h), c in (("top", (4, 6), (200, 40, 40)), ("side", (6, 3), (40, 160, 40)),
+                                        ("front", (4, 3), (40, 40, 200)), ("back", (4, 3), (220, 200, 40))):
+                    im = Image.new("RGBA", (w + 2, h + 2), (0, 0, 0, 0))
+                    im.paste(Image.new("RGBA", (w, h), c + (255,)), (1, 1))
+                    im.save(folder / "pixel" / f"{name}.png")
+                (folder / "pixel" / "pixel.json").write_text("{}", encoding="utf-8")
+            return {"views": "flat/views.json", "pixel": "flat/pixel/pixel.json" if views else None}
+
+        return draw
+
+    def test_a_stack_draw_carves_the_stack_and_saves_a_version_made_from_the_concept(self) -> None:
+        import flow
+
+        with mock.patch.object(optional, "draw", self._fake_pixel_draw()):
+            job = self.start({"kind": "flat2d", "stem": "car", "prompt": "a car", "views": "pixel", "stack": True,
+                              "style": "clean", "size": 64})
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        self.assertEqual(self.keys(st)[-1], "carve")
+        labels = {s["key"]: s["label"] for s in st["progress"]["stages"]}
+        self.assertEqual(labels["carve"], "Carve the stack")
+        self.assertEqual(st["result"]["stack"]["size"], {"width": 4, "length": 6, "height": 3})
+        asset = self.root / "out" / "car"
+        meta = json.loads((asset / "stack" / "stack.json").read_text())
+        self.assertEqual((meta["maker"], meta["layers"]), ("views", 3))
+        data = flow.read_manifest(asset)
+        take = data["stages"]["stack"]["takes"][-1]
+        self.assertEqual(set(take["from"]), {"concept"})
+        self.assertEqual(take["from"]["concept"], data["stages"]["concept"]["pick"])
+        self.assertIn("carve", json.loads((self.root / "out" / "draw-times.json").read_text())["stub"])
+
+    def test_an_unsaved_stack_is_kept_as_made_from_the_concept_before_the_draw(self) -> None:
+        import flow
+
+        asset = self.root / "out" / "car"
+        with mock.patch.object(optional, "draw", self._fake_pixel_draw()):
+            st = self.wait(self.start({"kind": "flat2d", "stem": "car", "prompt": "a car", "views": "pixel",
+                                       "stack": True})["job_id"])
+            self.assertEqual(st["state"], "ok", st)
+            first_concept = flow.read_manifest(asset)["stages"]["concept"]["pick"]
+            meta = json.loads((asset / "stack" / "stack.json").read_text())
+            meta["defaults"]["contrast"] = 1.3  # changed on screen, never kept
+            (asset / "stack" / "stack.json").write_text(json.dumps(meta), encoding="utf-8")
+            st = self.wait(self.start({"kind": "flat2d", "stem": "car", "prompt": "a red car", "views": "pixel",
+                                       "stack": True})["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        takes = flow.read_manifest(asset)["stages"]["stack"]["takes"]
+        self.assertEqual(len(takes), 3)
+        self.assertEqual(takes[1]["from"], {"concept": first_concept})  # the edited stack, from the concept it had
+
+    def test_a_stack_draw_whose_views_did_not_clean_fails_plainly(self) -> None:
+        with mock.patch.object(optional, "draw", self._fake_pixel_draw(views=False)):
+            job = self.start({"kind": "flat2d", "stem": "car", "prompt": "a car", "views": "pixel", "stack": True})
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "error", st)
+        self.assertIn("no stack was carved", st["error"])
+        self.assertFalse((self.root / "out" / "car" / "stack" / "stack.json").exists())
+
+    def test_cancel_before_the_carve_writes_no_stack(self) -> None:
+        inner = self._fake_pixel_draw()
+
+        def draw(root, stem, prompt, **kw):
+            out = inner(root, stem, prompt, **kw)
+            with self.factory._lock:
+                self.factory._job["cancel"] = True  # Cancel pressed as the drawing finished
+            return out
+
+        with mock.patch.object(optional, "draw", draw):
+            job = self.start({"kind": "flat2d", "stem": "car", "prompt": "a car", "views": "pixel", "stack": True})
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "cancelled", st)
+        self.assertFalse((self.root / "out" / "car" / "stack" / "stack.json").exists())
 
     def test_a_photo_reference_reaches_the_draw_payload(self) -> None:
         from PIL import Image

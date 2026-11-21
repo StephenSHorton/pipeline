@@ -1,7 +1,8 @@
 // Same cases as tests/test_desktop_shell.py (test_degraded_is_one_plain_line_on_job_and_asset_cards,
 // test_shape_mv_tooltip_reads_the_probed_features), which run the legacy page's functions under node.
 import { describe, expect, it } from "vitest";
-import { degradedLine, healthLabel, overlayPct, overlayPctText, shapeMvNote } from "./jobs";
+import { jobStage } from "@/app/open";
+import { degradedLine, healthLabel, isStackDraw, jobDoing, overlayPct, overlayPctText, shapeMvNote } from "./jobs";
 
 describe("degradedLine", () => {
   it("is one plain-English line, nothing when there is nothing", () => {
@@ -70,5 +71,16 @@ describe("factory pill and job bar", () => {
     expect(overlayPctText(progress, "running", 63, timing)).toBe("B 2/2 · 63% · about 15 s left");
     expect(overlayPct(progress, "ok", timing)).toBe(100);
     expect(overlayPctText(progress, "cancelled", 63, timing)).toBe("Cancelled");
+  });
+});
+
+describe("a stack draw (Draw views & stack)", () => {
+  it("is known by its spec, or by /status after a reload, and opens on Stack", () => {
+    const mine = { stem: "race_car", kind: "flat2d" as const, spec: { stack: true } };
+    const back = { stem: "race_car", kind: "flat2d" as const, stack: true };
+    const plain = { stem: "race_car", kind: "flat2d" as const, spec: { intent: { output: "sprite" } } };
+    expect([isStackDraw(mine), isStackDraw(back), isStackDraw(plain)]).toEqual([true, true, false]);
+    expect(jobDoing(mine)).toBe("Stacking race_car");
+    expect([jobStage(mine), jobStage(back), jobStage(plain)]).toEqual(["stack", "stack", "flat"]);
   });
 });

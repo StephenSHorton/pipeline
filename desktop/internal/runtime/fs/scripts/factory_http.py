@@ -1087,6 +1087,19 @@ class Factory:
             raise ValueError("kind must be flat2d or ideas")
         stem = check_stem(str(body.get("stem") or ""))
         prompt = " ".join(str(body.get("prompt") or "").split())
+        # stack: carve a sprite stack from the drawn views when they are cleaned (views pixel only). With no prompt it
+        # draws the asset's own description (flat/prompt.txt), as the Stack stage's "Draw views & stack" does.
+        stack = bool(body.get("stack"))
+        if stack:
+            if kind != "flat2d" or str(body.get("views") or "").strip().lower() != "pixel":
+                raise ValueError("stack is for a flat2d draw with views pixel")
+            if not prompt:
+                try:
+                    prompt = " ".join((stem_dir(self.root, stem) / "flat" / "prompt.txt").read_text(encoding="utf-8").split())
+                except OSError:
+                    prompt = ""
+                if not prompt:
+                    raise ValueError("this asset has no description to draw from; draw it from Home first")
         drop = kind == "flat2d" and body.get("source") == "drop"
         if body.get("source") not in (None, "", "drop"):
             raise ValueError("source must be drop")
@@ -1169,7 +1182,7 @@ class Factory:
         from flat2d.optional import model_loaded
 
         plan = drawjob.plan_for(kind, loaded=drop or model_loaded(photo=reference is not None), steps=steps,
-                                count=count, drop=drop, views=reference is not None or pixel)
+                                count=count, drop=drop, views=reference is not None or pixel, stack=stack)
         job_id = uuid.uuid4().hex[:8]
         spec = {
             "job_id": job_id,
@@ -1179,6 +1192,7 @@ class Factory:
             "prompt": prompt,
             "steps": steps,
             "revise": bool(body.get("revise")) and kind == "flat2d",
+            "stack": stack,
             "source": "drop" if drop else None,
             "reference": str(reference.relative_to(self.root.resolve())) if reference is not None else None,
             "backend": backend,

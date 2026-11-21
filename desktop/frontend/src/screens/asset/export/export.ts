@@ -84,6 +84,13 @@ export type ExportAction =
   | { kind: "button"; label: "Export" | "Export again"; finder: boolean }
   | { kind: "none"; finder: boolean };
 
+/** How a stack was made, from stack.json's maker: the concept picture, drawn views (Draw views & stack), else the mesh. */
+export function stackMaker(maker?: string): string {
+  if (maker === "picture") return "built from the picture";
+  if (maker === "views") return "carved from drawn views";
+  return "sliced from the mesh";
+}
+
 /** "Exporting…" while it runs; Export / Export again once a 2D sheet, mesh or stack is live; else the reason. Show in
  * Finder whenever the export stage holds files and nothing is running. */
 export function exportAction(flow: FlowState | null | undefined, exporting: boolean): ExportAction {
@@ -177,7 +184,7 @@ export function exportCards(flow: FlowState | null | undefined, intent: IntentLi
       plain(
         "stack",
         "Sprite stack",
-        [`${stack.layers} layers of ${stack.resolution}×${stack.resolution}`, stack.maker === "picture" ? "built from the picture" : "sliced from the mesh"],
+        [`${stack.layers} layers of ${stack.resolution}×${stack.resolution}`, stackMaker(stack.maker)],
         stack.preview ?? "",
       ),
     );

@@ -1,6 +1,6 @@
 // Opening an asset: the asset screen picks its stage (Ideas, Concept, 2D, 3D, ...) from the flow.
 import type { Stage } from "@/lib/flow";
-import { useJobs, type Job } from "@/lib/jobs";
+import { isStackDraw, useJobs, type Job } from "@/lib/jobs";
 import { openStem } from "@/screens/asset/stage";
 import { navigate } from "./router";
 
@@ -10,10 +10,11 @@ export function openAsset(stem: string, stage?: Stage): void {
   void openStem(stem, stage);
 }
 
-/** The stage a finished job opens on: a rig on Rig, a sprite draw on the 2D sheet, ideas on Ideas. */
-export function jobStage(j: Pick<Job, "kind" | "spec">): Stage | undefined {
+/** The stage a finished job opens on: a rig on Rig, a sprite draw on the 2D sheet, a stack draw on Stack, ideas on Ideas. */
+export function jobStage(j: Pick<Job, "kind" | "spec" | "stack">): Stage | undefined {
   if (j.kind === "rig") return "rig";
   if (j.kind === "ideas") return "ideas";
+  if (isStackDraw(j)) return "stack";
   if (j.kind === "flat2d") return (j.spec as { intent?: { output?: string } } | undefined)?.intent?.output === "sprite" ? "flat" : "concept";
   return undefined;
 }

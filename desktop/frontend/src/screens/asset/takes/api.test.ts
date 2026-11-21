@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useFlow } from "@/lib/flow";
 import { useUi } from "@/lib/ui";
 import { useStage } from "../stage";
-import { buildFromConcept, defaultBuildEnter, defaultStackReload, stackFromPicture, useStacking, type BuildDeps } from "./api";
+import { buildFromConcept, defaultBuildEnter, defaultStackReload, drawStack, stackFromPicture, useStacking, type BuildDeps } from "./api";
 
 const fakes = (over: Partial<BuildDeps> = {}) => {
   const calls: string[] = [];
@@ -154,5 +154,23 @@ describe("stackFromPicture", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("drawStack", () => {
+  it("opens Stack, shows the job card, and starts the stack draw at the picked size", async () => {
+    const { deps, calls } = fakes();
+    await drawStack("race_car", 128, deps);
+    expect(calls).toEqual(["enter race_car stack", "home", "start"]);
+    expect(deps.start).toHaveBeenCalledWith(
+      { kind: "flat2d", stem: "race_car", views: "pixel", style: "clean", size: 128, stack: true },
+      { path: "/2d/draw", kind: "flat2d", title: "Stacking race_car · 128 cells long" },
+    );
+  });
+
+  it("a start that throws is a toast", async () => {
+    const { deps } = fakes({ start: vi.fn(async () => Promise.reject(new Error("busy"))) });
+    await drawStack("s", 96, deps);
+    expect(useUi.getState().toast?.text).toBe("Could not start: busy");
   });
 });

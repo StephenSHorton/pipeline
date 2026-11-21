@@ -20,7 +20,23 @@ export const VERSIONS_TITLE = "Each build is kept. Click one to go back to it; n
 export const KEEP_TITLE = "Save what is on screen as a version you can come back to.";
 
 /** What a panel button does; VersionsPanel maps each to its call. */
-export type StripAction = { do: "keep" } | { do: "build"; output: AssetOutput } | { do: "stack" } | { do: "remake" };
+export type StripAction = { do: "keep" } | { do: "build"; output: AssetOutput } | { do: "stack" } | { do: "drawstack" } | { do: "remake" };
+
+/** The Stack stage's Draw views & stack: the image model draws the asset's top, side, front and back views from its
+ * description, the views are cut to this many cells along the length, and a stack is carved from them. */
+export const DRAW_STACK_LABEL = "Draw views & stack";
+export const DRAW_STACK_TITLE =
+  "Draw top, side, front and back views of this asset from its description with the image model, then carve a sprite stack from them. The drawing becomes a new concept version too; earlier versions are kept. The size is how many cells long the stack is.";
+export const DRAW_STACK_BUSY = "Drawing views for the stack…";
+/** Cells along the length a stack draw may ask for (the factory takes 16 to 256). */
+export const STACK_SIZES = [32, 48, 64, 96, 128, 160, 192, 256] as const;
+export const DEFAULT_STACK_SIZE = 96;
+
+/** POST /2d/draw body for Draw views & stack: the clean game-art drawing (Stephen's pick on pipeline#14), cut at
+ * `size` cells long, then carved. No prompt: the factory draws the asset's own description (flat/prompt.txt). */
+export function drawStackSpec(stem: string, size: number): Record<string, unknown> {
+  return { kind: "flat2d", stem, views: "pixel", style: "clean", size, stack: true };
+}
 
 export type StripItem =
   | { type: "label"; text: string; title: string }
@@ -36,6 +52,8 @@ export interface StripInput {
   output?: AssetOutput | null;
   /** "Stack from picture" is running. */
   stacking?: boolean;
+  /** A Draw views & stack job is running on this asset. */
+  drawingStack?: boolean;
 }
 
 /** One version's tooltip: "Version N · note · date"; a rig version names its checks' line instead. */
@@ -58,7 +76,7 @@ export function takeSrc(stem: string, stage: Stage, take: FlowTake): string {
 }
 
 /** Everything the strip shows for the open stage, in order. [] hides the strip (Ideas, no flow, nothing to say). */
-export function stripItems({ stem, stage, flow, output, stacking }: StripInput): StripItem[] {
+export function stripItems({ stem, stage, flow, output, stacking, drawingStack }: StripInput): StripItem[] {
   if (stage === "ideas") return [];
   const entry = flowEntry(flow, stage);
   if (!stem || !entry) return [];
@@ -105,6 +123,8 @@ export function stripItems({ stem, stage, flow, output, stacking }: StripInput):
     if (stage === "stack" && still) {
       if (stacking) note("Stacking the picture…", { busy: true });
       else act("Stack from picture", "Build the sprite stack straight from the concept picture. No 3D needed.", { do: "stack" });
+      if (drawingStack) note(DRAW_STACK_BUSY, { busy: true });
+      else act(DRAW_STACK_LABEL, DRAW_STACK_TITLE, { do: "drawstack" });
     }
     if (still && (!mesh || !mesh.live || mesh.stale.length)) {
       const name = OUTPUT_NAMES[want] ?? "3D model";
