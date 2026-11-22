@@ -157,6 +157,7 @@ describe("defaults", () => {
       round: 0.45,
       main: true,
       flat: false,
+      lit: false,
     });
   });
 

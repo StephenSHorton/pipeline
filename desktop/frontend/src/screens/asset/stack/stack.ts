@@ -26,6 +26,8 @@ export interface StackState {
   main: boolean;
   /** Pixel art: unlit, the sheet's exact colours, sharp textures (a stack drawn as pixel art, maker "views"). */
   flat: boolean;
+  /** A pixel art stack lit by the scene: sun, sky and (in Game look) shadows on the sheet's colours. */
+  lit: boolean;
 }
 
 /** stack.json, as the page reads it (layers, resolution, pitch, extents, defaults). */
@@ -65,6 +67,7 @@ export function defaultsFromSearch(search = ""): StackState {
     })(),
     main: urlParams.get("main") !== "0",
     flat: false,
+    lit: urlParams.get("lit") === "1",
   };
 }
 
@@ -223,7 +226,7 @@ export const LOOK_BUTTONS: { look: StackLook; label: string; title: string }[] =
   { look: "contour", label: "Contour", title: "An older experiment: smooth outlined slabs. Not what the game uses." },
 ];
 
-export type StackToggle = "pixel" | "main" | "outline" | "auto" | "shade";
+export type StackToggle = "pixel" | "main" | "outline" | "auto" | "shade" | "lit";
 /** #stack-sliders, in legacy order; Reset sits after them, on its own row (TOGGLE_RESET). */
 export const TOGGLE_BUTTONS: { key: StackToggle; label: string; title: string }[] = [
   {
@@ -236,6 +239,14 @@ export const TOGGLE_BUTTONS: { key: StackToggle; label: string; title: string }[
   { key: "auto", label: "Follow 3D", title: "Keep this camera at the same angle and slow turn as the 3D model." },
   { key: "shade", label: "Shade", title: "Darken lower slabs so height is easier to read." },
 ];
+/** Pixel art only: the cubes take the scene's light. Off is the sheet's exact colours. */
+export const LIGHT_TOGGLE: { key: StackToggle; label: string; title: string } = {
+  key: "lit",
+  label: "Light",
+  title: "Light the stack: sun and sky on its faces, and cast shadows in Game look. Off shows the sheet's exact colours.",
+};
+/** The switches a stack shows: a pixel art stack adds Light (a model stack is always lit). */
+export const togglesFor = (state: Pick<StackState, "flat">) => (state.flat ? [...TOGGLE_BUTTONS, LIGHT_TOGGLE] : TOGGLE_BUTTONS);
 export const TOGGLE_RESET = {
   label: "Reset",
   title: "Restore factory stack look: 120 texels, spacing/height 1, contrast and saturation 1.20.",

@@ -24,6 +24,7 @@ import {
   type Material,
   Mesh,
   MeshBasicMaterial,
+  MeshLambertMaterial,
   MeshStandardMaterial,
   type MeshBasicMaterialParameters,
   type MeshStandardMaterialParameters,
@@ -287,7 +288,13 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
   // Pixel art (state.flat): the cubes unlit and not tone mapped, so each face is the sheet's own colour.
   const flatVoxelMat = new MeshBasicMaterial({ toneMapped: false });
   attachGrade(flatVoxelMat, "stack-flat-v1");
-  const voxelMaterial = () => (state.flat ? flatVoxelMat : voxelMat);
+  // Pixel art with Light on: the same exact colours under the scene's lights, each cube taking and casting shadow.
+  // Not tone mapped, and lifted so a face in full sun is about the sheet's own colour (the scene's lights sum to
+  // well under 1 on a matte face); faces turned away fall off from there.
+  const litVoxelMat = new MeshLambertMaterial({ toneMapped: false });
+  litVoxelMat.color.setScalar(1.7);
+  attachGrade(litVoxelMat, "stack-lit-v1");
+  const voxelMaterial = () => (state.flat ? (state.lit ? litVoxelMat : flatVoxelMat) : voxelMat);
   /** A sheet channel as an instance colour. The lit look always fed sRGB bytes in as linear; pixel art decodes
    * them, so the sRGB output encodes them back to the exact byte. */
   const chan = (v: number, shade: number) => (state.flat ? srgbToLinear(v / 255) : v / 255) * shade;
@@ -508,7 +515,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       if (m.geometry && m.geometry !== voxelGeo) m.geometry.dispose();
       const mats = m.material ? (Array.isArray(m.material) ? m.material : [m.material]) : [];
       for (const mt of mats) {
-        if (!mt || mt === voxelMat || mt === flatVoxelMat || seen.has(mt)) continue;
+        if (!mt || mt === voxelMat || mt === flatVoxelMat || mt === litVoxelMat || seen.has(mt)) continue;
         seen.add(mt);
         mt.dispose();
       }
@@ -542,6 +549,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     }
     const mesh = rec.mesh;
     mesh.material = voxelMaterial();
+    mesh.receiveShadow = state.flat && state.lit;
     const me = mesh.instanceMatrix.array;
     const ca = mesh.instanceColor!.array;
     const aPBR = mesh.geometry.getAttribute("aPBR");
@@ -833,7 +841,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     if (changed("brightness") || changed("contrast") || changed("saturation")) applyGrade();
     if (!meta) return;
     const rebuild =
-      changed("look") || changed("flat") || changed("shade") || changed("main") || (changed("layers") && (state.round > 0 || state.main));
+      changed("look") || changed("flat") || changed("lit") || changed("shade") || changed("main") || (changed("layers") && (state.round > 0 || state.main));
     if (rebuild) {
       applyStackState();
       void rebuildLookAsync();
@@ -923,7 +931,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       gameLook.dispose();
       pixelRT?.depthTexture?.dispose();
       pixelRT?.dispose();
-      for (const m of [pixelMat, isoMat, voxelMat, flatVoxelMat, ground.material, blob.material, brushBall.material]) m.dispose();
+      for (const m of [pixelMat, isoMat, voxelMat, flatVoxelMat, litVoxelMat, ground.material, blob.material, brushBall.material]) m.dispose();
       for (const g of [pixelQuad.geometry, voxelGeo, ground.geometry, blob.geometry, brushBall.geometry]) g.dispose();
       renderer.dispose();
       // Without this the browser keeps the context until GC, and a few remounts hit its context limit.

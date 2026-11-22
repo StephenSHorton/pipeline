@@ -40,7 +40,7 @@ import {
   STACK_COPY,
   stateForMeta,
   statsParts,
-  TOGGLE_BUTTONS,
+  togglesFor,
   TOGGLE_RESET,
   type PaletteEntry,
   type PbrKey,
@@ -275,7 +275,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
                   ))}
                 </div>
                 <Group label="Stack">
-                  {TOGGLE_BUTTONS.map((b) => (
+                  {togglesFor(state).map((b) => (
                     <Toggle key={b.key} on={state[b.key]} title={b.title} onClick={() => update({ [b.key]: !state[b.key] })}>
                       {b.label}
                     </Toggle>
