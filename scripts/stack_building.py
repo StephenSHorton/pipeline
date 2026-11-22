@@ -104,6 +104,7 @@ BAY_OUTLINE = 0.9
 BAY_GAP = 3  # window columns this close (mullions, frames) are one window
 BAY_MIN = 0.05  # a window narrower than this share of the width is not one
 BAY_NARROW = 0.6  # ... and one narrower than this share of the typical window is trim (dark corner stones)
+BAY_DOOR = 0.25  # a door covering this share of a bay's columns is in it (its frame may reach the next bay)
 BAY_MAX = 12  # at most this many bays on a face
 
 
@@ -167,10 +168,9 @@ def base_rows(fg: np.ndarray) -> int:
     return cut if cut and any(fg[r].any() for r in range(bottom - cut + 1, bottom + 1)) else 0
 
 
-def plain_wall_door(pic) -> dict[str, Any]:
-    """Whether a plain wall picture has an opening that reaches the ground (a door, a shop front): a run of colours
-    that are not the wall's, the plinth's or the trim's, across the bottom rows of the wall. Windows stand on sills
-    above those rows. Returns {door, hits, runs}."""
+def _door_rows(pic) -> tuple[list[np.ndarray], int, int]:
+    """The door probe's rows: for each of DOOR_ROWS, which columns hold colours that are not the wall's, the
+    plinth's or the trim's. Returns (rows of bools, the first column they start at, the wall's width)."""
     rgb = _rgb(pic)
     fg = _below_cornice(_mask(rgb))
     rows = np.nonzero(fg.any(1))[0]
@@ -182,21 +182,51 @@ def plain_wall_door(pic) -> dict[str, Any]:
     x0, x1 = int(xs[0]), int(xs[-1])
     w = x1 - x0 + 1
     edge = int(DOOR_EDGE * w)
-    runs = []
+    out = []
     for share in DOOR_ROWS:
         px = rgb[bottom - int(share * h), x0 + edge : x1 - edge + 1].astype(int) // 32
         keys = px[:, 0] * 64 + px[:, 1] * 8 + px[:, 2]
         # The wall's own colours (its material, the plinth, the trim) run along the whole row, so they show at both
         # ends of it; a door in between does not, however flat its colour.
         end = max(1, int(DOOR_COMMON * len(keys)))
-        odd = ~(np.isin(keys, keys[:end]) & np.isin(keys, keys[-end:]))
-        best = run = 0
-        for o in odd:
-            run = run + 1 if o else 0
-            best = max(best, run)
-        runs.append(round(best / w, 3))
+        out.append(~(np.isin(keys, keys[:end]) & np.isin(keys, keys[-end:])))
+    return out, x0 + edge, w
+
+
+def _longest(odd: np.ndarray) -> tuple[int, int]:
+    """The longest run of True: (start, end)."""
+    best, start, run = (0, 0), 0, 0
+    for i, o in enumerate(odd):
+        if o:
+            run += 1
+            if run > best[1] - best[0]:
+                best = (i - run + 1, i + 1)
+        else:
+            run = 0
+    return best
+
+
+def plain_wall_door(pic) -> dict[str, Any]:
+    """Whether a plain wall picture has an opening that reaches the ground (a door, a shop front): a run of colours
+    that are not the wall's, the plinth's or the trim's, across the bottom rows of the wall. Windows stand on sills
+    above those rows. Returns {door, hits, runs}."""
+    rows, _, w = _door_rows(pic)
+    runs = [round((lambda r: r[1] - r[0])(_longest(odd)) / w, 3) for odd in rows]
     hits = sum(r >= DOOR_RUN for r in runs)
     return {"door": hits >= DOOR_HITS, "hits": hits, "runs": runs}
+
+
+def door_columns(pic) -> np.ndarray:
+    """Where a wall's door is, across its columns (bools, the picture's width): the probe's longest run in each
+    bottom row, where at least DOOR_HITS rows have one DOOR_RUN wide. All False when no door is found."""
+    rgb = _rgb(pic)
+    rows, start, w = _door_rows(rgb)
+    count = np.zeros(rgb.shape[1], int)
+    for odd in rows:
+        a, b = _longest(odd)
+        if b - a >= DOOR_RUN * w:
+            count[start + a : start + b] += 1
+    return count >= DOOR_HITS
 
 
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -457,30 +487,40 @@ def find_bays(wall: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(cuts, cuts[1:]))
 
 
-def bay_order(bays: list[tuple[int, int]], width: int, n: int) -> list[int]:
-    """Which drawn bays make a face of n bays, left to right. The bays at the middle of the wall (the door, under a
-    shop front or a back door) are kept once; bays beside them are dropped from the outside in, or repeated (a copy
-    of the bay next to the middle), one side then the other, so the face stays as near symmetric as it was."""
+def door_bays(bays: list[tuple[int, int]], doors: np.ndarray) -> list[int]:
+    """The bays a door reaches into (doors: bools across the wall, see door_columns), as one run of bays."""
+    hit = [i for i, (a, b) in enumerate(bays) if doors[a:b].mean() >= BAY_DOOR]
+    return list(range(hit[0], hit[-1] + 1)) if hit else []
+
+
+def bay_order(bays: list[tuple[int, int]], width: int, n: int, keep: list[int] | None = None) -> list[int]:
+    """Which drawn bays make a face of n bays, left to right. The door's bays (keep; when none is given or found,
+    the bays at the middle of the wall) are kept once; bays beside them are dropped from the outside in, or
+    repeated (a copy of the bay next to the door's), one side then the other, so the face stays as near symmetric
+    as it was."""
     m = len(bays)
     if not 1 <= n <= BAY_MAX:
         raise WallsError(f"a face is 1 to {BAY_MAX} bays")
     mid = width / 2
-    centre = [i for i, (a, b) in enumerate(bays) if a - 2 <= mid <= b + 2]
+    centre = list(keep or [])
+    if not centre:
+        centre = [i for i, (a, b) in enumerate(bays) if a - 2 <= mid <= b + 2]
     if not centre:
         centre = [min(range(m), key=lambda i: abs((bays[i][0] + bays[i][1]) / 2 - mid))]
     if n < len(centre):
-        raise WallsError(f"the middle of this wall is {len(centre)} bays (the door), so a face needs at least "
-                         f"{len(centre)}")
+        raise WallsError(f"the door takes {len(centre)} bays of this wall, so a face needs at least {len(centre)}")
     left, right = list(range(centre[0])), list(range(centre[-1] + 1, m))
     side = 0 if len(left) >= len(right) else 1
     while len(left) + len(centre) + len(right) > n:
         (left.pop(0) if (side == 0 and left) or not right else right.pop())
         side ^= 1
+    if n > len(centre) and not left and not right:
+        raise WallsError("this wall is all door: it has no other bay to repeat")
     while len(left) + len(centre) + len(right) < n:
-        if side == 0:
-            left.append(left[-1] if left else centre[0])
+        if (side == 0 and left) or not right:  # a side with no bay of its own never grows: that would copy the door
+            left.append(left[-1])
         else:
-            right.insert(0, right[0] if right else centre[-1])
+            right.insert(0, right[0])
         side ^= 1
     return left + centre + right
 
@@ -491,10 +531,19 @@ def regroup(wall: np.ndarray, bays: list[tuple[int, int]], order: list[int]) -> 
     return np.concatenate(parts, axis=1)
 
 
+def _flat_rgb(rgba: np.ndarray) -> np.ndarray:
+    """A cleaned view (RGBA) on the magenta key, as the drawn pictures are."""
+    rgb = rgba[..., :3].copy()
+    rgb[rgba[..., 3] <= 127] = KEY
+    return rgb
+
+
 def set_bays(view: dict[str, np.ndarray], wide: int | None = None, deep: int | None = None) -> dict[str, Any]:
     """The cleaned views with the front and back cut or grown to `wide` bays and the side to `deep` bays (None:
     as drawn). The bays are read once, on the plain wall (the side), and used on all three: the edit model keeps
-    the plain wall's windows where they were. Returns {view, bays, wide, deep, front_order, side_order}."""
+    the plain wall's windows where they were. The bays a door is in (door_columns on the front or back for the
+    width, on the side for the depth) are kept once. Returns {view, bays, drawn, door_bays, wide, deep, wide_order,
+    deep_order} (an order only for a face that was changed)."""
     side = view["side"]
     bays = find_bays(side)
     out = dict(view)
@@ -502,11 +551,21 @@ def set_bays(view: dict[str, np.ndarray], wide: int | None = None, deep: int | N
     if (wide is not None or deep is not None) and not bays:
         raise WallsError("no window bays were found on the plain wall, so its width and depth cannot be changed")
     W = side.shape[1]
+    keep: dict[str, list[int]] = {}
+    for key, faces in (("wide", ("front", "back")), ("deep", ("side",))):
+        doors = np.zeros(W, bool)
+        for f in faces:  # a door on either face keeps its bays: the front and back are cut the same
+            try:
+                doors |= door_columns(_flat_rgb(view[f]))
+            except WallsError:
+                pass
+        keep[key] = door_bays(bays, doors) if bays else []
+    info["door_bays"] = keep
     for key, n, faces in (("wide", wide, ("front", "back")), ("deep", deep, ("side",))):
         if n is None:
             info[key] = len(bays)
             continue
-        order = bay_order(bays, W, int(n))
+        order = bay_order(bays, W, int(n), keep[key])
         for f in faces:  # every wall is drawn from the plain wall, so its columns line up with the bays as drawn
             out[f] = regroup(view[f], bays, order)
         info[key], info[f"{key}_order"] = int(n), order

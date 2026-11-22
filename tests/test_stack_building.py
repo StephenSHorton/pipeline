@@ -347,6 +347,26 @@ class BayTests(unittest.TestCase):
             with self.assertRaises(SB.WallsError):  # the door's two middle bays cannot shrink to one
                 SB.build(root, "boards", walls, size=SMALL, wide=1, line=lambda t: None)
 
+    def test_a_door_off_to_one_side_is_kept_once(self) -> None:
+        walls = synthetic_walls(awning=False)
+        x0, x1, y1 = 40, 280, 280
+        mid = (x0 + x1) // 2
+        for name in ("front", "back"):  # move the door from the middle to under the first window
+            a = np.asarray(walls["base"]).copy()
+            a[y1 - 80 : y1 - 3, x0 + 18 : x0 + 50] = (160, 90, 40)
+            walls[name] = Image.fromarray(a)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "out").mkdir()
+            SB.build(root, "side-door", walls, size=SMALL, line=lambda t: None)
+            info = SB.set_bays(SB.read_pixel(root, "side-door"), wide=6)
+            self.assertEqual(info["door_bays"]["wide"], [0])
+            self.assertEqual(info["wide_order"].count(0), 1)
+            self.assertEqual(len(info["wide_order"]), 6)
+            one = SB.set_bays(SB.read_pixel(root, "side-door"), wide=1)
+            self.assertEqual(one["wide_order"], [0])  # the narrowest keeps the door, not the middle
+        self.assertGreater(mid, x0 + 50)
+
     def test_the_request_takes_wide_and_deep(self) -> None:
         req = building.parse({"stem": "shop", "wall": "w", "front": "a door", "wide": 5, "deep": "2"})
         self.assertEqual((req["wide"], req["deep"]), (5, 2))
