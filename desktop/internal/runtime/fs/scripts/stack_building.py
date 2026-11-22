@@ -82,6 +82,7 @@ AWNING_TOP = 0.5  # the awning's top edge: the highest layer where this share of
 AWNING_MIN_SHARE = 0.03  # ... in a run of at least this share of the height
 AWNING_BAND = 0.76  # the awning runs down while one of the AWNING_LOOK layers below differs over this share
 AWNING_LOOK = 4
+AWNING_BAND_OWN = 0.9  # ... or over this share of how much its own top layers differ, when that is less
 AWNING_COLUMN = 0.5  # a column is the awning's when it differs over this share of the awning's layers
 AWNING_QUIET = 0.75  # an awning layer differs over this share of the quiet columns (plain wall below it) ...
 AWNING_QUIET_SHARE = 0.04  # ... in at least this share of the height (about 6 layers at 147, 8 at 199)
@@ -420,7 +421,9 @@ def find_awning(front: np.ndarray, back: np.ndarray, fm: np.ndarray, bm: np.ndar
     if h1 < 0:
         return None
     h0 = h1
-    while h0 > AWNING_LOOK and cover[h0 - AWNING_LOOK : h0].max() > AWNING_BAND:
+    # An awning set inside the corner trim spans less of the wall, so the band is also measured against its own top.
+    band = min(AWNING_BAND, AWNING_BAND_OWN * float(cover[h1 - need + 1 : h1 + 1].mean()))
+    while h0 > AWNING_LOOK and cover[h0 - AWNING_LOOK : h0].max() > band:
         h0 -= 1
     # The awning's columns: those that differ over at least AWNING_COLUMN of its layers (a corner trim beside it, which
     # an edit may touch in a layer or two, is wall and must not stick out).
