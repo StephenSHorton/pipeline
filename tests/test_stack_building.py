@@ -376,6 +376,58 @@ class BayTests(unittest.TestCase):
                 building.parse({"stem": "shop", "wall": "w", "front": "a door", "wide": bad})
 
 
+class RoofTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "out").mkdir()
+        self.walls = synthetic_walls()
+        self.flat = SB.build(self.root, "flat", self.walls, size=SMALL, line=lambda t: None)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_a_gable_roof_rises_to_a_ridge_over_the_block(self) -> None:
+        for ridge in SB.RIDGES:
+            out = SB.build(self.root, f"gable-{ridge}", self.walls, size=SMALL, roof="gable", ridge=ridge,
+                           roof_colour="tile", line=lambda t: None)
+            roof = out["roof"]
+            self.assertEqual((roof["kind"], roof["ridge"], roof["colour"]), ("gable", ridge, list(SB.ROOF_COLOURS["tile"])))
+            self.assertGreater(out["layers"], self.flat["layers"])
+            e = roof["eave"]
+            self.assertEqual(out["size"]["width"], self.flat["size"]["width"] + 2 * e)
+            shape = SB.build_shape(SB.read_pixel(self.root, f"gable-{ridge}"), roof="gable", ridge=ridge, scale=None)
+            solid = shape["solid"]
+            H = self.flat["layers"]
+            areas = [int(solid[h].sum()) for h in range(H, solid.shape[0])]
+            self.assertTrue(all(a >= b for a, b in zip(areas, areas[1:])), areas)  # narrower going up
+            top = solid[-1]
+            ys, xs = np.nonzero(top)
+            # The ridge runs across (along x) or front to back (along y): the top layer is long that way.
+            long_x = (xs.max() - xs.min()) > (ys.max() - ys.min())
+            self.assertEqual(long_x, ridge == "across")
+            # The top of the walls is solid under the roof: no sunken deck.
+            block = solid[H - 1, e : -e, e : -e]
+            self.assertGreater(block.mean(), 0.6)
+
+    def test_bad_roofs_fail_before_anything_is_written(self) -> None:
+        for kw in ({"roof": "dome"}, {"ridge": "diagonal"}, {"roof": "gable", "roof_colour": "plaid"}):
+            with self.assertRaises(SB.WallsError, msg=kw):
+                SB.build(self.root, "bad-roof", self.walls, size=SMALL, line=lambda t: None, **kw)
+        self.assertFalse((self.root / "out" / "bad-roof").exists())
+        self.assertEqual(SB.roof_rgb("#102030"), (16, 32, 48))
+
+    def test_the_request_takes_a_roof(self) -> None:
+        req = building.parse({"stem": "s", "wall": "w", "front": "a door", "roof": "Gable", "ridge": "along",
+                              "roof_colour": "#AA0000"})
+        self.assertEqual((req["roof"], req["ridge"], req["roof_colour"]), ("gable", "along", "#aa0000"))
+        req = building.parse({"stem": "s", "wall": "w", "front": "a door"})
+        self.assertEqual((req["roof"], req["ridge"], req["roof_colour"]), ("flat", "across", None))
+        for bad in ({"roof": "dome"}, {"ridge": "x"}, {"roof_colour": "plaid"}, {"roof_colour": 5}):
+            with self.assertRaises(ValueError, msg=bad):
+                building.parse({"stem": "s", "wall": "w", "front": "a door", **bad})
+
+
 class DoorTests(unittest.TestCase):
     def test_a_door_painted_on_the_plain_wall_is_found(self) -> None:
         base = synthetic_walls()["base"]

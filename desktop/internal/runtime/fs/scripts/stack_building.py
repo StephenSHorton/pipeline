@@ -26,7 +26,8 @@ the width as seen from the front. The back picture is mirrored so its columns li
 
 CLI (no model; builds from walls already drawn):
   python scripts/stack_building.py --root R --stem S --walls DIR [--look crisp|smooth] [--size N]
-      [--awning auto|yes|no] [--wide N] [--deep N] [--render PNG]
+      [--awning auto|yes|no] [--wide N] [--deep N] [--roof flat|gable] [--ridge across|along]
+      [--roof-colour slate|tile|shingle|green|#rrggbb] [--render PNG]
 DIR holds base.png, front.png and (optional) back.png.
 """
 from __future__ import annotations
@@ -97,6 +98,15 @@ DOOR_RUN = 0.06  # a run of other colours this wide (share of the width) is an o
 DOOR_HITS = 3  # ... and one in at least this many probed rows is a door (the 2026-11-21 walls: plain walls 0 under 0.03, doors 6 of 6)
 DECK_TOL = 30  # summed-RGB distance from the top view's centre colour that is still deck
 CRISP_DISTINCT = 64  # a face with at most this many colours takes its parapet colour by vote, else by median
+ROOFS = ("flat", "gable")
+RIDGES = ("across", "along")  # the ridge parallel to the front (gable ends on the sides), or front to back
+ROOF_COLOURS = {"slate": (74, 80, 96), "tile": (168, 74, 52), "shingle": (104, 78, 60), "green": (70, 112, 92)}
+ROOF_PITCH = 0.6  # layers of rise per cell of run (about 31 degrees)
+EAVE_SHARE = 3 / 160  # the roof hangs this share of the drawn width past the walls (3 cells at 160) ...
+ROOF_THICK_SHARE = 4 / 160  # ... and is this thick, measured across the slope
+PATCH_TOL = 40.0  # summed-RGB distance of a column's mean from the patch's median that is still wall, not trim
+COURSE = 3  # layers in one course of shingles or tiles; seams every SEAM cells, shifted each course
+SEAM = 7
 BAY_ROWS = (0.08, 0.55)  # the window bays are read in these rows of the plain wall (top floors; under the cornice)
 BAY_DARK = 0.55  # a cell darker than this share of the wall's median brightness is glass ...
 BAY_COLUMN = 0.15  # ... and a column with glass in over this share of those rows is a window column
@@ -657,8 +667,129 @@ def awning_of(view: dict[str, np.ndarray]) -> tuple[int, int, np.ndarray] | None
     return find_awning(fr, bk, fr[..., 3] > 127, bk[..., 3] > 127)
 
 
+def wall_patch(side: np.ndarray) -> np.ndarray:
+    """A patch of plain wall material (RGBA, layer order: row 0 is the lowest) to fill a gable with: the widest
+    windowless stretch between two windows of the side wall, beside its top floor's windows, less any trim
+    columns. The wall's most common colour (one cell) when the wall has no windows to measure by."""
+    H, W = side.shape[:2]
+    solid = side[..., 3] > 127
+    lum = side[..., :3].astype(np.float32) @ np.array([0.3, 0.59, 0.11], np.float32)
+    ref = float(np.median(lum[solid])) if solid.any() else 0.0
+    glass = (lum < BAY_DARK * ref) & solid
+    rows = slice(int(BAY_ROWS[0] * H), int(BAY_ROWS[1] * H))
+    cols = glass[rows].mean(axis=0) > BAY_COLUMN
+    lit = np.flatnonzero(cols)
+    best = None
+    if len(lit) > 1:
+        gaps = [(b - a, a + 1, b) for a, b in zip(lit, lit[1:]) if b - a > 4]
+        if gaps:
+            _, x0, x1 = max(gaps)
+            x0, x1 = x0 + 2, x1 - 2  # clear of the window frames
+            grows = np.flatnonzero(glass[rows][:, lit].any(axis=1)) + rows.start
+            if x1 - x0 >= 3 and len(grows):
+                mid = int(np.median(grows))
+                y0, y1 = max(0, mid - 6), min(H, mid + 6)
+                patch = side[y0:y1, x0:x1]
+                if (patch[..., 3] > 127).all():
+                    # Window casings and trim beside the glass are columns unlike the wall's middle: leave them out.
+                    rgb = patch[..., :3].astype(np.float32)
+                    far = np.abs(rgb.mean(axis=0) - np.median(rgb.reshape(-1, 3), axis=0)).sum(-1)
+                    keep = far < max(PATCH_TOL, 2 * float(np.median(far)))  # brick varies column to column
+                    if keep.sum() >= 2:
+                        best = patch[:, keep][::-1]  # picture rows to layers
+    if best is None:  # the wall's most common colour (a median would mix in the glass and the trim)
+        px = side[solid] if solid.any() else np.array([[160, 160, 160, 255]], np.uint8)
+        best = _paint(px, "crisp")[None, None]
+    return best
+
+
+def add_gable(solid: np.ndarray, color: np.ndarray, patch: np.ndarray, ridge: str, roof_rgb, scale: int,
+              look: str) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """A gable roof over the block's top layer: two slopes of shingle courses meeting at a ridge, overhanging the
+    walls by an eave all round, and gable ends filled with the wall's own material (patch, see wall_patch).
+    ridge "across" runs the ridge parallel to the front; "along" runs it front to back (the gable faces the
+    street). The arrays grow by the eave on every side and by the roof's height on top. Returns (solid, color,
+    info: {eave, layers, ridge})."""
+    H, L, W = solid.shape
+    e = max(1, int(round(EAVE_SHARE * scale)))
+    t = max(2, int(round(ROOF_THICK_SHARE * scale)))
+    fy, fx = np.nonzero(solid[H - 1])
+    if not len(fy):
+        raise WallsError("the block has no top layer to put a roof on")
+    ya, yb, xa, xb = int(fy.min()) + e, int(fy.max()) + e, int(fx.min()) + e, int(fx.max()) + e
+    if ridge == "along":  # work as if the ridge ran across: the span is then the width
+        ya, yb, xa, xb = xa, xb, ya, yb
+    span = yb - ya + 1 + 2 * e
+    R = int(np.ceil(span / 2 * ROOF_PITCH)) + 1
+    S = np.zeros((H + R, L + 2 * e, W + 2 * e), bool)
+    C = np.zeros((H + R, L + 2 * e, W + 2 * e, 4), np.uint8)
+    S[:H, e : e + L, e : e + W] = solid
+    C[:H, e : e + L, e : e + W] = color
+    if ridge == "along":
+        S, C = S.transpose(0, 2, 1), C.transpose(0, 2, 1, 3)
+    base = np.array(roof_rgb, np.float32)
+    shade = {"line": base * 0.72, "seam": base * 0.86, "face": base, "light": np.minimum(base * 1.12 + 6, 255),
+             "edge": base * 0.6}
+    pal = {k: np.append(np.clip(v, 0, 255), 255).astype(np.uint8) for k, v in shade.items()}
+    ph, pw = patch.shape[:2]
+    top = 0
+    for k in range(R):
+        d = k / ROOF_PITCH
+        y0, y1 = int(np.ceil(ya - e + d)), int(np.floor(yb + e - d))
+        if y1 < y0:
+            break
+        h = H + k
+        top = h
+        x0, x1 = xa - e, xb + e
+        S[h, y0 : y1 + 1, x0 : x1 + 1] = True
+        ys = np.arange(y0, y1 + 1)
+        # Distance from the eave edge along the slope: the shell is the outer t cells; inside it, the gable.
+        inner = (ys >= y0 + t) & (ys <= y1 - t)
+        course = (k // COURSE) % 2
+        for i, y in enumerate(ys):
+            row = C[h, y, x0 : x1 + 1]
+            if inner[i]:
+                # Inside the shell: the gable wall. Only the cells inside the walls are solid there.
+                S[h, y, x0 : xa] = False
+                S[h, y, xb + 1 : x1 + 1] = False
+                row[:] = patch[(k + H) % ph, y % pw]
+                continue
+            if k % COURSE == 0:
+                row[:] = pal["line"]
+            else:
+                row[:] = pal["face"] if look == "crisp" or (k % COURSE) == 1 else pal["light"]
+                xs = np.arange(x0, x1 + 1)
+                row[(xs + course * (SEAM // 2)) % SEAM == 0] = pal["seam"]
+            row[0] = row[-1] = pal["edge"]  # the rake: the roof's edge over the gable
+        if y1 - y0 < 2 * t:  # the ridge: the top layers are all shell
+            C[h, y0 : y1 + 1, x0 : x1 + 1] = pal["edge"]
+    S, C = S[: top + 1], C[: top + 1]
+    if ridge == "along":
+        S, C = S.transpose(0, 2, 1), C.transpose(0, 2, 1, 3)
+    return np.ascontiguousarray(S), np.ascontiguousarray(C), {"eave": e, "layers": [H, top], "ridge": ridge,
+                                                              "thick": t}
+
+
+def roof_rgb(colour: str | tuple | list | None) -> tuple[int, int, int]:
+    """A roof colour: a name in ROOF_COLOURS, "#rrggbb", or an (r, g, b)."""
+    if colour is None:
+        return ROOF_COLOURS["slate"]
+    if isinstance(colour, (tuple, list)) and len(colour) == 3:
+        return tuple(int(max(0, min(255, c))) for c in colour)
+    c = str(colour).strip().lower()
+    if c in ROOF_COLOURS:
+        return ROOF_COLOURS[c]
+    if len(c) == 7 and c[0] == "#":
+        try:
+            return tuple(int(c[i : i + 2], 16) for i in (1, 3, 5))
+        except ValueError:
+            pass
+    raise WallsError(f"roof colour must be one of {', '.join(ROOF_COLOURS)} or #rrggbb")
+
+
 def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = LOOK, found: Any = "find",
-                scale: int | None = None) -> dict[str, Any]:
+                scale: int | None = None, roof: str = "flat", ridge: str = "across",
+                roof_colour: Any = None) -> dict[str, Any]:
     """The building's solid cells and colours from the cleaned views (RGBA arrays, flat/pixel/). awning: "auto"
     builds the wedge when the pictures show one, "yes" requires one (WallsError when none is found: no stack is
     written), "no" never builds one. found: the awning (h0, h1, columns) or None, when it was looked for already
@@ -668,6 +799,11 @@ def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = L
     back_face (each layer's front and back wall row, y), ...}."""
     if awning not in ("auto", "yes", "no"):
         raise WallsError("awning must be auto, yes or no")
+    if roof not in ROOFS:
+        raise WallsError(f"roof must be {' or '.join(ROOFS)}")
+    if ridge not in RIDGES:
+        raise WallsError(f"ridge must be {' or '.join(RIDGES)}")
+    rgb = roof_rgb(roof_colour)
     front, back, side = view["front"], view["back"][:, ::-1], view["side"]
     H, W = front.shape[:2]
     D = side.shape[1]  # the block's depth, back to front: the plain wall is the side walls
@@ -715,10 +851,11 @@ def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = L
     inner[fy.min() + int(round(ib * sy)) : fy.max() + 1 - int(round(ifr * sy)),
           fx.min() + int(round(il * sx)) : fx.max() + 1 - int(round(ir * sx))] = True
     deck = view["top"][tl // 2, tw // 2]  # the roof plan's centre is deck
-    for h in range(top_h - P + 1, H):
-        solid[h][inner] = False
-        color[h][solid[h]] = parapet
-    color[top_h - P][inner & solid[top_h - P]] = deck
+    if roof == "flat":
+        for h in range(top_h - P + 1, H):
+            solid[h][inner] = False
+            color[h][solid[h]] = parapet
+        color[top_h - P][inner & solid[top_h - P]] = deck
     # 3. The awning: a wedge out of the front wall, widest at its bottom edge, painted from the front picture.
     info: dict[str, Any] = {"found": bool(found), "asked": awning}
     if found:
@@ -731,10 +868,18 @@ def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = L
                     solid[h, yf + 1 : yf + 1 + out, x] = True
                     color[h, yf + 1 : yf + 1 + out, x] = fr[h, x]
         info.update({"layers": [h0, h1], "columns": [int(cols.min()), int(cols.max())], "out": A})
+    front_face, back_face = y_front[:, 0, 0].astype(int), y_back[:, 0, 0].astype(int)
+    roof_info: dict[str, Any] = {"kind": roof}
+    if roof == "gable":
+        solid, color, more = add_gable(solid, color, wall_patch(sd), ridge, rgb, scale or W, look)
+        e, extra = more["eave"], solid.shape[0] - H
+        front_face = np.concatenate([front_face, np.full(extra, front_face[-1])]) + e
+        back_face = np.concatenate([back_face, np.full(extra, back_face[-1])]) + e
+        roof_info.update(more, colour=list(rgb))
     color[..., 3] = np.where(solid, 255, 0)
     color[~solid] = 0
-    return {"solid": solid, "color": color, "depth": D, "awning": info, "parapet": P,
-            "deck_inset": [il, ib, ir, ifr], "front_face": y_front[:, 0, 0].astype(int), "back_face": y_back[:, 0, 0].astype(int)}
+    return {"solid": solid, "color": color, "depth": D, "awning": info, "parapet": P if roof == "flat" else 0,
+            "deck_inset": [il, ib, ir, ifr], "front_face": front_face, "back_face": back_face, "roof": roof_info}
 
 
 def stack_result(solid: np.ndarray, color: np.ndarray) -> dict[str, Any]:
@@ -768,7 +913,8 @@ def read_pixel(root: Path, stem: str) -> dict[str, np.ndarray]:
 
 
 def write_building(root: Path, stem: str, look: str = LOOK, awning: str = "auto", wide: int | None = None,
-                   deep: int | None = None) -> dict[str, Any]:
+                   deep: int | None = None, roof: str = "flat", ridge: str = "across",
+                   roof_colour: Any = None) -> dict[str, Any]:
     """Build the shape from flat/pixel/ and write out/<stem>/stack/ (maker "walls"). wide, deep: window bays across
     the front and along the side (None: as drawn; see set_bays). Returns {meta (stack.json), result, shape}.
     Nothing is written when the shape cannot be built."""
@@ -781,19 +927,21 @@ def write_building(root: Path, stem: str, look: str = LOOK, awning: str = "auto"
         cols = np.zeros((1, drawn["front"].shape[1]), bool)
         cols[0, found[2]] = True
         found = (found[0], found[1], np.flatnonzero(regroup(cols, bays["bays"], bays["wide_order"])[0]))
-    shape = build_shape(bays.pop("view"), awning=awning, look=look, found=found, scale=drawn["front"].shape[1])
+    shape = build_shape(bays.pop("view"), awning=awning, look=look, found=found, scale=drawn["front"].shape[1],
+                        roof=roof, ridge=ridge, roof_colour=roof_colour)
     shape["bays"] = bays
     result = stack_result(shape["solid"], shape["color"])
     dest = Path(root) / "out" / stem / "stack"
     meta = write_stack(result, dest, "flat/pixel", stem)
-    meta.update({"maker": "walls", "look": look, "shape": "code", "awning": shape["awning"], "bays": bays})
+    meta.update({"maker": "walls", "look": look, "shape": "code", "awning": shape["awning"], "bays": bays,
+                 "roof": shape["roof"]})
     (dest / "stack.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return {"meta": meta, "result": result, "shape": shape}
 
 
 def build(root: Path, stem: str, walls: dict[str, Any], look: str = LOOK, size: int = SIZE, awning: str = "auto",
           meta: dict | None = None, line=print, check=None, carving=None, wide: int | None = None,
-          deep: int | None = None) -> dict[str, Any]:
+          deep: int | None = None, roof: str = "flat", ridge: str = "across", roof_colour: Any = None) -> dict[str, Any]:
     """The whole pure part, saving Versions as the pixel stack draw does: the concept and stack on screen first (if
     never saved), then the concept (views), the flat (cleaned walls) and the stack, made from the concept.
     walls: {base, front, back?}. line(text): progress; check(): raises to cancel between steps; carving(): called
@@ -802,6 +950,9 @@ def build(root: Path, stem: str, walls: dict[str, Any], look: str = LOOK, size: 
 
     if look not in LOOKS:
         raise WallsError(f"look must be one of {', '.join(LOOKS)}")
+    if roof not in ROOFS or ridge not in RIDGES:
+        raise WallsError(f"roof must be {' or '.join(ROOFS)} and ridge {' or '.join(RIDGES)}")
+    roof_rgb(roof_colour)  # a bad colour fails before anything is written
     if (Path(root) / "out" / stem).is_dir():
         autosave(root, stem, ("concept", "stack"))
     views = walls_to_views(root, stem, walls["base"], walls["front"], walls.get("back"), meta=meta)
@@ -817,7 +968,7 @@ def build(root: Path, stem: str, walls: dict[str, Any], look: str = LOOK, size: 
         check()
     if carving:
         carving()
-    built = write_building(root, stem, look, awning, wide, deep)
+    built = write_building(root, stem, look, awning, wide, deep, roof, ridge, roof_colour)
     size_ = built["result"]["size"]
     aw = built["shape"]["awning"]
     bays = built["meta"]["bays"]
@@ -828,6 +979,7 @@ def build(root: Path, stem: str, walls: dict[str, Any], look: str = LOOK, size: 
     autosave(root, stem, ("stack",), made_from=("concept",))
     return {"views": views, "pixel": pixel, "stack": built["meta"], "size": size_,
             "colors": built["result"]["colors"], "layers": built["result"]["layers"], "awning": aw,
+            "roof": built["shape"]["roof"],
             "flaws": views["flaws"]}
 
 
@@ -879,6 +1031,10 @@ def main() -> int:
                    help="yes: fail when no awning is found; no: never build one")
     p.add_argument("--wide", type=int, default=None, help="window bays across the front (default: as drawn)")
     p.add_argument("--deep", type=int, default=None, help="window bays along the side (default: as drawn)")
+    p.add_argument("--roof", choices=ROOFS, default="flat")
+    p.add_argument("--ridge", choices=RIDGES, default="across",
+                   help="across: ridge parallel to the front; along: front to back (the gable faces the street)")
+    p.add_argument("--roof-colour", default=None, help=f"{', '.join(ROOF_COLOURS)} or #rrggbb (default slate)")
     p.add_argument("--render", type=Path, default=None, help="also write a turned 4-angle look to this PNG")
     args = p.parse_args()
     from factory_env import check_stem
@@ -896,7 +1052,8 @@ def main() -> int:
         walls["back"] = args.walls / "back.png"
     try:
         out = build(args.root, stem, walls, look=args.look, size=size, awning=args.awning,
-                    line=lambda t: print(t, file=sys.stderr), wide=args.wide, deep=args.deep)
+                    line=lambda t: print(t, file=sys.stderr), wide=args.wide, deep=args.deep,
+                    roof=args.roof, ridge=args.ridge, roof_colour=args.roof_colour)
     except WallsError as e:
         print(f"stack_building: {e}", file=sys.stderr)
         return 2

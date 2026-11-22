@@ -1251,6 +1251,8 @@ class Factory:
             "size": payload["size"],
             "wide": payload.get("wide"),
             "deep": payload.get("deep"),
+            "roof": payload.get("roof"),
+            "ridge": payload.get("ridge"),
             "seeds": payload["seeds"],
             "plan": plan,
             "backend": key,

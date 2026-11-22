@@ -67,8 +67,10 @@ def time_key(still: str, edit: str) -> str:
 
 
 def parse(body: dict[str, Any]) -> dict[str, Any]:
-    """The request, checked: {stem, wall, front, back?, look?, size?, seed?, wide?, deep?}. wide, deep: window bays
-    across the front and along the side (default as drawn). ValueError on a bad value."""
+    """The request, checked: {stem, wall, front, back?, look?, size?, seed?, wide?, deep?, roof?, ridge?,
+    roof_colour?}. wide, deep: window bays across the front and along the side (default as drawn). roof: "flat"
+    (default) or "gable"; ridge: "across" (default) or "along"; roof_colour: a name or #rrggbb. ValueError on a
+    bad value."""
     import stack_building as SB
     from flat2d.pose import pixel_size
 
@@ -112,9 +114,24 @@ def parse(body: dict[str, Any]) -> dict[str, Any]:
         bays[key] = int(raw)
         if not 1 <= bays[key] <= SB.BAY_MAX:
             raise ValueError(f"{key} must be 1 to {SB.BAY_MAX} window bays")
+    roof = str(body.get("roof") or "flat").strip().lower()
+    if roof not in SB.ROOFS:
+        raise ValueError(f"roof must be {' or '.join(SB.ROOFS)}")
+    ridge = str(body.get("ridge") or "across").strip().lower()
+    if ridge not in SB.RIDGES:
+        raise ValueError(f"ridge must be {' or '.join(SB.RIDGES)}")
+    roof_colour = body.get("roof_colour")
+    if roof_colour in (None, ""):
+        roof_colour = None
+    else:
+        try:
+            SB.roof_rgb(roof_colour if isinstance(roof_colour, str) else "?")
+        except SB.WallsError as e:
+            raise ValueError(str(e)) from None
+        roof_colour = roof_colour.strip().lower()
     seeds = dict(SEEDS) if seed is None else {"base": seed, "front": seed + 11, "back": seed + 21}
     return {"stem": stem, **words, "look": look, "size": size, "seeds": seeds, "awning": wants_awning(words["front"]),
-            **bays}
+            **bays, "roof": roof, "ridge": ridge, "roof_colour": roof_colour}
 
 
 def plan_for(back: bool, loaded: bool, edit_load: bool) -> list[str]:
@@ -227,11 +244,12 @@ def run(factory, spec: dict[str, Any], payload: dict[str, Any]) -> None:
             out = SB.build(root, stem, walls, look=payload["look"], size=payload["size"], awning=payload["awning"],
                            meta=meta, line=hook.line, check=hook.check,
                            carving=lambda: hook.stage(drawjob.CARVE), wide=payload.get("wide"),
-                           deep=payload.get("deep"))
+                           deep=payload.get("deep"), roof=payload.get("roof", "flat"),
+                           ridge=payload.get("ridge", "across"), roof_colour=payload.get("roof_colour"))
         except SB.WallsError as e:
             raise FlatError(str(e)) from None
         result = {"stack": {"file": "stack/stack.json", "size": out["size"], "colors": out["colors"],
-                            "layers": out["layers"]}, "look": payload["look"], "awning": out["awning"],
+                            "layers": out["layers"]}, "look": payload["look"], "awning": out["awning"], "roof": out["roof"],
                   "bays": {k: v for k, v in out["stack"].get("bays", {}).items() if k in ("drawn", "wide", "deep")},
                   "flaws": out["flaws"], "seeds": seeds, "views": "flat/views.json"}
         hook.end_stages()
