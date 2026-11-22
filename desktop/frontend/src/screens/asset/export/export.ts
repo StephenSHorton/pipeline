@@ -88,6 +88,7 @@ export type ExportAction =
 export function stackMaker(maker?: string): string {
   if (maker === "picture") return "built from the picture";
   if (maker === "views") return "carved from drawn views";
+  if (maker === "walls") return "built from drawn walls";
   return "sliced from the mesh";
 }
 

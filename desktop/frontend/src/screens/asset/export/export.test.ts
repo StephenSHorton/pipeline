@@ -126,6 +126,8 @@ describe("cards", () => {
     expect((mesh[0] as PlainCard).lines[1]).toBe("sliced from the mesh");
     const views = exportCards(exported, { output: "stack" }, { made: 1, stack: { layers: 30, resolution: 96, maker: "views" } });
     expect((views[0] as PlainCard).lines[1]).toBe("carved from drawn views");
+    const walls = exportCards(exported, { output: "stack" }, { made: 1, stack: { layers: 147, resolution: 174, maker: "walls" } });
+    expect((walls[0] as PlainCard).lines[1]).toBe("built from drawn walls");
   });
 
   it("before an export: Ready / Nothing yet placeholders for wanted stages, PS1 model for ps1", () => {

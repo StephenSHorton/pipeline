@@ -54,6 +54,8 @@ FILES: dict[str, tuple[str, ...]] = {
         "flat/sheet.png",
         "flat/views/*",
         "flat/views.json",
+        # A building's walls as drawn (stack_building.py): the views above are cut from them.
+        "flat/walls/*",
     ),
     # flat/view.json (which picture is centered) is a view setting, not part of any take.
     "flat": (

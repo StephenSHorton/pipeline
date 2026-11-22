@@ -37,6 +37,12 @@ LABELS = {
     # A sprite stack from the drawn flat views (views pixel with stack: scripts/stack_views.py). Not "stack": that is
     # generate.sh's "Sprite stack" (sliced from the mesh).
     "carve": "Carve the stack",
+    # A building from three drawn walls (flat2d/building.py, POST /2d/building).
+    "wall": "Draw the plain wall",
+    "load_edit": "Load the edit model",
+    "front_add": "Add the front",
+    "back_add": "Add the back",
+    "walls_fit": "Fit and clean the walls",
     **{f"idea{i}": f"Picture {i}" for i in range(1, 9)},
 }
 STEPS = ("pieces", "motion", "say", "sound")

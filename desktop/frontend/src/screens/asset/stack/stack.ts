@@ -24,7 +24,7 @@ export interface StackState {
   outline: boolean;
   round: number;
   main: boolean;
-  /** Pixel art: unlit, the sheet's exact colours, sharp textures (a stack drawn as pixel art, maker "views"). */
+  /** Pixel art: unlit, the sheet's exact colours, sharp textures (a stack drawn as pixel art, maker "views" or a building's "walls"). */
   flat: boolean;
   /** A pixel art stack lit by the scene: sun, sky and (in Game look) shadows on the sheet's colours. */
   lit: boolean;
@@ -72,7 +72,8 @@ export function defaultsFromSearch(search = ""): StackState {
 }
 
 /** A stack drawn as pixel art (carved from four pixel art views): its sheet is the art, pixel for pixel. */
-export const isPixelArt = (meta: Pick<StackMeta, "maker"> | null | undefined) => meta?.maker === "views";
+export const isPixelArt = (meta: Pick<StackMeta, "maker"> | null | undefined) =>
+  meta?.maker === "views" || meta?.maker === "walls";
 
 /**
  * How a pixel art stack is shown: every texel as one square cube in the sheet's exact colour. No Round (it melts

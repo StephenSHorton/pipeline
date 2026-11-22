@@ -21,6 +21,7 @@ POST /export/<stem>
 POST /upload
 POST /generate
 POST /2d/draw            a 2D still (or Ideas) as a job: /status, /cancel
+POST /2d/building        a building's walls drawn, then built as a sprite stack (scripts/stack_building.py), as a job
 GET  /2d/<stem>/drawing  the picture filling in while it draws
 """
 from __future__ import annotations
@@ -881,7 +882,7 @@ class Factory:
         sidecar = None
         if kind == "rig":
             sidecar = folder / "rig" / "rig.json"
-        elif kind in ("flat2d", "ideas"):
+        elif kind in ("flat2d", "ideas", "building"):
             sidecar = folder / "flat" / "views.json"
         elif job.get("views_json"):
             sidecar = Path(job["views_json"])
@@ -928,8 +929,9 @@ class Factory:
         if not want or str(want).lower() != file_sha256(img):
             return None, [degraded_entry("views", "stale",
                                          "flat/views.json was drawn for another picture; using one picture")]
-        if doc.get("layout") == "pixel":
-            # The pixel art sheet (top, side, front, back) is for a sprite stack, not a turnaround to build from.
+        if doc.get("layout") in ("pixel", "walls"):
+            # The pixel art sheet (top, side, front, back) and a building's walls are for a sprite stack, not a
+            # turnaround to build from.
             return None, [degraded_entry("shape", "single_view", "a pixel art sheet is not a turnaround; one picture")]
         views = doc.get("views")
         if not isinstance(views, list) or not views:
@@ -1218,6 +1220,57 @@ class Factory:
                          daemon=False).start()
         projects.file_made(self.root, stem, body)  # accepted: the new asset joins its project (or none)
         return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "kind": kind,
+                "status_url": f"/status/{job_id}"}
+
+    def start_building(self, body: dict[str, Any]) -> dict[str, Any]:
+        """A building's walls drawn (the text-to-image model, then the edit model) and built into a sprite stack
+        (flat2d/building.py, scripts/stack_building.py), in the 2D draw's job slot: /status, /cancel, draw.log."""
+        from flat2d import building
+        from flat2d.optional import model_loaded
+        from flat2d.sheet import edit_backend
+
+        payload = building.parse(body)
+        stem = payload["stem"]
+        still, edit = still_backend(), edit_backend()
+        if not still:
+            raise ValueError("No local image model. Install mflux.")
+        if not edit:
+            raise ValueError("No local edit model (Qwen-Image-Edit) to add the front with. Install mflux.")
+        loaded = model_loaded()
+        # The edit model always loads after the plain wall unless the stub is warm (the real models swap each other out).
+        plan = building.plan_for(bool(payload["back"]), loaded, edit_load=still != "stub" or not loaded)
+        key = building.time_key(still, edit)
+        job_id = uuid.uuid4().hex[:8]
+        spec = {
+            "job_id": job_id,
+            "kind": "building",
+            "state": "running",
+            "stem": stem,
+            "prompt": payload["wall"],
+            "look": payload["look"],
+            "size": payload["size"],
+            "seeds": payload["seeds"],
+            "plan": plan,
+            "backend": key,
+            "log": str(stem_dir(self.root, stem) / "draw.log"),
+            "started": time.time(),
+            "finished": None,
+            "returncode": None,
+            "error": None,
+            "stage_times": {},
+            "preview_url": None,
+            "estimate_s": drawjob.estimate(self.root, key, plan),
+            "stage_est": drawjob.stage_estimates(drawjob.read_times(self.root).get(key), plan),
+            "result": {},
+        }
+        with self._lock:
+            if (self._job and self._job.get("state") == "running") or stem in self._checking or self._sync_draws:
+                raise RuntimeError("the factory is busy with another job")
+            drawjob.fresh_log(Path(spec["log"]))
+            self._job = dict(spec)
+        threading.Thread(target=building.run, args=(self, spec, payload), daemon=False).start()
+        projects.file_made(self.root, stem, body)
+        return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "kind": "building",
                 "status_url": f"/status/{job_id}"}
 
     def sync_draw(self, on: bool) -> None:
@@ -1612,6 +1665,16 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             return _json_bytes({"ok": False, "error": str(e)}, 400)
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+    if method == "POST" and path == "/2d/building":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.start_building(raw if isinstance(raw, dict) else {}), 202)
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except (ValueError, FileNotFoundError) as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
     if method == "GET" and len(parts) == 3 and parts[0] == "2d" and parts[2] == "drawing":
         try:
             drawing = stem_dir(factory.root, check_stem(parts[1])) / "flat" / "drawing.jpg"
@@ -1713,6 +1776,7 @@ def _dispatch(
                     "POST /paint/mesh",
                     "GET /2d/status",
                     "POST /2d/draw",
+                    "POST /2d/building",
                     "GET /2d/<stem>/drawing",
                     "POST /2d/drop",
                     "POST /2d/split",

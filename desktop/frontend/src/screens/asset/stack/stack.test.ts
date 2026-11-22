@@ -197,8 +197,9 @@ describe("defaults", () => {
 describe("a pixel art stack (maker \"views\")", () => {
   const art: StackMeta = { layers: 15, resolution: 43, pitch: 0.02, extents: [0.86, 0.3, 0.86], maker: "views" };
 
-  it("only maker views is pixel art; a model or a picture stack is not", () => {
+  it("only maker views (and a building's walls) is pixel art; a model or a picture stack is not", () => {
     expect([isPixelArt(art), isPixelArt(meta), isPixelArt({ maker: "picture" }), isPixelArt(null)]).toEqual([true, false, false, false]);
+    expect(isPixelArt({ maker: "walls" })).toBe(true); // a building built from drawn walls (stack_building.py)
   });
 
   it("its defaults: unlit exact colours, no Round, Main, Shade, pixel grid or outline, neutral grade, every texel", () => {
