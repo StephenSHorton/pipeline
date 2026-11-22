@@ -83,6 +83,9 @@ AWNING_MIN_SHARE = 0.03  # ... in a run of at least this share of the height
 AWNING_BAND = 0.76  # the awning runs down while one of the AWNING_LOOK layers below differs over this share
 AWNING_LOOK = 4
 AWNING_COLUMN = 0.5  # a column is the awning's when it differs over this share of the awning's layers
+AWNING_QUIET = 0.75  # an awning layer differs over this share of the quiet columns (plain wall below it) ...
+AWNING_QUIET_SHARE = 0.04  # ... in at least this share of the height (about 6 layers at 147, 8 at 199)
+AWNING_QUIET_MIN = 3  # fewer quiet columns than this and the shop front leaves no plain wall to test on
 DECK_TOL = 30  # summed-RGB distance from the top view's centre colour that is still deck
 CRISP_DISTINCT = 64  # a face with at most this many colours takes its parapet colour by vote, else by median
 
@@ -214,6 +217,25 @@ def roof_plan(width: int, cornice: np.ndarray, side_px: int) -> np.ndarray:
     return top
 
 
+def _write(path: Path, data: Image.Image | str) -> None:
+    """Write a picture (PNG) or text, leaving the file alone when it already holds the same bytes: a Version is told
+    apart by its files' size and time, so building again from the same walls must not make a new concept Version."""
+    import io
+
+    if isinstance(data, Image.Image):
+        buf = io.BytesIO()
+        data.save(buf, format="PNG")
+        raw = buf.getvalue()
+    else:
+        raw = data.encode("utf-8")
+    try:
+        if path.read_bytes() == raw:
+            return
+    except OSError:
+        pass
+    path.write_bytes(raw)
+
+
 def walls_to_views(root: Path, stem: str, base, front, back=None, meta: dict | None = None) -> dict:
     """Turn the drawn walls (paths, PIL images or arrays; back may be None: the plain wall is the back too) into
     out/<stem>/flat/views/{top,side,front,back}.png, flat/sheet.png, flat/source.png (the front), flat/key.json,
@@ -268,19 +290,19 @@ def walls_to_views(root: Path, stem: str, base, front, back=None, meta: dict | N
     views = flat / "views"
     views.mkdir(parents=True, exist_ok=True)
     for name in VIEWS:
-        Image.fromarray(panels[name]).save(views / f"{name}.png")
+        _write(views / f"{name}.png", Image.fromarray(panels[name]))
     sheet = Image.new("RGB", (2 * side_px, 2 * side_px), KEY)
     for i, name in enumerate(("front", "side", "back", "top")):
         im = Image.fromarray(panels[name])
         sheet.paste(im, ((i % 2) * side_px, (i // 2) * side_px))
-    sheet.resize((SHEET_PX, SHEET_PX), Image.LANCZOS).save(flat / "sheet.png")
-    Image.fromarray(panels["front"]).save(flat / "source.png")
+    _write(flat / "sheet.png", sheet.resize((SHEET_PX, SHEET_PX), Image.LANCZOS))
+    _write(flat / "source.png", Image.fromarray(panels["front"]))
     key = ground_key(Image.fromarray(pics["front"]))
-    (flat / "key.json").write_text(json.dumps({**key, "views": "flat/views.json"}, indent=2) + "\n", encoding="utf-8")
+    _write(flat / "key.json", json.dumps({**key, "views": "flat/views.json"}, indent=2) + "\n")
     drawn = flat / "walls"
     drawn.mkdir(exist_ok=True)
     for name, rgb in pics.items():
-        Image.fromarray(rgb).save(drawn / f"{name}.png")
+        _write(drawn / f"{name}.png", Image.fromarray(rgb))
     if "back" not in pics:
         (drawn / "back.png").unlink(missing_ok=True)
     notes = ["walls: one plain wall drawn by the local model is both sides; the front"
@@ -299,7 +321,7 @@ def walls_to_views(root: Path, stem: str, base, front, back=None, meta: dict | N
                      "colour_fit": {"to": "back" if "back" in pics else "front", "rgb": fits},
                      "checks": measures},
            **(meta or {})}
-    (flat / "views.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    _write(flat / "views.json", json.dumps(doc, indent=2) + "\n")
     return doc
 
 
@@ -405,6 +427,17 @@ def find_awning(front: np.ndarray, back: np.ndarray, fm: np.ndarray, bm: np.ndar
     cols = np.nonzero(diff[h0 : h1 + 1].mean(axis=0) >= AWNING_COLUMN)[0]
     if not len(cols):
         return None
+    # A shop front with no awning differs over most of the width too (big windows, a sign band). What only an awning
+    # does is cover the quiet columns: those, inside its span, that are plain wall in most layers below it (the wall
+    # between the windows and the door). The band must differ over AWNING_QUIET of them in enough of its layers.
+    quiet = np.zeros(W, bool)
+    quiet[cols.min() : cols.max() + 1] = True
+    if h0 > 0:
+        quiet &= diff[:h0].mean(axis=0) < AWNING_COLUMN
+    if quiet.sum() >= AWNING_QUIET_MIN:
+        covered = (diff[h0 : h1 + 1][:, quiet].mean(axis=1) >= AWNING_QUIET).sum()
+        if covered < max(2, int(round(AWNING_QUIET_SHARE * H))):
+            return None
     return h0, h1, cols
 
 
@@ -428,8 +461,8 @@ def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = L
     fm, bm, sm = fr[..., 3] > 127, bk[..., 3] > 127, sd[..., 3] > 127
     found = None if awning == "no" else find_awning(fr, bk, fm, bm)
     if awning == "yes" and found is None:
-        raise WallsError("an awning was asked for, but the front and back pictures differ across the whole width "
-                         "nowhere; no stack was written")
+        raise WallsError("an awning was asked for, but no band where the front differs from the back right across "
+                         "the wall (over the plain wall between the windows too) was found; no stack was written")
     L = D + (A if found else 0)
     wall = bm & bm[:, ::-1]  # the block's outline across the width: the back has no awning on it
     solid = np.zeros((H, L, W), bool)

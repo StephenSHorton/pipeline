@@ -145,7 +145,7 @@ def stack_section(asset: Path, out: Path) -> dict | None:
     for name in ("sheet.png", "stack.json", "preview.png"):
         if (src / name).is_file():
             _copy(src / name, out / "stack" / name)
-    keep = ("resolution", "layers", "pitch", "origin", "bounds", "extents", "axis", "sheet_layout", "maker", "volume")
+    keep = ("resolution", "layers", "pitch", "origin", "bounds", "extents", "axis", "sheet_layout", "maker", "volume", "look")
     section = {"sheet": "stack/sheet.png", "meta": "stack/stack.json"}
     if (src / "preview.png").is_file():
         section["preview"] = "stack/preview.png"

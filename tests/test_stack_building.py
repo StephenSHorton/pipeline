@@ -5,6 +5,7 @@ backend stands behind them in case a call is missed."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -27,8 +28,9 @@ import stack_building as SB  # noqa: E402
 from flat2d import building, drawjob, optional  # noqa: E402
 from test_factory_http import http_json  # noqa: E402
 
-# The walls the method was proven on (2026-11-21). Too large to commit (~2.7 MB a set): skipped when absent.
-EXAMPLES = Path("/Users/stephenhorton/projects/ai-asset-pipeline/out/_experiments")
+# The walls the method was proven on (2026-11-21), in the factory's out/_experiments/ (PIPELINE_EXAMPLES moves it).
+# Too large to commit (~2.7 MB a set): skipped when absent.
+EXAMPLES = Path(os.environ.get("PIPELINE_EXAMPLES") or Path.home() / "projects/ai-asset-pipeline/out/_experiments")
 BRICK, CAFE = EXAMPLES / "walls2", EXAMPLES / "walls3"
 SMALL = 48  # cells across the synthetic wall: quick
 
@@ -154,6 +156,17 @@ class BuildTests(unittest.TestCase):
         take = data["stages"]["stack"]["takes"][-1]
         self.assertEqual(set(take["from"]), {"concept"})
 
+    def test_the_other_look_from_the_same_walls_reuses_the_concept_version(self) -> None:
+        import flow
+
+        walls = save_walls(self.root / "walls", synthetic_walls())
+        files = {n: walls / f"{n}.png" for n in SB.WALLS}
+        self.build("b", files, "crisp")
+        self.build("b", files, "smooth")
+        stages = flow.read_manifest(self.root / "out" / "b")["stages"]
+        self.assertEqual(len(stages["concept"]["takes"]), 1)
+        self.assertEqual((len(stages["flat"]["takes"]), len(stages["stack"]["takes"])), (2, 2))
+
     def test_no_awning_asked_for_and_none_drawn_builds_without_a_wedge(self) -> None:
         walls = synthetic_walls(awning=False)
         out = self.build("plain", walls)
@@ -216,6 +229,17 @@ class ExampleTests(unittest.TestCase):
             walls.mkdir(parents=True)
             for n in SB.WALLS:
                 shutil.copy2(src / f"{n}.png", walls / f"{n}.png")
+            # The same front with its awning painted out (the back's rows over it): a shop front with no awning.
+            band = {"brick": (632, 718), "cafe": (536, 640)}[name]
+            plain = cls.root / "walls" / f"{name}-plain"
+            plain.mkdir()
+            front = np.asarray(Image.open(walls / "front.png").convert("RGB")).copy()
+            front[band[0] : band[1]] = np.asarray(Image.open(walls / "back.png").convert("RGB"))[band[0] : band[1]]
+            Image.fromarray(front).save(plain / "front.png")
+            for n in ("base", "back"):
+                shutil.copy2(walls / f"{n}.png", plain / f"{n}.png")
+            cls.plain = getattr(cls, "plain", {})
+            cls.plain[name] = {n: plain / f"{n}.png" for n in SB.WALLS}
             for look in SB.LOOKS:
                 cls.out[(name, look)] = SB.build(cls.root, f"{name}-{look}", {n: walls / f"{n}.png" for n in SB.WALLS},
                                                  look=look, size=SB.SIZE, awning="yes", line=lambda t: None)
@@ -247,6 +271,18 @@ class ExampleTests(unittest.TestCase):
                 self.assertTrue(front[h0 : h0 + (h1 - h0) // 2].all())  # the wedge's wide lower half
                 self.assertFalse(front[:h0].any() or front[h1 + 1 :].any())
                 self.assertFalse(back.any())
+
+
+    def test_a_shop_front_with_no_awning_is_not_taken_for_one(self) -> None:
+        for name in ("brick", "cafe"):
+            for look in SB.LOOKS:
+                with self.assertRaises(SB.WallsError, msg=(name, look)):
+                    SB.build(self.root, f"{name}-plain-{look}", self.plain[name], look=look, awning="yes",
+                             line=lambda t: None)
+                self.assertFalse((self.root / "out" / f"{name}-plain-{look}" / "stack").exists())
+                out = SB.build(self.root, f"{name}-plain-{look}", self.plain[name], look=look, line=lambda t: None)
+                self.assertFalse(out["awning"]["found"], (name, look))
+                self.assertEqual(out["size"]["length"], out["size"]["width"])
 
 
 class PromptTests(unittest.TestCase):
@@ -355,6 +391,36 @@ class RouteTests(unittest.TestCase):
         self.assertIn("awning", views["sheet"]["prompts"]["front"])
         self.assertFalse((asset / "flat" / ".walls-draw").exists())
         self.assertTrue((asset / "flat" / "walls" / "back.png").is_file())
+
+    def test_both_models_report_their_loads_through_the_hook(self) -> None:
+        # The stub model fires the same hook calls as the real ones (loading, steps); here it is unloaded before
+        # each model, as the real models swap each other out, so both load stages run.
+        def stub_still(prompt, seed=1, width=1024, height=1024):
+            optional._STUB_LOADED = False
+            optional.stub_still(prompt, seed=seed)
+            return self.walls["base"]
+
+        def stub_edit(prompt, reference, seed=1, width=1024, height=1024):
+            if seed == building.SEEDS["front"]:
+                optional._STUB_LOADED = False
+            optional.stub_still(prompt, seed=seed)
+            return self.walls["front"] if "awning" in prompt else self.walls["back"]
+
+        with mock.patch.object(optional, "still_image", stub_still), mock.patch.object(optional, "edit_image", stub_edit):
+            status, job = http_json(self.base + "/2d/building", method="POST", data=self.BODY)
+            self.assertEqual(status, 202, job)
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        keys = [s["key"] for s in st["progress"]["stages"]]
+        self.assertEqual(keys, ["load", "wall", "load_edit", "front_add", "back_add", "walls_fit", "carve"])
+        times = json.loads((self.root / "out" / "draw-times.json").read_text())[building.time_key("stub", "stub")]
+        self.assertTrue({"load", "load_edit", "wall", "front_add"} <= set(times), times)
+
+    def test_a_load_that_never_happens_leaves_the_plan(self) -> None:
+        status, job = http_json(self.base + "/2d/building", method="POST", data=self.BODY)
+        st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        self.assertNotIn("load", [s["key"] for s in st["progress"]["stages"]])  # the patched calls never load
 
     def test_bad_requests_and_a_busy_slot(self) -> None:
         for bad in ({"stem": "shop"}, {**self.BODY, "look": "soft"}, {**self.BODY, "size": 1}):
