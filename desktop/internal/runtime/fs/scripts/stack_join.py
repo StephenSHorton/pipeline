@@ -10,6 +10,8 @@ Layouts:
   corner  two parts: the main building, and a wing turned to face right, set behind the main one with its front
           in line with the main building's right wall: an L-shaped corner building with two street fronts.
 
+The joined stack keeps the first part's cell size (pitch), so it shows as big as its parts together.
+
 Where parts meet, the one placed first keeps its cells (a roof's eave never cuts into a neighbour's wall face:
 the faces that meet are inside the building).
 
@@ -63,7 +65,8 @@ def read_part(root: Path, stem: str, turn: int = 0) -> dict[str, Any]:
     wy, wx = np.nonzero(solid[h])
     if not len(wy):
         raise JoinError(f"{stem} has no walls at half its height")
-    return {"stem": stem, "turn": k, "solid": np.ascontiguousarray(solid), "color": np.ascontiguousarray(color),
+    pitch = float(json.loads((folder / "stack.json").read_text(encoding="utf-8")).get("pitch") or 0) or None
+    return {"stem": stem, "turn": k, "pitch": pitch, "solid": np.ascontiguousarray(solid), "color": np.ascontiguousarray(color),
             "wall": (int(wy.min()), int(wy.max()), int(wx.min()), int(wx.max()))}
 
 
@@ -140,7 +143,8 @@ def write_joined(root: Path, stem: str, specs: list[tuple[str, int]], layout: st
     asset = Path(root) / "out" / stem
     if asset.is_dir():
         autosave(root, stem, ("stack",))
-    result = SB.stack_result(solid, color)
+    # One cell is one size across a joined building: the first part's (buildings share 1 / the drawn wall's cells).
+    result = SB.stack_result(solid, color, pitch=parts[0]["pitch"])
     meta = write_stack(result, asset / "stack", "joined", stem)
     meta.update({"maker": "walls", "shape": "joined", "joined": {"layout": layout, "parts": where}})
     (asset / "stack" / "stack.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")

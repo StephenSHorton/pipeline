@@ -294,6 +294,11 @@ class ExampleTests(unittest.TestCase):
         meta = json.loads((self.root / "out" / "brick-wide" / "stack" / "stack.json").read_text())
         self.assertEqual((meta["bays"]["drawn"], meta["bays"]["wide"], meta["bays"]["deep"]), (3, 5, 2))
         self.assertEqual(meta["bays"]["wide_order"].count(1), 1)  # the door's bay is never repeated
+        # One cell is one size in every building: the wide shop is wider in the world, not squeezed to 1 unit.
+        pitches = {json.loads((self.root / "out" / n / "stack" / "stack.json").read_text())["pitch"]
+                   for n in ("brick-wide", "brick-narrow", "brick-crisp")}
+        self.assertEqual(len(pitches), 1)
+        self.assertAlmostEqual(meta["extents"][0], wide["size"]["width"] * pitches.pop())
 
     def test_a_shop_front_with_no_awning_is_not_taken_for_one(self) -> None:
         for name in ("brick", "cafe"):

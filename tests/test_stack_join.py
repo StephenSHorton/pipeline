@@ -48,6 +48,13 @@ class JoinTests(unittest.TestCase):
         meta = json.loads((self.root / "out" / "row" / "stack" / "stack.json").read_text())
         self.assertEqual((meta["maker"], meta["shape"], meta["joined"]["layout"]), ("walls", "joined", "row"))
         self.assertTrue((self.root / "out" / "row" / "flow.json").is_file())  # saved as a Stack version
+        # Every building's cell is one size, so the row is as wide in the world as its parts side by side.
+        pa_meta = json.loads((self.root / "out" / "a" / "stack" / "stack.json").read_text())
+        pb_meta = json.loads((self.root / "out" / "b" / "stack" / "stack.json").read_text())
+        self.assertAlmostEqual(pa_meta["pitch"], pb_meta["pitch"])
+        self.assertAlmostEqual(meta["pitch"], pa_meta["pitch"])
+        self.assertAlmostEqual(meta["extents"][0], out["size"]["width"] * pa_meta["pitch"])
+        self.assertGreater(meta["extents"][0], pa_meta["extents"][0] + pb_meta["extents"][0] - 4 * pa_meta["pitch"])
 
     def test_a_corner_is_an_l_with_the_wing_facing_right(self) -> None:
         SJ.write_joined(self.root, "corner", [("a", 0), ("wing", 0)], "corner", line=lambda t: None)

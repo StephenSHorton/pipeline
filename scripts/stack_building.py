@@ -882,8 +882,11 @@ def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = L
             "deck_inset": [il, ib, ir, ifr], "front_face": front_face, "back_face": back_face, "roof": roof_info}
 
 
-def stack_result(solid: np.ndarray, color: np.ndarray) -> dict[str, Any]:
-    """The shape as stack_views.write_stack takes it: square slices, bottom first."""
+def stack_result(solid: np.ndarray, color: np.ndarray, pitch: float | None = None) -> dict[str, Any]:
+    """The shape as stack_views.write_stack takes it: square slices, bottom first. pitch: one cell's size in world
+    units. Buildings pass 1 / the drawn wall's cells, so the drawn wall is 1 unit wide in every building and a wide
+    shop, a townhouse and a joined street keep their sizes against each other (the app and a game size a stack by
+    its pitch). None: the longest side is 1 unit, as other stacks are."""
     H, L, W = solid.shape
     res = max(L, W)
     oz, ox = (res - L) // 2, (res - W) // 2
@@ -892,9 +895,10 @@ def stack_result(solid: np.ndarray, color: np.ndarray) -> dict[str, Any]:
         sl = np.zeros((res, res, 4), np.uint8)
         sl[oz : oz + L, ox : ox + W] = color[h]
         slices.append(sl)
-    pitch = 1.0 / res
+    pitch = float(pitch) if pitch else 1.0 / res
     ext = [W * pitch, H * pitch, L * pitch]
-    return {"slices": slices, "pitch": pitch, "origin": [-0.5, 0.0, -0.5], "resolution": int(res), "layers": H,
+    half = res * pitch / 2
+    return {"slices": slices, "pitch": pitch, "origin": [-half, 0.0, -half], "resolution": int(res), "layers": H,
             "bounds": [[-ext[0] / 2, 0.0, -ext[2] / 2], [ext[0] / 2, ext[1], ext[2] / 2]], "extents": ext,
             "surface_voxels": int(solid.sum()), "filled": True,
             "size": {"width": int(W), "length": int(L), "height": int(H)},
@@ -930,7 +934,7 @@ def write_building(root: Path, stem: str, look: str = LOOK, awning: str = "auto"
     shape = build_shape(bays.pop("view"), awning=awning, look=look, found=found, scale=drawn["front"].shape[1],
                         roof=roof, ridge=ridge, roof_colour=roof_colour)
     shape["bays"] = bays
-    result = stack_result(shape["solid"], shape["color"])
+    result = stack_result(shape["solid"], shape["color"], pitch=1.0 / drawn["front"].shape[1])
     dest = Path(root) / "out" / stem / "stack"
     meta = write_stack(result, dest, "flat/pixel", stem)
     meta.update({"maker": "walls", "look": look, "shape": "code", "awning": shape["awning"], "bays": bays,
