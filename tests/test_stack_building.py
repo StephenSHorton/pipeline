@@ -32,6 +32,7 @@ from test_factory_http import http_json  # noqa: E402
 # Too large to commit (~2.7 MB a set): skipped when absent.
 EXAMPLES = Path(os.environ.get("PIPELINE_EXAMPLES") or Path.home() / "projects/ai-asset-pipeline/out/_experiments")
 BRICK, CAFE = EXAMPLES / "walls2", EXAMPLES / "walls3"
+BAKERY = EXAMPLES / "walls4"  # the first factory run: its plain wall came out with a door on it
 SMALL = 48  # cells across the synthetic wall: quick
 
 
@@ -285,6 +286,33 @@ class ExampleTests(unittest.TestCase):
                 self.assertEqual(out["size"]["length"], out["size"]["width"])
 
 
+def door_wall(base: Image.Image) -> Image.Image:
+    """The synthetic plain wall with a dark green door painted in the middle of the ground floor, down to the ground."""
+    rgb = np.asarray(base.convert("RGB")).copy()
+    fg = SB._mask(rgb)
+    ys, xs = np.nonzero(fg)
+    bottom = int(ys.max()) - SB.base_rows(fg)
+    h, cx, w = bottom - int(ys.min()) + 1, (int(xs.min()) + int(xs.max())) // 2, int(xs.max()) - int(xs.min()) + 1
+    rgb[bottom - int(0.3 * h) : bottom - 1, cx - int(0.08 * w) : cx + int(0.08 * w)] = (30, 90, 50)
+    return Image.fromarray(rgb)
+
+
+class DoorTests(unittest.TestCase):
+    def test_a_door_painted_on_the_plain_wall_is_found(self) -> None:
+        base = synthetic_walls()["base"]
+        self.assertFalse(SB.plain_wall_door(base)["door"])
+        self.assertTrue(SB.plain_wall_door(door_wall(base))["door"])
+
+    @unittest.skipUnless(_have(BRICK) and _have(CAFE) and _have(BAKERY), "the example walls are not here")
+    def test_the_drawn_walls(self) -> None:
+        # The two plain walls the method was proven on have no door; every back (a door added) and the bakery's
+        # plain wall (the model drew a door on it despite the prompt) do.
+        for folder in (BRICK, CAFE):
+            self.assertFalse(SB.plain_wall_door(folder / "base.png")["door"], folder)
+        for path in (BRICK / "back.png", CAFE / "back.png", BAKERY / "base.png"):
+            self.assertTrue(SB.plain_wall_door(path)["door"], path)
+
+
 class PromptTests(unittest.TestCase):
     def test_prompts_and_request(self) -> None:
         p = building.prompts("a red brick wall, three floors", "Add a shop front and a green awning", "")
@@ -391,6 +419,40 @@ class RouteTests(unittest.TestCase):
         self.assertIn("awning", views["sheet"]["prompts"]["front"])
         self.assertFalse((asset / "flat" / ".walls-draw").exists())
         self.assertTrue((asset / "flat" / "walls" / "back.png").is_file())
+
+    def test_a_plain_wall_with_a_door_is_drawn_again(self) -> None:
+        first = door_wall(self.walls["base"])
+        drawn: list[int] = []
+
+        def still(prompt, seed=1, width=1024, height=1024):
+            drawn.append(seed)
+            return first if len(drawn) == 1 else self.walls["base"]
+
+        with mock.patch.object(optional, "still_image", still):
+            status, job = http_json(self.base + "/2d/building", method="POST", data=self.BODY)
+            self.assertEqual(status, 202, job)
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        self.assertEqual(drawn, [12, 12 + building.WALL_SEED_STEP])
+        views = json.loads((self.root / "out" / "shop" / "flat" / "views.json").read_text())
+        self.assertEqual(views["sheet"]["seeds"]["base"], 12 + building.WALL_SEED_STEP)
+        kept = np.asarray(Image.open(self.root / "out" / "shop" / "flat" / "walls" / "base.png").convert("RGB"))
+        self.assertTrue(np.array_equal(kept, np.asarray(self.walls["base"].convert("RGB"))))
+        self.assertIn("door on it", (self.root / "out" / "shop" / "draw.log").read_text())
+
+    def test_after_every_try_the_wall_with_the_least_door_is_kept(self) -> None:
+        drawn: list[int] = []
+
+        def still(prompt, seed=1, width=1024, height=1024):
+            drawn.append(seed)
+            return door_wall(self.walls["base"])
+
+        with mock.patch.object(optional, "still_image", still):
+            status, job = http_json(self.base + "/2d/building", method="POST", data=self.BODY)
+            st = self.wait(job["job_id"])
+        self.assertEqual(st["state"], "ok", st)
+        self.assertEqual(len(drawn), building.WALL_TRIES)
+        self.assertIn("Every plain wall had a door", (self.root / "out" / "shop" / "draw.log").read_text())
 
     def test_both_models_report_their_loads_through_the_hook(self) -> None:
         # The stub model fires the same hook calls as the real ones (loading, steps); here it is unloaded before

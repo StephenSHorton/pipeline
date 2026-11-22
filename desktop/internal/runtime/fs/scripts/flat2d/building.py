@@ -32,6 +32,8 @@ KEEP = (" Keep everything else exactly as it is: the upper floors and their wind
         "the wall's material, the width and height, the outline and drawing style, and the plain flat magenta "
         "background.")
 SEEDS = {"base": 12, "front": 23, "back": 33}  # the hand run's seeds; a request's seed moves all three together
+WALL_TRIES = 3  # plain-wall draws at most, while it has a door (each about 45 s with the model loaded)
+WALL_SEED_STEP = 1000  # the next try's seed: far from the front and back edits' seeds
 WORDS_MAX = 1200
 # Stages (drawjob.LABELS holds their labels): a load before each model, the three pictures, then the code.
 LOAD_EDIT = "load_edit"
@@ -150,6 +152,31 @@ def _draw(hook: BuildHook, stage: str, load: str, fn, dest: Path):
     return dest
 
 
+def _plain_wall(hook: BuildHook, SB, ask: str, seeds: dict[str, int], work: Path) -> Path:
+    """The plain wall, drawn again with another seed while it has a door (it is every side, so a door on it shows on
+    all four; the model sometimes draws one despite the prompt). The text-to-image model stays loaded between tries.
+    After WALL_TRIES the try with the fewest door rows is kept, and the job says so."""
+    tried: list[tuple[int, int, Path]] = []
+    for n in range(WALL_TRIES):
+        seed = seeds["base"] + n * WALL_SEED_STEP
+        dest = work / ("base.png" if n == 0 else f"base-{n + 1}.png")
+        _draw(hook, WALL, "load", lambda: optional.still_image(ask, seed=seed), dest)
+        check = SB.plain_wall_door(dest)
+        tried.append((check["hits"], seed, dest))
+        if not check["door"]:
+            break
+        if n + 1 < WALL_TRIES:
+            hook.line(f"The plain wall has a door on it, which would show on every side. Drawing it again "
+                      f"({n + 2} of {WALL_TRIES}).")
+    hits, seed, best = min(tried, key=lambda t: t[0])
+    if hits >= SB.DOOR_HITS:
+        hook.line("Every plain wall had a door on it; keeping the one with the least. It will show on every side.")
+    seeds["base"] = seed
+    if best != work / "base.png":
+        shutil.copy2(best, work / "base.png")
+    return work / "base.png"
+
+
 def run(factory, spec: dict[str, Any], payload: dict[str, Any]) -> None:
     """The job thread (factory_http.Factory.start_building starts it)."""
     import stack_building as SB
@@ -166,8 +193,7 @@ def run(factory, spec: dict[str, Any], payload: dict[str, Any]) -> None:
         seeds = payload["seeds"]
         shutil.rmtree(work, ignore_errors=True)
         walls: dict[str, Path] = {}
-        walls["base"] = _draw(hook, WALL, "load", lambda: optional.still_image(asks["base"], seed=seeds["base"]),
-                              work / "base.png")
+        walls["base"] = _plain_wall(hook, SB, asks["base"], seeds, work)
         hook.line("Adding the front.")
         walls["front"] = _draw(hook, FRONT, LOAD_EDIT,
                                lambda: optional.edit_image(asks["front"], walls["base"], seed=seeds["front"]),

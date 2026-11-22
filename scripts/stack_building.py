@@ -88,6 +88,12 @@ AWNING_COLUMN = 0.5  # a column is the awning's when it differs over this share 
 AWNING_QUIET = 0.75  # an awning layer differs over this share of the quiet columns (plain wall below it) ...
 AWNING_QUIET_SHARE = 0.04  # ... in at least this share of the height (about 6 layers at 147, 8 at 199)
 AWNING_QUIET_MIN = 3  # fewer quiet columns than this and the shop front leaves no plain wall to test on
+# plain_wall_door (the plain wall is every side: a door drawn on it shows on all four)
+DOOR_ROWS = (0.03, 0.05, 0.07, 0.09, 0.11, 0.13)  # rows probed, as shares of the wall's height above its bottom
+DOOR_EDGE = 0.12  # the corner trim each side, as a share of the width, is left out of the probe
+DOOR_COMMON = 0.2  # a colour seen in both this share of a probed row's left end and its right end is the wall's
+DOOR_RUN = 0.06  # a run of other colours this wide (share of the width) is an opening that reaches the ground ...
+DOOR_HITS = 3  # ... and one in at least this many probed rows is a door (the 2026-11-21 walls: plain walls 0 under 0.03, doors 6 of 6)
 DECK_TOL = 30  # summed-RGB distance from the top view's centre colour that is still deck
 CRISP_DISTINCT = 64  # a face with at most this many colours takes its parapet colour by vote, else by median
 
@@ -150,6 +156,38 @@ def base_rows(fg: np.ndarray) -> int:
             continue
         break
     return cut if cut and any(fg[r].any() for r in range(bottom - cut + 1, bottom + 1)) else 0
+
+
+def plain_wall_door(pic) -> dict[str, Any]:
+    """Whether a plain wall picture has an opening that reaches the ground (a door, a shop front): a run of colours
+    that are not the wall's, the plinth's or the trim's, across the bottom rows of the wall. Windows stand on sills
+    above those rows. Returns {door, hits, runs}."""
+    rgb = _rgb(pic)
+    fg = _below_cornice(_mask(rgb))
+    rows = np.nonzero(fg.any(1))[0]
+    if len(rows) < 10:
+        raise WallsError("the plain wall is empty")
+    bottom = int(rows[-1]) - base_rows(fg)
+    h = bottom - int(rows[0]) + 1
+    xs = np.nonzero(fg[bottom - h // 3])[0]
+    x0, x1 = int(xs[0]), int(xs[-1])
+    w = x1 - x0 + 1
+    edge = int(DOOR_EDGE * w)
+    runs = []
+    for share in DOOR_ROWS:
+        px = rgb[bottom - int(share * h), x0 + edge : x1 - edge + 1].astype(int) // 32
+        keys = px[:, 0] * 64 + px[:, 1] * 8 + px[:, 2]
+        # The wall's own colours (its material, the plinth, the trim) run along the whole row, so they show at both
+        # ends of it; a door in between does not, however flat its colour.
+        end = max(1, int(DOOR_COMMON * len(keys)))
+        odd = ~(np.isin(keys, keys[:end]) & np.isin(keys, keys[-end:]))
+        best = run = 0
+        for o in odd:
+            run = run + 1 if o else 0
+            best = max(best, run)
+        runs.append(round(best / w, 3))
+    hits = sum(r >= DOOR_RUN for r in runs)
+    return {"door": hits >= DOOR_HITS, "hits": hits, "runs": runs}
 
 
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
