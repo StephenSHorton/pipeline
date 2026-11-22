@@ -14,8 +14,9 @@ drawn one at a time agree, so the method (proven by hand on 2026-11-21, a brick 
 3. clean_walls: the views cleaned to cells in flat/pixel/, in one of two looks: "crisp" (pixelart.clean_folder: a
    small palette, hard outline) or "smooth" (each cell the area average of its pixels, no colour limit; the crisp
    clean's cell outline is kept). The stack is always read from flat/pixel/; pixel.json records the look.
-4. build_shape: the block in numpy. The footprint is the plain wall's width by its width (the side walls are the
-   plain wall too), the front and back faces painted from the front and back pictures, a deck sunk inside a
+4. set_bays, then build_shape: the window bays found on the plain wall are dropped or repeated so the front can
+   be wider or narrower than the side is deep (one drawing makes a wide shop or a narrow, deep townhouse); then the
+   block in numpy. The footprint is the front's width by the side's width (the side walls are the plain wall too), the front and back faces painted from the front and back pictures, a deck sunk inside a
    parapet, and an awning wedge sticking out of the front, found as the rows where the front and back differ
    across nearly the whole width. No rooftop pieces: those come later as their own feature.
 5. write_building: the usual stack files (stack_views.write_stack), stack.json "maker": "walls" and "look".
@@ -25,7 +26,7 @@ the width as seen from the front. The back picture is mirrored so its columns li
 
 CLI (no model; builds from walls already drawn):
   python scripts/stack_building.py --root R --stem S --walls DIR [--look crisp|smooth] [--size N]
-      [--awning auto|yes|no] [--render PNG]
+      [--awning auto|yes|no] [--wide N] [--deep N] [--render PNG]
 DIR holds base.png, front.png and (optional) back.png.
 """
 from __future__ import annotations
@@ -96,6 +97,14 @@ DOOR_RUN = 0.06  # a run of other colours this wide (share of the width) is an o
 DOOR_HITS = 3  # ... and one in at least this many probed rows is a door (the 2026-11-21 walls: plain walls 0 under 0.03, doors 6 of 6)
 DECK_TOL = 30  # summed-RGB distance from the top view's centre colour that is still deck
 CRISP_DISTINCT = 64  # a face with at most this many colours takes its parapet colour by vote, else by median
+BAY_ROWS = (0.08, 0.55)  # the window bays are read in these rows of the plain wall (top floors; under the cornice)
+BAY_DARK = 0.55  # a cell darker than this share of the wall's median brightness is glass ...
+BAY_COLUMN = 0.15  # ... and a column with glass in over this share of those rows is a window column
+BAY_OUTLINE = 0.9
+BAY_GAP = 3  # window columns this close (mullions, frames) are one window
+BAY_MIN = 0.05  # a window narrower than this share of the width is not one
+BAY_NARROW = 0.6  # ... and one narrower than this share of the typical window is trim (dark corner stones)
+BAY_MAX = 12  # at most this many bays on a face
 
 
 class WallsError(RuntimeError):
@@ -413,6 +422,98 @@ def clean_walls(root: Path, stem: str, look: str = LOOK, size: int = SIZE) -> di
     return doc
 
 
+# ------------------------------------------------------------------------------------------------------ the bays
+
+
+def find_bays(wall: np.ndarray) -> list[tuple[int, int]]:
+    """The window bays of a cleaned wall (RGBA, flat/pixel/), left to right: one per window column, each running
+    from the middle of the pier on its left to the middle of the pier on its right (the outer bays as wide as the
+    others). What lies outside the bays is the corner trim. Windows are found as dark glass in the top floors."""
+    H, W = wall.shape[:2]
+    solid = wall[..., 3] > 127
+    lum = wall[..., :3].astype(np.float32) @ np.array([0.3, 0.59, 0.11], np.float32)
+    rows = slice(int(BAY_ROWS[0] * H), int(BAY_ROWS[1] * H))
+    ref = float(np.median(lum[rows][solid[rows]])) if solid[rows].any() else 0.0
+    share = ((lum[rows] < BAY_DARK * ref) & solid[rows]).mean(axis=0)
+    dark = (share > BAY_COLUMN) & (share < BAY_OUTLINE)  # a column dark nearly all the way is an outline, not glass
+    runs: list[list[int]] = []
+    for x in np.flatnonzero(dark):
+        if runs and x - runs[-1][1] <= BAY_GAP:
+            runs[-1][1] = int(x) + 1
+        else:
+            runs.append([int(x), int(x) + 1])
+    runs = [r for r in runs if r[1] - r[0] >= BAY_MIN * W and r[0] > 0 and r[1] < W]
+    if not runs:
+        return []
+    # Dark corner stones (quoins) are narrower than the windows: keep the runs near the widest ones.
+    typical = float(np.median([r[1] - r[0] for r in runs]))
+    runs = [r for r in runs if r[1] - r[0] >= BAY_NARROW * typical]
+    if len(runs) == 1:
+        return [(runs[0][0], runs[0][1])]
+    piers = [b[0] - a[1] for a, b in zip(runs, runs[1:])]
+    half = int(round(float(np.mean(piers)) / 2))
+    cuts = [max(0, runs[0][0] - half)] + [(a[1] + b[0]) // 2 for a, b in zip(runs, runs[1:])] + \
+           [min(W, runs[-1][1] + half)]
+    return list(zip(cuts, cuts[1:]))
+
+
+def bay_order(bays: list[tuple[int, int]], width: int, n: int) -> list[int]:
+    """Which drawn bays make a face of n bays, left to right. The bays at the middle of the wall (the door, under a
+    shop front or a back door) are kept once; bays beside them are dropped from the outside in, or repeated (a copy
+    of the bay next to the middle), one side then the other, so the face stays as near symmetric as it was."""
+    m = len(bays)
+    if not 1 <= n <= BAY_MAX:
+        raise WallsError(f"a face is 1 to {BAY_MAX} bays")
+    mid = width / 2
+    centre = [i for i, (a, b) in enumerate(bays) if a - 2 <= mid <= b + 2]
+    if not centre:
+        centre = [min(range(m), key=lambda i: abs((bays[i][0] + bays[i][1]) / 2 - mid))]
+    if n < len(centre):
+        raise WallsError(f"the middle of this wall is {len(centre)} bays (the door), so a face needs at least "
+                         f"{len(centre)}")
+    left, right = list(range(centre[0])), list(range(centre[-1] + 1, m))
+    side = 0 if len(left) >= len(right) else 1
+    while len(left) + len(centre) + len(right) > n:
+        (left.pop(0) if (side == 0 and left) or not right else right.pop())
+        side ^= 1
+    while len(left) + len(centre) + len(right) < n:
+        if side == 0:
+            left.append(left[-1] if left else centre[0])
+        else:
+            right.insert(0, right[0] if right else centre[-1])
+        side ^= 1
+    return left + centre + right
+
+
+def regroup(wall: np.ndarray, bays: list[tuple[int, int]], order: list[int]) -> np.ndarray:
+    """The wall with its bays put back in the given order, the corner trim each side kept."""
+    parts = [wall[:, : bays[0][0]]] + [wall[:, bays[i][0] : bays[i][1]] for i in order] + [wall[:, bays[-1][1] :]]
+    return np.concatenate(parts, axis=1)
+
+
+def set_bays(view: dict[str, np.ndarray], wide: int | None = None, deep: int | None = None) -> dict[str, Any]:
+    """The cleaned views with the front and back cut or grown to `wide` bays and the side to `deep` bays (None:
+    as drawn). The bays are read once, on the plain wall (the side), and used on all three: the edit model keeps
+    the plain wall's windows where they were. Returns {view, bays, wide, deep, front_order, side_order}."""
+    side = view["side"]
+    bays = find_bays(side)
+    out = dict(view)
+    info: dict[str, Any] = {"bays": [list(b) for b in bays], "drawn": len(bays)}
+    if (wide is not None or deep is not None) and not bays:
+        raise WallsError("no window bays were found on the plain wall, so its width and depth cannot be changed")
+    W = side.shape[1]
+    for key, n, faces in (("wide", wide, ("front", "back")), ("deep", deep, ("side",))):
+        if n is None:
+            info[key] = len(bays)
+            continue
+        order = bay_order(bays, W, int(n))
+        for f in faces:  # every wall is drawn from the plain wall, so its columns line up with the bays as drawn
+            out[f] = regroup(view[f], bays, order)
+        info[key], info[f"{key}_order"] = int(n), order
+    info["view"] = out
+    return info
+
+
 # ----------------------------------------------------------------------------------------------------- the shape
 
 
@@ -490,10 +591,21 @@ def find_awning(front: np.ndarray, back: np.ndarray, fm: np.ndarray, bm: np.ndar
     return h0, h1, cols
 
 
-def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = LOOK) -> dict[str, Any]:
+def awning_of(view: dict[str, np.ndarray]) -> tuple[int, int, np.ndarray] | None:
+    """find_awning on cleaned views as build_shape reads them (layers from the bottom, the back mirrored)."""
+    rows = np.arange(view["front"].shape[0])[::-1]
+    fr, bk = view["front"][rows], view["back"][:, ::-1][rows]
+    return find_awning(fr, bk, fr[..., 3] > 127, bk[..., 3] > 127)
+
+
+def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = LOOK, found: Any = "find",
+                scale: int | None = None) -> dict[str, Any]:
     """The building's solid cells and colours from the cleaned views (RGBA arrays, flat/pixel/). awning: "auto"
     builds the wedge when the pictures show one, "yes" requires one (WallsError when none is found: no stack is
-    written), "no" never builds one. Returns {solid [H, L, W], color [H, L, W, 4], depth, awning, front_face and
+    written), "no" never builds one. found: the awning (h0, h1, columns) or None, when it was looked for already
+    (on the walls as drawn: repeated shop windows can look like an awning); "find" looks here. scale: the width the
+    awning's reach and the parapet are measured against (default the front's; set_bays passes the drawn one).
+    Returns {solid [H, L, W], color [H, L, W, 4], depth, awning, front_face and
     back_face (each layer's front and back wall row, y), ...}."""
     if awning not in ("auto", "yes", "no"):
         raise WallsError("awning must be auto, yes or no")
@@ -503,12 +615,15 @@ def build_shape(view: dict[str, np.ndarray], awning: str = "auto", look: str = L
     if back.shape[:2] != (H, W) or side.shape[0] != H:
         raise WallsError(f"the cleaned walls disagree on size: front {W}x{H}, back {back.shape[1]}x{back.shape[0]}, "
                          f"side {side.shape[1]}x{side.shape[0]}")
-    A = max(1, int(round(AWNING_OUT_SHARE * W)))
-    P = max(1, int(round(PARAPET_SHARE * W)))
+    A = max(1, int(round(AWNING_OUT_SHARE * (scale or W))))
+    P = max(1, int(round(PARAPET_SHARE * (scale or W))))
     rows = np.arange(H)[::-1]  # layer h is picture row H-1-h
     fr, bk, sd = front[rows], back[rows], side[rows]
     fm, bm, sm = fr[..., 3] > 127, bk[..., 3] > 127, sd[..., 3] > 127
-    found = None if awning == "no" else find_awning(fr, bk, fm, bm)
+    if awning == "no":
+        found = None
+    elif isinstance(found, str):
+        found = find_awning(fr, bk, fm, bm)
     if awning == "yes" and found is None:
         raise WallsError("an awning was asked for, but no band where the front differs from the back right across "
                          "the wall (over the plain wall between the windows too) was found; no stack was written")
@@ -593,22 +708,33 @@ def read_pixel(root: Path, stem: str) -> dict[str, np.ndarray]:
     return out
 
 
-def write_building(root: Path, stem: str, look: str = LOOK, awning: str = "auto") -> dict[str, Any]:
-    """Build the shape from flat/pixel/ and write out/<stem>/stack/ (maker "walls"). Returns
-    {meta (stack.json), result, shape}. Nothing is written when the shape cannot be built."""
+def write_building(root: Path, stem: str, look: str = LOOK, awning: str = "auto", wide: int | None = None,
+                   deep: int | None = None) -> dict[str, Any]:
+    """Build the shape from flat/pixel/ and write out/<stem>/stack/ (maker "walls"). wide, deep: window bays across
+    the front and along the side (None: as drawn; see set_bays). Returns {meta (stack.json), result, shape}.
+    Nothing is written when the shape cannot be built."""
     from stack_views import write_stack
 
-    shape = build_shape(read_pixel(root, stem), awning=awning, look=look)
+    drawn = read_pixel(root, stem)
+    bays = set_bays(drawn, wide, deep)
+    found = None if awning == "no" else awning_of(drawn)
+    if found is not None and "wide_order" in bays:  # the awning's columns, carried through the new bay order
+        cols = np.zeros((1, drawn["front"].shape[1]), bool)
+        cols[0, found[2]] = True
+        found = (found[0], found[1], np.flatnonzero(regroup(cols, bays["bays"], bays["wide_order"])[0]))
+    shape = build_shape(bays.pop("view"), awning=awning, look=look, found=found, scale=drawn["front"].shape[1])
+    shape["bays"] = bays
     result = stack_result(shape["solid"], shape["color"])
     dest = Path(root) / "out" / stem / "stack"
     meta = write_stack(result, dest, "flat/pixel", stem)
-    meta.update({"maker": "walls", "look": look, "shape": "code", "awning": shape["awning"]})
+    meta.update({"maker": "walls", "look": look, "shape": "code", "awning": shape["awning"], "bays": bays})
     (dest / "stack.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return {"meta": meta, "result": result, "shape": shape}
 
 
 def build(root: Path, stem: str, walls: dict[str, Any], look: str = LOOK, size: int = SIZE, awning: str = "auto",
-          meta: dict | None = None, line=print, check=None, carving=None) -> dict[str, Any]:
+          meta: dict | None = None, line=print, check=None, carving=None, wide: int | None = None,
+          deep: int | None = None) -> dict[str, Any]:
     """The whole pure part, saving Versions as the pixel stack draw does: the concept and stack on screen first (if
     never saved), then the concept (views), the flat (cleaned walls) and the stack, made from the concept.
     walls: {base, front, back?}. line(text): progress; check(): raises to cancel between steps; carving(): called
@@ -632,9 +758,11 @@ def build(root: Path, stem: str, walls: dict[str, Any], look: str = LOOK, size: 
         check()
     if carving:
         carving()
-    built = write_building(root, stem, look, awning)
+    built = write_building(root, stem, look, awning, wide, deep)
     size_ = built["result"]["size"]
     aw = built["shape"]["awning"]
+    bays = built["meta"]["bays"]
+    line(f"Bays: {bays['wide']} across, {bays['deep']} deep (drawn {bays['drawn']}).")
     line(f"Stack built: {size_['width']} wide, {size_['length']} long, {size_['height']} layers, "
          f"{built['result']['colors']} colours; " + ("awning layers {}-{}.".format(*aw["layers"]) if aw["found"]
                                                      else "no awning."))
@@ -690,6 +818,8 @@ def main() -> int:
     p.add_argument("--size", type=int, default=SIZE, help=f"cells across the wall (default {SIZE})")
     p.add_argument("--awning", choices=("auto", "yes", "no"), default="auto",
                    help="yes: fail when no awning is found; no: never build one")
+    p.add_argument("--wide", type=int, default=None, help="window bays across the front (default: as drawn)")
+    p.add_argument("--deep", type=int, default=None, help="window bays along the side (default: as drawn)")
     p.add_argument("--render", type=Path, default=None, help="also write a turned 4-angle look to this PNG")
     args = p.parse_args()
     from factory_env import check_stem
@@ -707,7 +837,7 @@ def main() -> int:
         walls["back"] = args.walls / "back.png"
     try:
         out = build(args.root, stem, walls, look=args.look, size=size, awning=args.awning,
-                    line=lambda t: print(t, file=sys.stderr))
+                    line=lambda t: print(t, file=sys.stderr), wide=args.wide, deep=args.deep)
     except WallsError as e:
         print(f"stack_building: {e}", file=sys.stderr)
         return 2

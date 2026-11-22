@@ -67,7 +67,8 @@ def time_key(still: str, edit: str) -> str:
 
 
 def parse(body: dict[str, Any]) -> dict[str, Any]:
-    """The request, checked: {stem, wall, front, back?, look?, size?, seed?}. ValueError on a bad value."""
+    """The request, checked: {stem, wall, front, back?, look?, size?, seed?, wide?, deep?}. wide, deep: window bays
+    across the front and along the side (default as drawn). ValueError on a bad value."""
     import stack_building as SB
     from flat2d.pose import pixel_size
 
@@ -100,8 +101,20 @@ def parse(body: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("seed must be a whole number") from None
         if not 0 <= seed < 2**31 - 64:
             raise ValueError("seed must be between 0 and 2147483583")
+    bays = {}
+    for key in ("wide", "deep"):
+        raw = body.get(key)
+        if raw in (None, ""):
+            bays[key] = None
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, str)) or not str(raw).strip().isdigit():
+            raise ValueError(f"{key} must be a whole number of window bays")
+        bays[key] = int(raw)
+        if not 1 <= bays[key] <= SB.BAY_MAX:
+            raise ValueError(f"{key} must be 1 to {SB.BAY_MAX} window bays")
     seeds = dict(SEEDS) if seed is None else {"base": seed, "front": seed + 11, "back": seed + 21}
-    return {"stem": stem, **words, "look": look, "size": size, "seeds": seeds, "awning": wants_awning(words["front"])}
+    return {"stem": stem, **words, "look": look, "size": size, "seeds": seeds, "awning": wants_awning(words["front"]),
+            **bays}
 
 
 def plan_for(back: bool, loaded: bool, edit_load: bool) -> list[str]:
@@ -213,11 +226,13 @@ def run(factory, spec: dict[str, Any], payload: dict[str, Any]) -> None:
         try:
             out = SB.build(root, stem, walls, look=payload["look"], size=payload["size"], awning=payload["awning"],
                            meta=meta, line=hook.line, check=hook.check,
-                           carving=lambda: hook.stage(drawjob.CARVE))
+                           carving=lambda: hook.stage(drawjob.CARVE), wide=payload.get("wide"),
+                           deep=payload.get("deep"))
         except SB.WallsError as e:
             raise FlatError(str(e)) from None
         result = {"stack": {"file": "stack/stack.json", "size": out["size"], "colors": out["colors"],
                             "layers": out["layers"]}, "look": payload["look"], "awning": out["awning"],
+                  "bays": {k: v for k, v in out["stack"].get("bays", {}).items() if k in ("drawn", "wide", "deep")},
                   "flaws": out["flaws"], "seeds": seeds, "views": "flat/views.json"}
         hook.end_stages()
         seconds = {k: s for k in hook.plan if (s := hook.seconds(k)) is not None}

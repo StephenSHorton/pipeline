@@ -1249,6 +1249,8 @@ class Factory:
             "prompt": payload["wall"],
             "look": payload["look"],
             "size": payload["size"],
+            "wide": payload.get("wide"),
+            "deep": payload.get("deep"),
             "seeds": payload["seeds"],
             "plan": plan,
             "backend": key,

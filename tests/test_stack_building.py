@@ -274,6 +274,27 @@ class ExampleTests(unittest.TestCase):
                 self.assertFalse(back.any())
 
 
+    def test_one_drawing_makes_a_wide_shop_and_a_narrow_deep_building(self) -> None:
+        # The brick walls have three window bays; the door is the middle one, so a front can be one bay or more.
+        walls = {n: self.root / "walls" / "brick" / f"{n}.png" for n in SB.WALLS}
+        drawn = self.out[("brick", "crisp")]
+        wide = SB.build(self.root, "brick-wide", walls, wide=5, deep=2, line=lambda t: None)
+        narrow = SB.build(self.root, "brick-narrow", walls, wide=1, deep=5, line=lambda t: None)
+        bays = SB.find_bays(SB.read_pixel(self.root, "brick-crisp")["side"])
+        self.assertEqual(len(bays), 3)
+        bay = float(np.mean([b - a for a, b in bays]))
+        self.assertAlmostEqual(wide["size"]["width"] - SB.SIZE, 2 * bay, delta=4)
+        self.assertAlmostEqual(narrow["size"]["width"] - SB.SIZE, -2 * bay, delta=4)
+        out = round(SB.AWNING_OUT_SHARE * SB.SIZE)  # the reach is the drawn wall's, not the new width's
+        self.assertAlmostEqual(wide["size"]["length"] - out - SB.SIZE, -bay, delta=4)
+        self.assertAlmostEqual(narrow["size"]["length"] - out - SB.SIZE, 2 * bay, delta=4)
+        for got in (wide, narrow):  # repeated shop windows are not taken for more awning
+            self.assertEqual(got["awning"]["layers"], drawn["awning"]["layers"])
+            self.assertEqual(got["layers"], drawn["layers"])
+        meta = json.loads((self.root / "out" / "brick-wide" / "stack" / "stack.json").read_text())
+        self.assertEqual((meta["bays"]["drawn"], meta["bays"]["wide"], meta["bays"]["deep"]), (3, 5, 2))
+        self.assertEqual(meta["bays"]["wide_order"].count(1), 1)  # the door's bay is never repeated
+
     def test_a_shop_front_with_no_awning_is_not_taken_for_one(self) -> None:
         for name in ("brick", "cafe"):
             for look in SB.LOOKS:
@@ -295,6 +316,44 @@ def door_wall(base: Image.Image) -> Image.Image:
     h, cx, w = bottom - int(ys.min()) + 1, (int(xs.min()) + int(xs.max())) // 2, int(xs.max()) - int(xs.min()) + 1
     rgb[bottom - int(0.3 * h) : bottom - 1, cx - int(0.08 * w) : cx + int(0.08 * w)] = (30, 90, 50)
     return Image.fromarray(rgb)
+
+
+class BayTests(unittest.TestCase):
+    def test_bay_order_keeps_the_middle_once(self) -> None:
+        three, four = [(10, 40), (40, 70), (70, 100)], [(5, 30), (30, 55), (55, 80), (80, 105)]
+        self.assertEqual(SB.bay_order(three, 110, 3), [0, 1, 2])
+        self.assertEqual(SB.bay_order(three, 110, 1), [1])
+        self.assertEqual(SB.bay_order(three, 110, 5), [0, 0, 1, 2, 2])
+        self.assertEqual(SB.bay_order(three, 110, 2).count(1), 1)
+        self.assertEqual(SB.bay_order(four, 110, 2), [1, 2])  # the middle falls between two bays: both kept
+        self.assertEqual(SB.bay_order(four, 110, 6), [0, 0, 1, 2, 3, 3])
+        with self.assertRaises(SB.WallsError):
+            SB.bay_order(four, 110, 1)
+        with self.assertRaises(SB.WallsError):
+            SB.bay_order(three, 110, SB.BAY_MAX + 1)
+
+    def test_bays_on_the_synthetic_wall_and_a_deeper_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "out").mkdir()
+            walls = synthetic_walls()
+            drawn = SB.build(root, "boards", walls, size=SMALL, line=lambda t: None)
+            bays = SB.find_bays(SB.read_pixel(root, "boards")["side"])
+            self.assertEqual(len(bays), 4)
+            deep = SB.build(root, "boards", walls, size=SMALL, deep=6, wide=2, line=lambda t: None)
+            self.assertLess(deep["size"]["width"], drawn["size"]["width"])
+            self.assertGreater(deep["size"]["length"], drawn["size"]["length"])
+            self.assertEqual(deep["awning"]["layers"], drawn["awning"]["layers"])
+            with self.assertRaises(SB.WallsError):  # the door's two middle bays cannot shrink to one
+                SB.build(root, "boards", walls, size=SMALL, wide=1, line=lambda t: None)
+
+    def test_the_request_takes_wide_and_deep(self) -> None:
+        req = building.parse({"stem": "shop", "wall": "w", "front": "a door", "wide": 5, "deep": "2"})
+        self.assertEqual((req["wide"], req["deep"]), (5, 2))
+        self.assertEqual(building.parse({"stem": "shop", "wall": "w", "front": "a door"})["wide"], None)
+        for bad in (0, SB.BAY_MAX + 1, "x", 2.5, True):
+            with self.assertRaises(ValueError, msg=bad):
+                building.parse({"stem": "shop", "wall": "w", "front": "a door", "wide": bad})
 
 
 class DoorTests(unittest.TestCase):
