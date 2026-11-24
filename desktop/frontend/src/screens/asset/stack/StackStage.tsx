@@ -14,7 +14,7 @@ import { writePixelLook } from "@/viewer/pixelLook";
 import { ACTION, COMMIT, PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import type { StageProps } from "../types";
 import { saveStackPaint } from "./actions";
-import { readStackMeta, sheetUrl } from "./api";
+import { readCharacter, readStackMeta, sheetUrl } from "./api";
 import { readGameLook, type GameLookState } from "./gameLook";
 import {
   buildingStack,
@@ -141,13 +141,17 @@ function StackBody({ stem, flowVersion }: StageProps) {
         setPhase("empty");
         return;
       }
+      // A walking character (pipeline#2) plays its walk; if its parts cannot be read, the still body shows.
+      const walker = m.character ? await readCharacter(stem, m.character, t) : null;
+      if (!live) return;
       const d = defaultsFor(base, m);
       const next = stateForMeta(stateRef.current, d, m);
       stateRef.current = next;
       setState(next);
       setDefaults(d);
       setMeta(m);
-      v.load(m, img, next);
+      if (walker) v.loadCharacter(m, next, walker.doc, walker.strips);
+      else v.load(m, img, next);
       setPhase("ready");
     })();
     return () => {

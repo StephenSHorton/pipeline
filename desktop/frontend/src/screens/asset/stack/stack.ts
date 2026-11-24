@@ -3,8 +3,9 @@
 // the palette host code, index.html 2113-2124, 5384-5642). StackStage.tsx lays these out; view.ts draws.
 // No React, no fetch here.
 
-export type StackLook = "voxel" | "plane" | "contour";
-export const LOOKS: StackLook[] = ["voxel", "plane", "contour"];
+/** "slices": the sprite-stack look (pipeline#6), each layer a flat picture, pixel-sharp, outlined, lower layers darker. */
+export type StackLook = "voxel" | "plane" | "contour" | "slices";
+export const LOOKS: StackLook[] = ["voxel", "plane", "contour", "slices"];
 
 /** Everything the dock drives (legacy stack-lab.js `state`). */
 export interface StackState {
@@ -38,7 +39,17 @@ export interface StackMeta {
   extents: number[];
   defaults?: Partial<Record<keyof StackState, unknown>> | null;
   maker?: string;
+  /** A walking character (pipeline#2): its character.json, next to stack.json. */
+  character?: string;
+  /** How this Version is first shown (stack_character.py walk --look): lit 3D cubes, or flat sprite-stack slices. */
+  look?: "cubes" | "slices";
+  /** A character's body: carved from the drawn views, or sliced from a 3D model of them. */
+  body?: "carved" | "mesh";
 }
+
+/** The look a Version asks for in stack.json, if any. */
+export const metaLook = (meta: Pick<StackMeta, "look">): StackLook | null =>
+  meta.look === "slices" ? "slices" : meta.look === "cubes" ? "voxel" : null;
 
 /** Legacy DEFAULTS with the URL overrides (?look= ?pixel=0 ?px= ?outline=0 ?round= ?main=0). */
 export function defaultsFromSearch(search = ""): StackState {
@@ -124,6 +135,11 @@ export function stateForMeta(state: StackState, defaults: StackState, meta: Stac
   // A pixel art stack sets its own look; the next model stack goes back to the page's (defaults is the page's then).
   const look: Partial<StackState> = {};
   if (isPixelArt(meta) || state.flat) for (const k of PIXEL_ART_KEYS) (look as Record<string, unknown>)[k] = defaults[k];
+  // A Version that asks for a look gets it; one that does not, after a Version that asked for Sprite, goes back to
+  // the page's look (as the pixel art keys do), so the Sprite look never sticks to every stack opened after it.
+  const asked = metaLook(meta);
+  if (asked) look.look = asked;
+  else if (state.look === "slices") look.look = defaults.look;
   return {
     ...state,
     ...look,
@@ -166,6 +182,7 @@ export function lookLabel(state: Pick<StackState, "look" | "pixel" | "round" | "
   let name = "Voxel";
   if (state.look === "plane") name = "Plane";
   if (state.look === "contour") name = "Contour";
+  if (state.look === "slices") return "Sprite stack";
   if (state.flat) name += " · Pixel art";
   if (state.pixel) name += " · Pixel";
   if (state.look === "voxel" && state.round > 0.001) name += ` · Round ${state.round.toFixed(2)}`;
@@ -203,7 +220,7 @@ export const STACK_COPY = {
   generating: "Generating…",
   /** #stack-stats when the stack would not load. */
   noStack: "No sprite stack",
-  lookBlurb: "Voxel cubes are what the game uses. Plane and Contour are older experiments.",
+  lookBlurb: "Voxel cubes are what the game uses. Sprite draws each layer as a flat pixel picture, outlined. Plane and Contour are older experiments.",
   paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
   paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
 } as const;
@@ -225,6 +242,11 @@ export const LOOK_BUTTONS: { look: StackLook; label: string; title: string }[] =
   { look: "voxel", label: "Voxel", title: "Instanced cubes per texel. The factory asset." },
   { look: "plane", label: "Plane", title: "An older experiment: one flat picture per slice." },
   { look: "contour", label: "Contour", title: "An older experiment: smooth outlined slabs. Not what the game uses." },
+  {
+    look: "slices",
+    label: "Sprite",
+    title: "The sprite-stack look: each layer a flat picture, one cell to a screen pixel, stacked bottom-up, with a dark outline and lower layers darker.",
+  },
 ];
 
 export type StackToggle = "pixel" | "main" | "outline" | "auto" | "shade" | "lit";

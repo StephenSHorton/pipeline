@@ -80,6 +80,71 @@ MCP: the agent workbench, where Claude makes, measures and fixes assets, lives i
 
 Home asks **What are you making?**: a PS1 model, a 3D model, a sprite stack or a 2D sprite. Each shows only its own settings and a line saying what Make will do; the choice is saved with the asset (`out/<stem>/intent.json`), and the stages, canvas and Export screen follow it. The loading screen lists the factory's real stages (`STAGES`/`STAGE` lines from `generate.sh`, parsed by `/status`), with Cancel and Run in background. The desktop app runs every asset through **Ideas → Concept → 2D / 3D / Stack → Export**. A prompt with no picture draws a grid of ideas; **Use** one and it becomes the concept still that 2D, 3D and the stack start from. Each stage keeps takes in `out/<stem>/takes/` (listed in `flow.json`), so you can step back to an earlier still, sheet, mesh or stack from the bar above the tools. **Export** copies the picked 2D pieces and motion strips, sprite stack and 3D files into `out/<stem>/export/` with an `asset.json` that says what each file is. See **[docs/unified-pipeline.md](docs/unified-pipeline.md)**.
 
+## Walking characters (sprite stacks)
+
+A character can be a sprite stack that walks: one small stack per body part, posed in code every frame, the way
+[loktar00/sprite-stack-animation](https://github.com/loktar00/sprite-stack-animation) (MIT) does it.
+
+- `scripts/stack_character.py draw --stem <s> --prompt "..."` draws the character once (front, side, back on one
+  sheet, the local image model) and carves it; `parts` cuts it into 12 part stacks; `walk` saves the walking
+  character as a Stack Version. The cut is checked: the parts put back together are the body, cell for cell.
+- The Stack stage plays a walking character's Version as a walk: a closed lap of whole strides on a grid, the camera
+  following, free to turn. The walk is `desktop/frontend/src/screens/asset/stack/character/rig.ts`: the step clock
+  runs on distance (`phase += distance / stride`), so a planted foot never moves; knees and elbows are two-bone IK.
+- Export copies it to `export/stack/character/`.
+
+### Two bodies, two looks
+
+- **Carved** (`walk --body carved`, the default): carved from the drawn front, side and back views. It cannot make
+  hollows, diagonals or the depth of a face, and its colours are projected in from the drawings.
+- **Sliced from a 3D model** (`walk --body mesh`): `stack_character.py mesh --stem <s>` makes a 3D model of the drawn
+  front view with TRELLIS.2-4B (Microsoft, MIT; `vendor/trellis-mac`, about 2 minutes, one big model at a time),
+  saved as `out/<s>/character/mesh/model.glb`. Each layer is a true cross-section of that model, coloured from its
+  surface and snapped to a palette. The model sees one picture, so the back is its own guess.
+- `--layers 32` or `--layers 64` shrinks either body to a flat sprite stack's size and cuts its parts again.
+  `--look cubes` or `--look slices` sets how the Stack stage first shows the Version (`stack.json` `look`).
+- The **Sprite** look in the Stack stage (Look → Sprite) draws every layer as a flat picture. The pictures are
+  stacked bottom-up and drawn small, with one cell to a pixel, then enlarged by a whole number with no smoothing. A
+  1-pixel dark outline goes round the figure, and lower layers are darker. It turns with the view, and a walking
+  character walks in it too.
+
+### The export: `stack/character/`
+
+`character.json` (`"format": "pipeline-sprite-character"`, `"version": 1`) and one strip per part,
+`part_<name>.png`. All lengths are **cells** (one cube). The character's frame: **+x forward, +y its left, +z up**;
+side `R` is the character's right (−y).
+
+| Key | What it is |
+| --- | --- |
+| `height` | The body's height in cells (the sole is 0). |
+| `measure` | The body layers of the sole, ankle, knee, crotch, hand, elbow, shoulder, neck and top. |
+| `rig` | The rig (`rig.ts` `RigConfig`): `thigh`, `shin`, `ankle` (ankle height), `hipHalf`, `hipFwd`, `standHip`, `spine` (pelvis to shoulders), `neck` (pelvis to where the head turns), `shoulderHalf`, `shoulderFwd`, `upperArm`, `foreArm`, `kneeHint`, and the walk's `stride`, `duty`, `lift`, `bob`, `twist`, `armSwing`. |
+| `walk` | `stride` (ground per cycle of two steps), `duty` (share of a cycle a foot is down), `speed` (cells a second), `fps` (the fixed step), `lap` (the Stack stage's loop: `strides`, `frames`). |
+| `parts[]` | One per part: `name`, `file`, `cw`, `ch`, `n`, `z0`, `joint`, `reaches`, `side`, `joint_layer`, `axis_in_body`. |
+
+**A strip** holds a part's `n` slices side by side, bottom slice first; each slice is `cw` × `ch` pixels. In a
+slice, image x is forward and image y is the character's left. A cube's place in the part's own frame:
+`x = px − floor(cw/2)`, `y = py − floor(ch/2)`, `z = z0 + slice + 0.5 − joint_layer`. So the part's joint is at
+the origin and its axis runs up through the middle cell of every slice.
+
+**Posing it**, every frame, from the rig's pose (`pose()` in `rig.ts`: pelvis, neck, hip, knee, ankle, shoulder,
+elbow and hand positions, the hips' and shoulders' turn):
+
+| Part | Hangs from | Turned so |
+| --- | --- | --- |
+| `torso` | the pelvis | each slice turned about z, from the hips' angle at the bottom to the shoulders' at `spine` |
+| `head` | the neck | turned about z by the shoulders' angle |
+| `thigh_R/L` | the hip | its −z runs to the knee; its +x as near the hips' heading as that allows |
+| `shin_R/L` | the knee | its −z runs to the ankle |
+| `foot_R/L` | the ankle | turned about z by the foot's heading (set when it lands) |
+| `upperarm_R/L` | the shoulder | its −z runs to the elbow; +x as near the shoulders' heading as that allows |
+| `forearm_R/L` | the elbow | its −z runs to the hand |
+
+Moving the character: call `step(walker, x, y, heading)` once per fixed step with where the body is; the feet
+follow. The rig never stretches a limb (a part stack cannot stretch): a swinging foot is kept within the leg's
+reach and the hips drop as far as a planted foot needs. `rig.ts` is plain TypeScript with no dependencies, so a
+game can use it as is.
+
 ## Hard-surface props (cars, wheelbarrows, mailboxes)
 
 Props are the weak class. There is no route that makes a clean one on its own:

@@ -145,6 +145,33 @@ class ExportTest(unittest.TestCase):
         self.assertFalse((self.asset / "export" / "3d" / "rigged.glb").exists())
         self.assertFalse((self.asset / "export.tmp").exists())
 
+    def test_a_walking_character_exports_its_parts_and_rig(self) -> None:
+        self.stack()
+        meta = json.loads((self.asset / "stack" / "stack.json").read_text())
+        write(self.asset / "stack" / "stack.json", {**meta, "character": "character.json"})
+        parts = [{"name": n, "file": f"part_{n}.png", "cw": 3, "ch": 3, "n": 2, "z0": 0} for n in ("torso", "head")]
+        write(self.asset / "stack" / "character.json", {"format": "pipeline-sprite-character", "rig": {"thigh": 3}, "parts": parts})
+        for p in parts:
+            png(self.asset / "stack" / p["file"], (6, 3))
+        export_asset.build(self.root, "knight")
+        out = self.asset / "export"
+        doc = json.loads((out / "asset.json").read_text())
+        self.assertEqual(doc["stack"]["character"], "stack/character/character.json")
+        char = json.loads((out / doc["stack"]["character"]).read_text())
+        self.assertEqual(char["rig"], {"thigh": 3})
+        for p in parts:
+            self.assertTrue((out / "stack" / "character" / p["file"]).is_file(), p["file"])
+
+    def test_a_character_missing_a_part_strip_exports_the_still_stack_only(self) -> None:
+        self.stack()
+        meta = json.loads((self.asset / "stack" / "stack.json").read_text())
+        write(self.asset / "stack" / "stack.json", {**meta, "character": "character.json"})
+        write(self.asset / "stack" / "character.json", {"parts": [{"name": "torso", "file": "part_torso.png"}]})
+        export_asset.build(self.root, "knight")
+        doc = json.loads((self.asset / "export" / "asset.json").read_text())
+        self.assertNotIn("character", doc["stack"])
+        self.assertFalse((self.asset / "export" / "stack" / "character").exists())
+
     def test_nothing_to_export(self) -> None:
         png(self.asset / "flat" / "source.png")
         with self.assertRaises(export_asset.ExportError):

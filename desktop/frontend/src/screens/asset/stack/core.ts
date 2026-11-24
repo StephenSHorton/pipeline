@@ -73,6 +73,8 @@ export function crunchSize(core: Core): number {
 }
 
 export function layerShade(core: Core, index: number): number {
+  // the sprite-stack look always darkens its lower layers
+  if (core.state.look === "slices") return 0.62 + 0.38 * (index / Math.max(1, core.meta.layers - 1));
   return core.state.shade ? 0.52 + 0.48 * (index / Math.max(1, core.meta.layers - 1)) : 1;
 }
 

@@ -48,7 +48,7 @@ describe("copy", () => {
       slicing: "Slicing…",
       generating: "Generating…",
       noStack: "No sprite stack",
-      lookBlurb: "Voxel cubes are what the game uses. Plane and Contour are older experiments.",
+      lookBlurb: "Voxel cubes are what the game uses. Sprite draws each layer as a flat pixel picture, outlined. Plane and Contour are older experiments.",
       paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
       paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
     });
@@ -58,12 +58,27 @@ describe("copy", () => {
     expect(phaseText("ready")).toBe("");
   });
 
-  it("looks: Voxel is the asset, Plane and Contour are older experiments", () => {
+  it("looks: Voxel is the asset, Sprite the sprite-stack look, Plane and Contour are older experiments", () => {
     expect(LOOK_BUTTONS).toEqual([
       { look: "voxel", label: "Voxel", title: "Instanced cubes per texel. The factory asset." },
       { look: "plane", label: "Plane", title: "An older experiment: one flat picture per slice." },
       { look: "contour", label: "Contour", title: "An older experiment: smooth outlined slabs. Not what the game uses." },
+      {
+        look: "slices",
+        label: "Sprite",
+        title: "The sprite-stack look: each layer a flat picture, one cell to a screen pixel, stacked bottom-up, with a dark outline and lower layers darker.",
+      },
     ]);
+  });
+
+  it("a Version's stack.json look is the look it opens in; none keeps the page's", () => {
+    const base = defaultsFromSearch("");
+    const meta = { layers: 64, resolution: 25, pitch: 0.04, extents: [1, 2.56, 0.5], maker: "views" };
+    expect(stateForMeta({ ...base, look: "voxel" }, base, { ...meta, look: "slices" }).look).toBe("slices");
+    expect(stateForMeta({ ...base, look: "slices" }, base, { ...meta, look: "cubes" }).look).toBe("voxel");
+    expect(stateForMeta({ ...base, look: "slices" }, base, meta).look).toBe("voxel");
+    expect(stateForMeta({ ...base, look: "plane" }, base, meta).look).toBe("plane");
+    expect(lookLabel({ ...base, look: "slices" })).toBe("Sprite stack");
   });
 
   it("the toggles, Reset and the game look", () => {

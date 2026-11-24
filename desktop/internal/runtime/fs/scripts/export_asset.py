@@ -13,6 +13,7 @@ are the ones the stages already wrote.
       2d/sounds/        sound per piece
       2d/voices/        spoken line per piece
       stack/            sheet.png (layers bottom to top), stack.json, preview.png
+      stack/character/  a walking character: character.json (rig, walk, parts) + part_<name>.png strips
       3d/               model.glb, pixel.glb, rigged.glb, psx.glb (finished models only: no game / proxy LODs)
       3d/psx/           <name>.obj + .mtl + .png: the PS1 low-poly (Y up, +Z front unless psx.axes says)
       3d/rig/           <name>.fbx (+ .png): the rigged model with every clip, for s&box ModelDoc
@@ -150,7 +151,26 @@ def stack_section(asset: Path, out: Path) -> dict | None:
     if (src / "preview.png").is_file():
         section["preview"] = "stack/preview.png"
     section.update({k: meta[k] for k in keep if k in meta})
+    char = character_entry(src, out, meta)
+    if char:
+        section["character"] = char
     return section
+
+
+def character_entry(src: Path, out: Path, meta: dict) -> str | None:
+    """A walking character (stack_character.py walk): character.json and every part strip it names, into
+    stack/character/. The format is in the README (Walking characters)."""
+    name = meta.get("character")
+    doc = _read(src / name) if isinstance(name, str) and "/" not in name else None
+    if not isinstance(doc, dict) or not isinstance(doc.get("parts"), list):
+        return None
+    files = [p.get("file") for p in doc["parts"] if isinstance(p, dict)]
+    if not files or not all(isinstance(f, str) and "/" not in f and (src / f).is_file() for f in files):
+        return None
+    for f in files:
+        _copy(src / f, out / "stack" / "character" / f)
+    _copy(src / name, out / "stack" / "character" / "character.json")
+    return "stack/character/character.json"
 
 
 def mesh_section(asset: Path, out: Path) -> dict | None:

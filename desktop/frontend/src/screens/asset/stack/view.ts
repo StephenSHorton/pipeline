@@ -14,6 +14,7 @@ import {
   DepthTexture,
   DirectionalLight,
   DoubleSide,
+  GridHelper,
   ExtrudeGeometry,
   type ExtrudeGeometryOptions,
   Group,
@@ -75,8 +76,11 @@ import {
   type Slice,
   undoStroke,
 } from "./core";
+import type { CharacterDoc } from "./character/parts";
+import { createWalkView, type WalkView } from "./character/walkView";
 import { createGameLook, type GameLookState } from "./gameLook";
 import { injectGrade, injectPixelBlit, injectVoxelPbr } from "./shaders";
+import { createSpritePass } from "./spritePass";
 import { hexToRgb, isPixelArt, ORBIT, type PaletteEntry, type StackMeta, type StackState, worldPaintRadius } from "./stack";
 
 /** Room around the stack when the camera must back off to show all of it (1.1: a tenth of a margin each side). */
@@ -102,6 +106,8 @@ export interface StackViewEvents {
 export interface StackView {
   /** Draw this stack (stack.json + sheet.png) with the dock's state. */
   load(meta: StackMeta, sheet: CanvasImageSource, state: StackState): void;
+  /** Play a walking character (pipeline#2): its parts walk a lap on a grid; the camera follows and turns as ever. */
+  loadCharacter(meta: StackMeta, state: StackState, doc: CharacterDoc, strips: Map<string, ArrayLike<number>>): void;
   /** Empty the canvas (Slicing…, Generating…, or no stack). */
   clear(): void;
   set(patch: Partial<StackState>): void;
@@ -240,6 +246,8 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
   scene.add(stackGroup);
   // The same Game look as the mesh viewer, from the shared pipeline.pixelLook record.
   const gameLook = createGameLook({ renderer, scene, camera, controls, subject: stackGroup, key, ground, blob, defaults: game });
+  // The sprite-stack look (state.look "slices"): the slices drawn small, pixel-sharp and outlined.
+  const spritePass = createSpritePass(renderer, scene, camera);
   const brushBall = new Mesh(
     new SphereGeometry(1, 20, 12),
     new MeshBasicMaterial({ color: 0x2ecc71, transparent: true, opacity: 0.28, depthWrite: false }),
@@ -260,6 +268,11 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
   let sheet: CanvasImageSource | null = null;
   let stackSlices: Rec[] = [];
   let ready = false;
+  let walk: WalkView | null = null;
+  let walkGrid: GridHelper | null = null;
+  /** The walking character on screen, to build it again in another look. */
+  let walkSource: { doc: CharacterDoc; strips: Map<string, ArrayLike<number>> } | null = null;
+  const follow = new Vector3();
   let paint: PaintMode = { on: false, drop: false, erase: false, color: "#2ecc71", radius: 0.04 };
 
   const grade = {
@@ -439,7 +452,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       rec.sliceTex.colorSpace = SRGBColorSpace;
     }
     // Pixel art keeps its texels square; the older looks blend them.
-    const filter = state.flat ? NearestFilter : LinearFilter;
+    const filter = state.flat || state.look === "slices" ? NearestFilter : LinearFilter;
     rec.sliceTex!.magFilter = filter;
     rec.sliceTex!.minFilter = filter;
     const ctx = rec.sliceCtx!;
@@ -680,7 +693,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       return;
     }
     clearDisplay(rec);
-    if (state.look === "plane") fillPlane(rec);
+    if (state.look === "plane" || state.look === "slices") fillPlane(rec);
     else fillContour(rec, crunch);
   }
 
@@ -727,7 +740,39 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     })();
   }
 
+  /** The walking character (walkSource) in the current look; a look change starts the lap again. */
+  function buildWalk() {
+    if (!walkSource || !meta) return;
+    walk?.dispose();
+    const { doc, strips } = walkSource;
+    const H = Math.max(1, doc.height - 1);
+    walk = createWalkView({
+      parent: stackGroup,
+      doc,
+      strips,
+      pitch: meta.pitch,
+      material: voxelMaterial(),
+      color: (byte, layer) => chan(byte, state.shade ? 0.52 + 0.48 * (layer / H) : 1),
+      look: state.look === "slices" ? "slices" : "cubes",
+    });
+  }
+
+  function clearWalk() {
+    walkSource = null;
+    walk?.dispose();
+    walk = null;
+    if (walkGrid) {
+      walkGrid.removeFromParent();
+      walkGrid.geometry.dispose();
+      (walkGrid.material as Material).dispose();
+      walkGrid = null;
+    }
+    blob.position.x = 0;
+    blob.position.z = 0;
+  }
+
   function clearStack() {
+    clearWalk();
     voxelJob += 1;
     clearTimeout(roundTimer);
     clearTimeout(texelsTimer);
@@ -809,11 +854,25 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     raf = requestAnimationFrame(frame);
     timer.update(ts);
     controls.autoRotate = state.auto;
-    controls.update(timer.getDelta());
+    const dt = timer.getDelta();
+    if (walk) {
+      // the camera keeps its angle and distance to the walker, so it stays in view while you turn around it
+      walk.tick(dt);
+      const at = walk.where();
+      blob.position.x = at.x;
+      blob.position.z = at.z;
+      at.y = walk.height * 0.5;
+      follow.subVectors(at, controls.target);
+      camera.position.add(follow);
+      controls.target.copy(at);
+    }
+    controls.update(dt);
     if (!ready) return;
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.outputColorSpace = SRGBColorSpace;
-    if (gameLook.state.on) {
+    if (state.look === "slices") {
+      spritePass.render(stackGroup, meta?.pitch ?? 0.01, camera.position.distanceTo(controls.target));
+    } else if (gameLook.state.on) {
       gameLook.render();
     } else if (state.pixel) {
       ensurePixelTarget();
@@ -839,6 +898,15 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
     const changed = (k: keyof StackState) => prev[k] !== state[k];
     if (changed("outline")) pixelUniforms.outline.value = state.outline ? 1 : 0;
     if (changed("brightness") || changed("contrast") || changed("saturation")) applyGrade();
+    if (walk) {
+      if (changed("look") && (prev.look === "slices" || state.look === "slices")) {
+        buildWalk();
+        return;
+      }
+      if (changed("flat")) walk.setMaterial(voxelMaterial());
+      if (changed("flat") || changed("shade")) walk.recolor();
+      return;
+    }
     if (!meta) return;
     const rebuild =
       changed("look") || changed("flat") || changed("lit") || changed("shade") || changed("main") || (changed("layers") && (state.round > 0 || state.main));
@@ -876,6 +944,37 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       frameStack();
       setEmpty(false);
       void rebuildLookAsync();
+    },
+    loadCharacter(m, s, doc, strips) {
+      clearStack();
+      Object.assign(state, s);
+      meta = m;
+      applyGrade();
+      pixelUniforms.outline.value = state.outline ? 1 : 0;
+      walkSource = { doc, strips };
+      buildWalk();
+      if (!walk) return;
+      // a grid on the ground, a square to about 16 cells, so a planted foot can be seen to stay put
+      const size = Math.ceil((walk.radius + walk.height) * 2);
+      const squares = Math.max(8, Math.round(size / (16 * m.pitch)));
+      walkGrid = new GridHelper(size, squares, 0x3a3d33, 0x24261f);
+      walkGrid.position.y = 0.003;
+      scene.add(walkGrid);
+      resize();
+      const at = walk.where();
+      at.y = walk.height * 0.5;
+      // The sprite-stack look is seen from higher up (about 40 degrees, as sprite-stack games are): from the cubes'
+      // low angle every flat layer is nearly edge-on. A default only: the view still turns and tilts freely.
+      const dir = new Vector3(0.72, state.look === "slices" ? 1.05 : 0.38, 1).normalize();
+      const dist = (walk.height * 1.7) / (2 * Math.tan((camera.fov * Math.PI) / 360));
+      controls.target.copy(at);
+      camera.position.copy(at).addScaledVector(dir, dist);
+      camera.lookAt(at);
+      controls.minDistance = Math.max(0.25, dist * 0.2);
+      controls.maxDistance = Math.max(48, dist * 6);
+      controls.update();
+      blob.scale.setScalar(walk.height * 0.18);
+      setEmpty(false);
     },
     clear() {
       clearStack();
@@ -929,6 +1028,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       clearStack();
       controls.dispose();
       gameLook.dispose();
+      spritePass.dispose();
       pixelRT?.depthTexture?.dispose();
       pixelRT?.dispose();
       for (const m of [pixelMat, isoMat, voxelMat, flatVoxelMat, litVoxelMat, ground.material, blob.material, brushBall.material]) m.dispose();
