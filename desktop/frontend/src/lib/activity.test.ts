@@ -73,6 +73,8 @@ describe("absorb", () => {
 describe("followStep", () => {
   it("opens the asset when work starts and adopts a job", () => {
     expect(followStep(e("j", 1, { state: "running", source: "job", stem: "s" }), undefined)).toEqual({ open: "s", adopt: true });
+    // A building writes its stack: it opens on Stack.
+    expect(followStep(e("j", 1, { state: "running", source: "job", kind: "building", stem: "cafe" }), undefined)).toEqual({ open: "cafe", stage: "stack", adopt: true });
     expect(followStep(e("j", 2, { state: "running", source: "job", stem: "s" }), e("j", 1, { state: "running" }))).toEqual({});
     // A quick action whose running copy the feed never sent.
     expect(followStep(e("m", 2, { state: "ok", source: "claude", stem: "s" }), undefined)).toEqual({ open: "s" });
