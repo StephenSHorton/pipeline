@@ -96,6 +96,12 @@ DOOR_EDGE = 0.12  # the corner trim each side, as a share of the width, is left 
 DOOR_COMMON = 0.2  # a colour seen in both this share of a probed row's left end and its right end is the wall's
 DOOR_RUN = 0.06  # a run of other colours this wide (share of the width) is an opening that reaches the ground ...
 DOOR_HITS = 3  # ... and one in at least this many probed rows is a door (the 2026-11-21 walls: plain walls 0 under 0.03, doors 6 of 6)
+# A shop front the full width of the ground floor is one colour at both ends, so the door probe takes it for the wall's
+# own (the first real run from the app, 2026-11-24: a green shop front and door drawn on the plain wall, 2 hits). Its
+# ground floor does not look like the floors above it: the colours of these shares of the height above the bottom ...
+GROUND_BAND = (0.05, 0.22)
+UPPER_BAND = (0.35, 0.65)  # ... against these (shares of the height down from the top), as histogram overlap
+GROUND_MATCH = 0.6  # less overlap than this is a shop front (plain walls 0.67 to 0.86; shop fronts 0.26 to 0.51)
 DECK_TOL = 30  # summed-RGB distance from the top view's centre colour that is still deck
 CRISP_DISTINCT = 64  # a face with at most this many colours takes its parapet colour by vote, else by median
 ROOFS = ("flat", "gable")
@@ -216,14 +222,44 @@ def _longest(odd: np.ndarray) -> tuple[int, int]:
     return best
 
 
+def ground_match(pic) -> float:
+    """How much the wall's ground floor looks like the floors above it: the overlap (0 to 1) of their colour
+    histograms, inside the corner trim. A plain wall's ground floor is the same material with windows; a shop front
+    is not."""
+    rgb = _rgb(pic)
+    fg = _below_cornice(_mask(rgb))
+    rows = np.nonzero(fg.any(1))[0]
+    if len(rows) < 10:
+        raise WallsError("the plain wall is empty")
+    top = int(rows[0])
+    bottom = int(rows[-1]) - base_rows(fg)
+    h = bottom - top + 1
+    xs = np.nonzero(fg[bottom - h // 3])[0]
+    x0, x1 = int(xs[0]), int(xs[-1])
+    edge = int(DOOR_EDGE * (x1 - x0 + 1))
+
+    def hist(a: np.ndarray) -> np.ndarray:
+        q = a.reshape(-1, 3).astype(int) // 32
+        n = np.bincount(q[:, 0] * 64 + q[:, 1] * 8 + q[:, 2], minlength=512)
+        return n / max(1, n.sum())
+
+    cols = slice(x0 + edge, x1 - edge + 1)
+    upper = hist(rgb[top + int(UPPER_BAND[0] * h) : top + int(UPPER_BAND[1] * h), cols])
+    ground = hist(rgb[bottom - int(GROUND_BAND[1] * h) : bottom - int(GROUND_BAND[0] * h), cols])
+    return round(float(np.minimum(upper, ground).sum()), 3)
+
+
 def plain_wall_door(pic) -> dict[str, Any]:
     """Whether a plain wall picture has an opening that reaches the ground (a door, a shop front): a run of colours
-    that are not the wall's, the plinth's or the trim's, across the bottom rows of the wall. Windows stand on sills
-    above those rows. Returns {door, hits, runs}."""
+    that are not the wall's, the plinth's or the trim's, across the bottom rows of the wall (windows stand on sills
+    above those rows), or a ground floor that does not look like the floors above (a full-width shop front).
+    Returns {door, hits, runs, ground, shop_front}."""
     rows, _, w = _door_rows(pic)
     runs = [round((lambda r: r[1] - r[0])(_longest(odd)) / w, 3) for odd in rows]
     hits = sum(r >= DOOR_RUN for r in runs)
-    return {"door": hits >= DOOR_HITS, "hits": hits, "runs": runs}
+    ground = ground_match(pic)
+    shop = ground < GROUND_MATCH
+    return {"door": hits >= DOOR_HITS or shop, "hits": hits, "runs": runs, "ground": ground, "shop_front": shop}
 
 
 def door_columns(pic) -> np.ndarray:

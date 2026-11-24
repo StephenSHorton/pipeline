@@ -33,6 +33,7 @@ from test_factory_http import http_json  # noqa: E402
 EXAMPLES = Path(os.environ.get("PIPELINE_EXAMPLES") or Path.home() / "projects/ai-asset-pipeline/out/_experiments")
 BRICK, CAFE = EXAMPLES / "walls2", EXAMPLES / "walls3"
 BAKERY = EXAMPLES / "walls4"  # the first factory run: its plain wall came out with a door on it
+GROCER = EXAMPLES / "walls5"  # the first run from the app (2026-11-24): a full-width shop front on its plain wall
 SMALL = 48  # cells across the synthetic wall: quick
 
 
@@ -439,12 +440,34 @@ class DoorTests(unittest.TestCase):
         self.assertFalse(SB.plain_wall_door(base)["door"])
         self.assertTrue(SB.plain_wall_door(door_wall(base))["door"])
 
+    def test_a_shop_front_across_the_plain_wall_is_found(self) -> None:
+        # One colour at both ends of the ground floor, so the door probe misses it; the ground floor's colours do not.
+        base = synthetic_walls()["base"]
+        self.assertGreaterEqual(SB.plain_wall_door(base)["ground"], SB.GROUND_MATCH)
+        rgb = np.asarray(base.convert("RGB")).copy()
+        fg = SB._mask(rgb)
+        ys, xs = np.nonzero(fg)
+        bottom = int(ys.max()) - SB.base_rows(fg)
+        h = bottom - int(ys.min()) + 1
+        rgb[bottom - int(0.3 * h) : bottom - 1, int(xs.min()) + 3 : int(xs.max()) - 2] = (30, 90, 50)  # the frame
+        rgb[bottom - int(0.25 * h) : bottom - int(0.06 * h), int(xs.min()) + 20 : int(xs.max()) - 20] = (60, 110, 160)
+        check = SB.plain_wall_door(Image.fromarray(rgb))
+        self.assertTrue(check["shop_front"] and check["door"], check)
+
+    @unittest.skipUnless(_have(GROCER), "the grocer's walls are not here")
+    def test_the_grocers_plain_wall_has_a_shop_front(self) -> None:
+        check = SB.plain_wall_door(GROCER / "base.png")
+        self.assertLess(check["hits"], SB.DOOR_HITS)  # what the door probe alone said: no door
+        self.assertTrue(check["shop_front"], check)
+        self.assertTrue(SB.plain_wall_door(GROCER / "front.png")["shop_front"])
+
     @unittest.skipUnless(_have(BRICK) and _have(CAFE) and _have(BAKERY), "the example walls are not here")
     def test_the_drawn_walls(self) -> None:
         # The two plain walls the method was proven on have no door; every back (a door added) and the bakery's
         # plain wall (the model drew a door on it despite the prompt) do.
         for folder in (BRICK, CAFE):
             self.assertFalse(SB.plain_wall_door(folder / "base.png")["door"], folder)
+            self.assertTrue(SB.plain_wall_door(folder / "front.png")["shop_front"], folder)
         for path in (BRICK / "back.png", CAFE / "back.png", BAKERY / "base.png"):
             self.assertTrue(SB.plain_wall_door(path)["door"], path)
 
@@ -555,6 +578,47 @@ class RouteTests(unittest.TestCase):
         self.assertIn("awning", views["sheet"]["prompts"]["front"])
         self.assertFalse((asset / "flat" / ".walls-draw").exists())
         self.assertTrue((asset / "flat" / "walls" / "back.png").is_file())
+        # A building is a sprite stack in the Library, and the list says it is a building (the app's join picker).
+        self.assertEqual(json.loads((asset / "intent.json").read_text())["output"], "stack")
+        _, listed = http_json(self.base + "/assets")
+        shop = next(a for a in listed["assets"] if a["id"] == "shop")
+        self.assertEqual((shop["building"], shop["preview"]), (True, "stack/preview.png"))  # not the magenta walls
+        self.assertIn("Door check, plain wall 1:", (asset / "draw.log").read_text())  # said even with no door
+
+    def test_buildings_already_made_are_joined_from_the_app(self) -> None:
+        status, job = http_json(self.base + "/2d/building", method="POST", data=self.BODY)
+        self.assertEqual(self.wait(job["job_id"])["state"], "ok")
+        one = json.loads((self.root / "out" / "shop" / "stack" / "stack.json").read_text())["size"]
+        status, out = http_json(self.base + "/2d/join", method="POST",
+                                data={"stem": "street", "layout": "row", "parts": ["shop", {"stem": "shop", "turn": 0}],
+                                      "project": None})
+        self.assertEqual(status, 200, out)
+        self.assertEqual(out["size"]["width"], 2 * one["width"])
+        meta = json.loads((self.root / "out" / "street" / "stack" / "stack.json").read_text())
+        self.assertEqual((meta["maker"], meta["joined"]["layout"]), ("walls", "row"))
+        self.assertEqual(json.loads((self.root / "out" / "street" / "intent.json").read_text())["output"], "stack")
+        _, listed = http_json(self.base + "/assets")
+        self.assertTrue(next(a for a in listed["assets"] if a["id"] == "street")["building"])
+        # A corner is two parts; a missing part, or the joined building as its own part, is a plain 400.
+        for bad in ({"stem": "corner", "layout": "corner", "parts": ["shop"]},
+                    {"stem": "corner", "layout": "row", "parts": ["shop", "nowhere"]},
+                    {"stem": "shop", "layout": "row", "parts": ["shop", "street"]}):
+            status, out = http_json(self.base + "/2d/join", method="POST", data=bad)
+            self.assertEqual(status, 400, out)
+            self.assertTrue(out["error"], out)
+
+    def test_a_join_waits_while_a_job_runs(self) -> None:
+        self.factory._job = {"state": "running", "job_id": "x", "stem": "other"}
+        status, out = http_json(self.base + "/2d/join", method="POST",
+                                data={"stem": "street", "layout": "row", "parts": ["a", "b"]})
+        self.assertEqual(status, 409, out)
+        # The running job's new asset is listed before it writes anything, so the app can open it while it is made.
+        (self.root / "out" / "other").mkdir()
+        _, listed = http_json(self.base + "/assets")
+        self.assertIn("other", [a["id"] for a in listed["assets"]])
+        self.factory._job = None
+        _, listed = http_json(self.base + "/assets")
+        self.assertNotIn("other", [a["id"] for a in listed["assets"]])
 
     def test_a_plain_wall_with_a_door_is_drawn_again(self) -> None:
         first = door_wall(self.walls["base"])
