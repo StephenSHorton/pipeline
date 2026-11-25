@@ -67,6 +67,9 @@ FILES: dict[str, tuple[str, ...]] = {
         "flat/voices/*",
         # The pixel art sheet's cleaned views (flat2d/pixelart.py), which a sprite stack is carved from.
         "flat/pixel/*",
+        # An animation from the Animate stage (scripts/animate.py): its clip, frames, cut-outs and skeleton; the
+        # sprite strip itself is flat/sheets/<action>.png.
+        "flat/anim/**/*",
     ),
     "mesh": (
         "mesh*.glb",

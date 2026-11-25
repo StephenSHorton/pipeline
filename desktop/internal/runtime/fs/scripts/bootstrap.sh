@@ -8,7 +8,10 @@ BIN="$ROOT/bin"
 VENDOR="$ROOT/vendor/hunyuan3d-swift"
 WEIGHTS="$ROOT/weights"
 VENV="$ROOT/.venv/bin"
-QUALITY="${1:-draft}"   # draft | textured | pbr | psx | stack
+QUALITY="${1:-draft}"   # draft | textured | pbr | psx | stack | animate
+if [[ "$QUALITY" == "animate" ]]; then
+  exec "$ROOT/scripts/bootstrap_animate.sh"   # the Animate stage's LTX-2.3 (scripts/animate.py)
+fi
 
 mkdir -p "$BIN" "$WEIGHTS" "$ROOT/in" "$ROOT/out"
 

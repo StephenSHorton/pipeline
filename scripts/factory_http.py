@@ -22,6 +22,7 @@ POST /upload
 POST /generate
 POST /2d/draw            a 2D still (or Ideas) as a job: /status, /cancel
 POST /2d/building        a building's walls drawn, then built as a sprite stack (scripts/stack_building.py), as a job
+POST /2d/animate/<stem>  a character picture plus a skeleton clip animated by LTX-2.3 (scripts/animate.py), as a job
 GET  /2d/<stem>/drawing  the picture filling in while it draws
 """
 from __future__ import annotations
@@ -242,6 +243,14 @@ STAGE_LABELS = {
     "clips": "Bake the clips",
     "check": "Check the rig",
     "fbx": "FBX for s&box",
+    # scripts/animate.py
+    "skeleton": "Draw the skeleton video",
+    "guide": "Fit the picture",
+    "ltx": "Animate with LTX-2.3",
+    "frames": "Cut the frames",
+    "cutouts": "Cut out the character",
+    "strip": "Pack the sprite strip",
+    "pose_check": "Check the skeleton",
     # flat2d/drawjob.py: load draw ground redraw pieces motion say sound idea1..idea8
     **drawjob.LABELS,
 }
@@ -405,6 +414,52 @@ def render_argv(python: Path | str, root: Path, stem: str, job: Any) -> list[str
         argv += ["--size", str(size)]
     if job.get("floor") is not None and _switch("floor", job["floor"]) == "0":
         argv.append("--no-floor")
+    return argv
+
+
+def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]) -> list[str]:
+    """scripts/animate.py's command line from a POST /2d/animate/<stem> body, checked: {"prompt" (required: what
+    happens and which way the character faces), "skeleton"?: a skeleton Pipeline ships (scripts/skeletons/,
+    default walk_side), "action"?: the strip's name (default walk), "picture"?: a picture under out/<stem>/ (default
+    the concept still), "seed"?, "frames"?: 8k+1 (default 73), "size"?: 256 to 1024 in 32s (default 704),
+    "every"?: every n'th frame goes in the strip (default 3)}."""
+    import skeleton as SK
+    from flat2d.atlas import action_name
+    from flat2d.store import FlatError
+
+    if not isinstance(body, dict):
+        raise ValueError("body must be a JSON object")
+    prompt = " ".join(str(body.get("prompt") or "").split())
+    if not prompt:
+        raise ValueError("prompt is required, and must say which way the character faces and moves")
+    if len(prompt) > 2000:
+        raise ValueError("prompt is too long")
+    name = str(body.get("skeleton") or "walk_side")
+    if name not in SK.shipped():
+        raise ValueError(f"skeleton must be one of {', '.join(SK.shipped())}")
+    try:
+        action = action_name(str(body.get("action") or "walk"))
+    except FlatError as e:
+        raise ValueError(str(e)) from None
+    argv = [str(python), str(root / "scripts" / "animate.py"), "--root", str(root), "--stem", stem,
+            "--prompt", prompt, "--skeleton", name, "--action", action]
+    picture = body.get("picture")
+    if picture not in (None, ""):
+        rel = str(picture)
+        if rel.startswith("/") or ".." in Path(rel).parts:
+            raise ValueError("picture must be a path inside the asset")
+        argv += ["--picture", rel]
+    for key, lo, hi in (("seed", 0, 2**31 - 1), ("frames", 9, 257), ("size", 256, 1024), ("every", 1, 12)):
+        if body.get(key) in (None, ""):
+            continue
+        value = body[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ValueError(f"{key} must be a whole number from {lo} to {hi}")
+        if key == "frames" and (value - 1) % 8:
+            raise ValueError("frames must be 8k+1 (9, 17, ... 73, ...)")
+        if key == "size" and value % 32:
+            raise ValueError("size must be a multiple of 32")
+        argv += [f"--{key}", str(value)]
     return argv
 
 
@@ -1306,10 +1361,27 @@ class Factory:
         argv = render_argv(self.python, self.root, stem, (body or {}).get("job"))
         return self._start_rig_job(stem, "render", argv, folder / "rig" / "render.log")
 
-    def _start_rig_job(self, stem: str, kind: str, argv: list[str], log: Path) -> dict[str, Any]:
+    def start_animate(self, stem: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Animate one of the asset's character pictures with a skeleton clip (scripts/animate.py: LTX-2.3 and the
+        Union-Control IC-LoRA), in the job slot: /status, /cancel, out/<stem>/animate.log. The draw model is freed
+        first, so LTX (about 40 GB at its peak) is the one big model running. Saves a new 2D Version."""
+        import animate
+
+        stem = check_stem(stem)
+        if not stem_dir(self.root, stem).is_dir():
+            raise FileNotFoundError(f"no asset {stem!r}")
+        argv = animate_argv(self.python, self.root, stem, body)
+        try:
+            animate.check_ltx(animate.ltx_paths(self.root))
+        except animate.AnimateError as e:
+            raise ValueError(str(e)) from None
+        return self._start_rig_job(stem, "animate", argv, stem_dir(self.root, stem) / "animate.log",
+                                   action=argv[argv.index("--action") + 1])
+
+    def _start_rig_job(self, stem: str, kind: str, argv: list[str], log: Path, **extra: Any) -> dict[str, Any]:
         job_id = uuid.uuid4().hex[:8]
         spec = {"job_id": job_id, "kind": kind, "state": "running", "stem": stem, "argv": argv, "log": str(log),
-                "started": time.time(), "returncode": None, "error": None}
+                "started": time.time(), "returncode": None, "error": None, **extra}
         with self._lock:
             if (self._job and self._job.get("state") == "running") or stem in self._checking or self._sync_draws:
                 raise RuntimeError("the factory is busy with another job")
@@ -1432,8 +1504,10 @@ class Factory:
         log = Path(spec["log"])
         folder = stem_dir(self.root, spec["stem"])
         render = spec.get("kind") == "render"
+        # kind animate (scripts/animate.py) saves its own 2D Versions, before and after.
+        animating = spec.get("kind") == "animate"
         try:
-            if folder.is_dir() and not render:
+            if folder.is_dir() and not render and not animating:
                 autosave(self.root, spec["stem"], ("rig",))
             log.parent.mkdir(parents=True, exist_ok=True)
             sheet = folder / "rig" / "preview" / "contact_sheet.png"
@@ -1443,6 +1517,9 @@ class Factory:
                 rc = -signal.SIGTERM
                 if not (self._snapshot() or {}).get("cancel"):
                     with log.open("w", encoding="utf-8") as fh:
+                        if animating:  # one big model at a time: LTX never runs beside the draw model
+                            fh.write(self._unload_draw().replace("generate:", "note:", 1) + "\n")
+                            fh.flush()
                         proc = subprocess.Popen(spec["argv"], cwd=str(self.root), stdout=fh, stderr=subprocess.STDOUT,
                                                 text=True, start_new_session=True, env=rig_env(self.root))
                         with self._lock:
@@ -1462,15 +1539,18 @@ class Factory:
             cancelled = bool((self._snapshot() or {}).get("cancel"))
             if render:
                 ok = rc == 0 and sheet.is_file() and sheet.stat().st_mtime_ns != sheet_before
+            elif animating:
+                anim = folder / "flat" / "anim" / str(spec.get("action") or "") / "anim.json"
+                ok = rc == 0 and anim.is_file() and anim.stat().st_mtime >= spec["started"] - 1
             else:
                 ok = rc == 0 and (folder / "rigged.glb").is_file()
             err = None
-            word = "rig_render:" if render else "rig:"
+            word = "rig_render:" if render else "animate:" if animating else "rig:"
             if cancelled:
                 state, err = "cancelled", "Cancelled"
             elif ok:
                 state = "ok"
-                if not render:
+                if not render and not animating:
                     autosave(self.root, spec["stem"], ("rig",))
             else:
                 state = "error"
@@ -1679,6 +1759,18 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             return _json_bytes({"ok": False, "error": str(e)}, 400)
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+    if method == "POST" and len(parts) == 3 and parts[0] == "2d" and parts[1] == "animate":
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.start_animate(parts[2], raw if isinstance(raw, dict) else {}), 202)
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except FileNotFoundError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 404)
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
     if method == "GET" and len(parts) == 3 and parts[0] == "2d" and parts[2] == "drawing":
         try:
             drawing = stem_dir(factory.root, check_stem(parts[1])) / "flat" / "drawing.jpg"
@@ -1781,6 +1873,7 @@ def _dispatch(
                     "GET /2d/status",
                     "POST /2d/draw",
                     "POST /2d/building",
+                    "POST /2d/animate/<stem>",
                     "GET /2d/<stem>/drawing",
                     "POST /2d/drop",
                     "POST /2d/split",

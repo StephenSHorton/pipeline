@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""Animate stage: one of an asset's character pictures plus a skeleton clip becomes a short animation, made on the
+Mac with LTX-2.3 and its Union-Control IC-LoRA (Lightricks, LTX-2 Community License: see NOTICE), then cut into
+frames, transparent cut-outs and a sprite strip, saved as a new 2D Version of the asset.
+
+    python scripts/animate.py --root R --stem S --prompt "The soldier faces right and walks to the right ..." \\
+        [--skeleton walk_side] [--action walk] [--picture flat/source.png] [--seed 42] [--frames 73] [--size 704]
+
+What it writes, under out/<stem>/:
+  flat/anim/<action>/guide.png      the picture LTX starts from: the character, square, on its ground
+  flat/anim/<action>/control.json   the skeleton per frame (24 fps), and skeleton.mp4 drawn from it
+  flat/anim/<action>/clip.mp4       what LTX-2.3 made (frame 0 is the guide picture)
+  flat/anim/<action>/frames/        every frame, NNNN.png
+  flat/anim/<action>/cutouts/       every frame cut out (Apple Vision's foreground mask, bin/lift-subject; else
+                                    the ground keyed out)
+  flat/anim/<action>/anim.json      what made it, the AI-disclosure note, and the skeleton check when it ran
+                                    (all built in out/<stem>/.animate/ first and moved in only when the run worked)
+  flat/sheets/<action>.png          the sprite strip: every --every'th cut-out after frame 0, cropped to one box,
+                                    in the 2D stage's motion-strip slot (sheets/manifest.json), shown in the app
+The 2D Version is saved before (what was there) and after (the result).
+
+The prompt must say which way the character faces and moves: a flat skeleton does not.
+
+LTX runs as its own process, the LTX venv's python under -I, from the ltx-2-mlx clone's source folders
+(scripts/ltx_run.py), with local paths only and HF_HUB_OFFLINE=1, so it never downloads. Where it looks (each
+overridable by environment):
+  PIPELINE_LTX_DIR     <root>/vendor/ltx-2-mlx                 the dgrauet/ltx-2-mlx clone (MIT)
+  PIPELINE_LTX_PYTHON  <PIPELINE_LTX_DIR>/.venv/bin/python     its libraries (mlx, mlx-lm, ...), nothing installed
+  PIPELINE_LTX_MODEL   <root>/weights/ltx-2.3-mlx-q8           distilled-1.1 transformer, connector, VAEs, upscaler
+  PIPELINE_LTX_LORA    <root>/weights/ic-lora-union/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors
+  PIPELINE_LTX_GEMMA   <root>/weights/gemma-3-12b-it-4bit, else the Hugging Face cache's
+                       mlx-community/gemma-3-12b-it-4bit snapshot
+  PIPELINE_BODYPOSE    <root>/bin/bodypose (scripts/bodypose.swift): reads the result's skeleton for the check
+scripts/bootstrap.sh animate sets these up. About 40 GB at its peak and a minute or so a clip: one big model at a
+time on the Mac (the factory runs it in its one job slot, after freeing the draw model).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import skeleton as SK  # noqa: E402
+from factory_env import check_stem, stem_dir  # noqa: E402
+
+LORA_NAME = "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors"
+GEMMA_REPO = "mlx-community/gemma-3-12b-it-4bit"
+FPS = 24
+MODEL_NOTE = "LTX-2.3 distilled 1.1 (q8, dgrauet/ltx-2-mlx) with the IC-LoRA Union-Control (ref0.5), Lightricks"
+LICENCE = "LTX-2 Community License Agreement (Lightricks), see NOTICE"
+DISCLOSURE = ("Machine-generated: made with the LTX-2.3 video model. Under the LTX-2 Community License, content "
+              "published from it must say plainly that it is machine-generated.")
+STAGES = ("skeleton", "guide", "ltx", "frames", "cutouts", "strip", "pose_check")
+PICTURES = ("lifted.png", "flat/source.png", "input.png", "input.jpg", "input.jpeg", "input.webp")
+
+
+class AnimateError(RuntimeError):
+    pass
+
+
+def stage(name: str, label: str) -> None:
+    print(f"STAGE {name} {label}", flush=True)
+
+
+# ------------------------------------------------------------------ where LTX is
+
+def ltx_paths(root: Path) -> dict[str, Path]:
+    env = os.environ.get
+    clone = Path(env("PIPELINE_LTX_DIR") or root / "vendor" / "ltx-2-mlx")
+    paths = {
+        "clone": clone,
+        "python": Path(env("PIPELINE_LTX_PYTHON") or clone / ".venv" / "bin" / "python"),
+        "model": Path(env("PIPELINE_LTX_MODEL") or root / "weights" / "ltx-2.3-mlx-q8"),
+        "lora": Path(env("PIPELINE_LTX_LORA") or root / "weights" / "ic-lora-union" / LORA_NAME),
+        "gemma": Path(env("PIPELINE_LTX_GEMMA") or root / "weights" / "gemma-3-12b-it-4bit"),
+    }
+    if not env("PIPELINE_LTX_GEMMA") and not paths["gemma"].is_dir():
+        cached = hf_snapshot(GEMMA_REPO)
+        if cached:
+            paths["gemma"] = cached
+    return paths
+
+
+def hf_snapshot(repo: str) -> Path | None:
+    """The newest local snapshot of a Hugging Face repo in the cache, without asking the network."""
+    hub = Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME") or Path.home() / ".cache" /
+                                                       "huggingface") / "hub")
+    snaps = hub / ("models--" + repo.replace("/", "--")) / "snapshots"
+    found = sorted((p for p in snaps.glob("*") if p.is_dir()), key=lambda p: p.stat().st_mtime)
+    return found[-1] if found else None
+
+
+def check_ltx(paths: dict[str, Path]) -> None:
+    missing = []
+    if not (paths["clone"] / "packages" / "ltx-pipelines-mlx" / "src").is_dir():
+        missing.append(f"the ltx-2-mlx clone at {paths['clone']}")
+    if not paths["python"].is_file():
+        missing.append(f"its python at {paths['python']}")
+    if not (paths["model"] / "config.json").is_file():
+        missing.append(f"the LTX-2.3 weights at {paths['model']}")
+    if not paths["lora"].is_file():
+        missing.append(f"the Union-Control IC-LoRA at {paths['lora']}")
+    if not paths["gemma"].is_dir():
+        missing.append(f"the Gemma text encoder ({GEMMA_REPO}) at {paths['gemma']}")
+    if missing:
+        raise AnimateError("LTX-2.3 is not set up (scripts/bootstrap.sh animate): no " + "; no ".join(missing))
+
+
+def ltx_argv(paths: dict[str, Path], *, prompt: str, out: Path, control: Path, guide: Path, size: int,
+             frames: int, seed: int) -> list[str]:
+    return [str(paths["python"]), "-I", str(HERE / "ltx_run.py"), str(paths["clone"]), "ic-lora",
+            "--model", str(paths["model"]), "--gemma", str(paths["gemma"]),
+            "--lora", str(paths["lora"]), "1.0",
+            "--video-conditioning", str(control), "1.0",
+            "--image", str(guide), "0", "1.0",
+            "-H", str(size), "-W", str(size), "-f", str(frames), "--frame-rate", str(FPS),
+            "--seed", str(seed), "--prompt", prompt, "--output", str(out)]
+
+
+def ltx_env() -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    env.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1"})
+    return env
+
+
+# ------------------------------------------------------------------ the picture
+
+def pick_picture(folder: Path, rel: str | None) -> Path:
+    if rel:
+        p = (folder / rel).resolve()
+        if folder.resolve() not in p.parents or not p.is_file():
+            raise AnimateError(f"no picture {rel!r} in this asset")
+        return p
+    for name in PICTURES:
+        if (folder / name).is_file():
+            return folder / name
+    raise AnimateError("this asset has no character picture yet (draw or add one first)")
+
+
+def make_guide(picture: Path, size: int, out: Path) -> tuple[int, int, int]:
+    """The picture as LTX's first frame: square, the whole picture fitted in, padded with its own ground. A cut-out
+    (with transparency) and a picture on a strong key colour (magenta) go onto white instead, which the prompt
+    asks for. Returns the ground colour."""
+    from PIL import Image
+
+    from flat2d.parts import ground_key
+
+    im = Image.open(picture)
+    if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+        rgba = im.convert("RGBA")
+        ground = (255, 255, 255)
+        base = Image.new("RGB", rgba.size, ground)
+        base.paste(rgba, (0, 0), rgba)
+        rgb = base
+    else:
+        rgb = im.convert("RGB")
+        key = tuple(ground_key(rgb)["rgb"])
+        light = min(key) >= 190 and max(key) - min(key) <= 40
+        if light:
+            ground = key
+        else:
+            from flat2d.atlas import unmix
+
+            ground = (255, 255, 255)
+            cut = unmix(rgb, key)
+            base = Image.new("RGB", rgb.size, ground)
+            base.paste(cut, (0, 0), cut)
+            rgb = base
+    w, h = rgb.size
+    s = size / max(w, h)
+    small = rgb.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
+    sq = Image.new("RGB", (size, size), ground)
+    sq.paste(small, ((size - small.size[0]) // 2, (size - small.size[1]) // 2))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sq.save(out)
+    return ground
+
+
+# ------------------------------------------------------------------ after LTX
+
+def split_frames(clip: Path, dest: Path) -> list[Path]:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise AnimateError("ffmpeg is not installed")
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(clip), "-start_number", "0", str(dest / "%04d.png")],
+                   check=True)
+    files = sorted(dest.glob("*.png"))
+    if not files:
+        raise AnimateError("the clip has no frames")
+    return files
+
+
+def lift_tool(root: Path) -> Path | None:
+    for p in (root / "bin" / "lift-subject", HERE.parent / "bin" / "lift-subject"):
+        if p.is_file() and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def cut_out(frames: list[Path], dest: Path, lift: Path | None) -> tuple[list[Path], str]:
+    """Each frame cut from its ground: Apple Vision's foreground mask when bin/lift-subject is there, else the
+    frame's own ground colour (its border's) keyed out: a soft edge, then specks dropped."""
+    from PIL import Image
+
+    from flat2d.atlas import unmix
+    from flat2d.parts import ground_key
+
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    how = "vision" if lift else "key"
+    out = []
+    for f in frames:
+        target = dest / f.name
+        done = False
+        if lift:
+            r = subprocess.run([str(lift), str(f), str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            done = r.returncode == 0 and target.is_file()
+            if not done:
+                how = "vision+key"
+        if not done:  # each frame's own ground: the model drifts it a little from the guide's
+            with Image.open(f) as im:
+                rgb = im.convert("RGB")
+                unmix(rgb, tuple(ground_key(rgb)["rgb"])).save(target)
+        out.append(target)
+    return out, how
+
+
+def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4):
+    """Every every'th cut-out after frame 0 (frame 0 is the guide picture, not a pose), all cropped to the one box
+    that holds the character in every one of them, so the strip's frames line up, then scaled to cell_h tall."""
+    from PIL import Image
+
+    picks = cutouts[1::every] or cutouts[:1]
+    ims = [Image.open(p).convert("RGBA") for p in picks]
+    box = None
+    for im in ims:
+        b = im.getchannel("A").point(lambda a: 255 if a > 24 else 0).getbbox()
+        if b:
+            box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3]))
+    w, h = ims[0].size
+    if box is None:
+        box = (0, 0, w, h)
+    box = (max(0, box[0] - margin), max(0, box[1] - margin), min(w, box[2] + margin), min(h, box[3] + margin))
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    s = min(1.0, cell_h / bh)
+    size = (max(1, round(bw * s)), max(1, round(bh * s)))
+    cells = [im.crop(box).resize(size, Image.LANCZOS) for im in ims]
+    return cells, [int(p.stem) for p in picks], list(box)
+
+
+def bodypose_tool(root: Path) -> Path | None:
+    env = os.environ.get("PIPELINE_BODYPOSE")
+    for p in ([Path(env)] if env else []) + [root / "bin" / "bodypose", HERE.parent / "bin" / "bodypose"]:
+        if p.is_file() and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> dict:
+    """The result's skeleton (Apple Vision) against the control, frame by frame from frame 1."""
+    got = SK.read_frames(tool, frames_dir, out)
+    res = SK.pose_error(control, got, skip=1)
+    res["frames_with_skeleton"] = sum(1 for j in got if j)
+    return res
+
+
+# ------------------------------------------------------------------ the run
+
+def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", action: str = "walk",
+            picture: str | None = None, seed: int = 42, frames: int = 73, size: int = 704, every: int = 3,
+            cell: int = 256, skeleton_fps: float = FPS, check: bool = True, save: bool = True) -> dict:
+    from flat2d.atlas import action_name
+
+    import flow
+
+    root = Path(root).resolve()
+    stem = check_stem(stem)
+    action = action_name(action)
+    folder = stem_dir(root, stem)
+    if not folder.is_dir():
+        raise AnimateError(f"no asset {stem!r}")
+    prompt = " ".join(str(prompt or "").split())
+    if not prompt:
+        raise AnimateError("a prompt is needed, and it must say which way the character faces and moves")
+    if frames < 9 or (frames - 1) % 8:
+        raise AnimateError("frames must be 8k+1 (9, 17, ... 73, ... 121)")
+    if size % 32 or not 256 <= size <= 1024:
+        raise AnimateError("size must be a multiple of 32 from 256 to 1024")
+    if not 1 <= every <= 12:
+        raise AnimateError("every must be 1 to 12")
+    paths = ltx_paths(root)
+    check_ltx(paths)
+    pic = pick_picture(folder, picture)
+    control_src = SK.named(skeleton)
+
+    print("STAGES " + " ".join(STAGES), flush=True)
+    t0 = time.time()
+    if save:  # what was there is kept as a Version before this run changes the 2D files
+        flow.autosave(root, stem, ("flat",))
+    # Built in a scratch folder outside the 2D files and moved into flat/anim/<action>/ only when it all worked, so
+    # a failed or cancelled run leaves the 2D files as the picked Version has them.
+    work = folder / ".animate" / action
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    try:
+        doc = _run(root, stem, folder, work, paths, pic, control_src, prompt=prompt, action=action, seed=seed,
+                   frames=frames, size=size, every=every, cell=cell, skeleton_fps=skeleton_fps, check=check, t0=t0)
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    if save:
+        flow.snapshot(root, stem, "flat", note=f"Animate: {action} ({doc['skeleton']})", made_from=("concept",))
+    print(f"animate: {stem} {action}: {doc['frames']} frames, strip of {len(doc['strip']['from_frames'])} in "
+          f"{doc['seconds']} s", flush=True)
+    return doc
+
+
+def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path], pic: Path, control_src: Path, *,
+         prompt: str, action: str, seed: int, frames: int, size: int, every: int, cell: int, skeleton_fps: float,
+         check: bool, t0: float) -> dict:
+    from flat2d.atlas import save_cells
+    from flat2d.store import write_center
+
+    stage("skeleton", "Draw the skeleton video")
+    control = SK.fit_frames(SK.retime(SK.load(control_src), skeleton_fps, FPS, frames)
+                            if skeleton_fps != FPS else SK.load(control_src), frames)
+    (work / "control.json").write_text(json.dumps({"fps": FPS, "frames": [{"joints2d": j} for j in control]}) + "\n")
+    SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
+
+    stage("guide", "Fit the picture")
+    make_guide(pic, size, work / "guide.png")
+
+    stage("ltx", "Animate with LTX-2.3")
+    clip = work / "clip.mp4"
+    clip.unlink(missing_ok=True)
+    argv = ltx_argv(paths, prompt=prompt, out=clip, control=work / "skeleton.mp4", guide=work / "guide.png",
+                    size=size, frames=frames, seed=seed)
+    t_ltx = time.time()
+    rc = subprocess.run(argv, env=ltx_env(), cwd=str(root), stdin=subprocess.DEVNULL).returncode
+    if rc != 0 or not clip.is_file():
+        raise AnimateError(f"LTX-2.3 stopped (exit {rc}) without a clip")
+    ltx_s = round(time.time() - t_ltx, 1)
+
+    stage("frames", "Cut the frames")
+    frame_files = split_frames(clip, work / "frames")
+
+    stage("cutouts", "Cut out the character")
+    cut_files, how = cut_out(frame_files, work / "cutouts", lift_tool(root))
+
+    stage("strip", "Pack the sprite strip")
+    cells, picked, box = strip_cells(cut_files, every, cell)
+    strip_fps = max(1, round(FPS / every))
+
+    stage("pose_check", "Check the skeleton")
+    pose = None
+    tool = bodypose_tool(root) if check else None
+    if tool:
+        pose = check_pose(tool, work / "frames", control, work / "pose.json")
+        print(f"animate: skeleton within {pose['mean_joint_error_pct']}% of the control "
+              f"(moving joints {pose['mean_limb_error_pct']}%)", flush=True)
+    else:
+        print("animate: no bin/bodypose; the skeleton check was skipped", flush=True)
+
+    doc = {
+        "maker": "animate",
+        "model": MODEL_NOTE,
+        "licence": LICENCE,
+        "machine_generated": True,
+        "disclosure": DISCLOSURE,
+        "picture": pic.relative_to(folder).as_posix(),
+        "skeleton": control_src.stem if control_src.parent == SK.SKELETONS else str(control_src),
+        "prompt": prompt,
+        "seed": seed,
+        "frames": len(frame_files),
+        "fps": FPS,
+        "size": size,
+        "cutouts": how,
+        "strip": {"file": f"sheets/{action}.png", "every": every, "from_frames": picked, "box": box,
+                  "cell": {"w": cells[0].size[0], "h": cells[0].size[1]}, "fps": strip_fps},
+        "pose_check": {k: v for k, v in pose.items() if k != "per_frame_pct"} if pose else None,
+        "ltx_seconds": ltx_s,
+        "seconds": round(time.time() - t0, 1),
+        "made": int(time.time()),
+    }
+    (work / "anim.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    final = folder / "flat" / "anim" / action
+    if final.exists():
+        shutil.rmtree(final)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(work), str(final))
+    row = save_cells(root, stem, action, cells, strip_fps, made_by="animate", anim=f"anim/{action}/anim.json",
+                     from_frames=picked)
+    write_center(root, stem, row["sheet"])
+    return doc
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--root", default=str(HERE.parent))
+    ap.add_argument("--stem", required=True)
+    ap.add_argument("--prompt", required=True, help="what happens, and which way the character faces")
+    ap.add_argument("--skeleton", default="walk_side", help=f"one of {', '.join(SK.shipped())}, or a .json path")
+    ap.add_argument("--skeleton-fps", type=float, default=FPS)
+    ap.add_argument("--action", default="walk")
+    ap.add_argument("--picture", default=None, help="a picture under out/<stem>/ (default: the concept still)")
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--frames", type=int, default=73)
+    ap.add_argument("--size", type=int, default=704)
+    ap.add_argument("--every", type=int, default=3, help="every n'th frame goes in the sprite strip")
+    ap.add_argument("--cell", type=int, default=256, help="the strip's frame height at most, in pixels")
+    ap.add_argument("--no-check", action="store_true", help="skip reading the result's skeleton back")
+    a = ap.parse_args(argv)
+    try:
+        animate(Path(a.root), a.stem, prompt=a.prompt, skeleton=a.skeleton, action=a.action, picture=a.picture,
+                seed=a.seed, frames=a.frames, size=a.size, every=a.every, cell=a.cell, skeleton_fps=a.skeleton_fps,
+                check=not a.no_check)
+    except (AnimateError, SK.SkeletonError, ValueError) as e:
+        print(f"animate: {e}", file=sys.stderr, flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

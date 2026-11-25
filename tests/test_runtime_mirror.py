@@ -3,8 +3,9 @@
 The desktop app ships desktop/internal/runtime/fs/scripts (filled by
 desktop/frontend/scripts/copy-factory.mjs).  Anything that differs from
 scripts/ is code the installed app runs but the repo does not test, so the
-only allowed differences are the two Swift helpers that are built into the
-app binary instead of being shipped as scripts.
+only allowed differences are the Swift helpers, which are never shipped as
+scripts: two are built into the app binary, and bodypose (the Animate
+stage's skeleton check) is built from a checkout by bootstrap.sh animate.
 """
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ DST = ROOT / "desktop" / "internal" / "runtime" / "fs" / "scripts"
 KNOWN = {
     "Only in scripts: lift-subject.swift",
     "Only in scripts: preview-glb.swift",
+    "Only in scripts: bodypose.swift",
 }
 
 
