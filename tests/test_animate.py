@@ -902,6 +902,26 @@ class RouteTests(unittest.TestCase):
         flat = next(s for s in state["stages"] if s["stage"] == "flat")
         self.assertTrue(flat["live"])
 
+    def test_animate_job_with_remove_shows_the_first_pass_and_erase(self):
+        # What the Animate form's Remove and Keep fields send (pipeline#27): the job runs twice, and its progress
+        # names the first pass and the erase between the skeleton and the second LTX pass.
+        stub = {"FLAT2D_STILL": "stub", "FLAT2D_STUB_LOAD": "0", "FLAT2D_STUB_STEP": "0"}
+        with mock.patch.dict(os.environ, stub):
+            code, doc = self.post({"cycle": "walk", "facing": "right", "frames": 25, "size": 256,
+                                   "remove": "backpack", "keep": "chest rig"})
+            self.assertEqual(code, 202, doc)
+            st = self.wait()
+        self.assertEqual(st["state"], "ok", st.get("log_tail"))
+        stages = st["progress"]["stages"]
+        self.assertEqual([s["key"] for s in stages], list(A.REMOVE_STAGES))
+        labels = [s["label"] for s in stages]
+        self.assertEqual(labels[2:5], ["First pass with LTX-2.3", "Erase the invented kit", "Animate with LTX-2.3"])
+        log = (self.root / "out" / "op" / "animate.log").read_text()
+        self.assertIn("STAGE first_pass", log)
+        self.assertIn("STAGE erase Erase the backpack", log)
+        anim = json.loads((self.root / "out" / "op" / "flat" / "anim" / "walk-right" / "anim.json").read_text())
+        self.assertEqual((anim["remove"]["what"], anim["remove"]["keep"]), ("backpack", "chest rig"))
+
     def test_side_view_reaches_the_command_line(self):
         argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "walks right", "side": "flat/side.png",
                                                                  "side_frame": 30})

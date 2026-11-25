@@ -313,6 +313,23 @@ describe("Animate", () => {
     expect(animateBlock("", picks[0], false)).toBe(""); // a cycle's prompt is the factory's when left empty
     expect(animateBlock("walks right", picks[2], true)).toBe("The factory is busy with another job.");
     expect(animateBlock("walks right", picks[2], false)).toBe("");
+    expect(animateBlock("", picks[0], false, { keep: "chest rig" })).toMatch(/^Keep goes with Remove/);
+    expect(animateBlock("", picks[0], false, { remove: "backpack", keep: "chest rig" })).toBe("");
+  });
+  it("sends Remove and Keep as remove and keep, only when filled", () => {
+    expect(animateBody("", picks[1], { remove: "  back  pack ", keep: "chest rig" })).toEqual({
+      cycle: "run",
+      facing: "left",
+      remove: "back pack",
+      keep: "chest rig",
+    });
+    expect(animateBody("walks right", picks[2], { remove: "backpack", keep: " " })).toEqual({
+      prompt: "walks right",
+      skeleton: "walk_side",
+      action: "walk",
+      remove: "backpack",
+    });
+    expect(animateBody("", picks[1], { remove: "", keep: "" })).toEqual({ cycle: "run", facing: "left" });
   });
   it("posts a cycle as {cycle, facing}, and another skeleton with its own strip", () => {
     expect(animateBody(ready("run", "left"), picks[1])).toEqual({ cycle: "run", facing: "left" });
