@@ -23,6 +23,11 @@ import { PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import { AudioPanel, type Bound } from "./AudioPanel";
 import {
   ANIMATE_TITLE,
+  KEEP_HINT,
+  KEEP_TITLE,
+  KIT_MAX,
+  REMOVE_HINT,
+  REMOVE_TITLE,
   animateAction,
   animateEndLine,
   animatePicks,
@@ -49,6 +54,7 @@ import {
   keepPick,
   NO_OFFER,
   promptForPick,
+  type AnimateKit,
   type AnimateOffer,
   type SheetState,
 } from "./flat";
@@ -81,6 +87,8 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
   // for each asset; the pick is kept while it is still offered, else it starts on the first cycle.
   const [offer, setOffer] = useState<AnimateOffer>(NO_OFFER);
   const [pickValue, setPickValue] = useState("");
+  // Animate's optional kit words: invented kit to erase (remove) and kit that must stay (keep).
+  const [kit, setKit] = useState<AnimateKit>({ remove: "", keep: "" });
   const picks = animatePicks(offer);
   const pick = picks.find((p) => p.value === pickValue);
   const offerRef = useRef(offer);
@@ -229,7 +237,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
     e.preventDefault();
     const text = prompt.trim();
     if (flatMode === "animate") {
-      const r = animate(stem, text, pick);
+      const r = animate(stem, text, pick, kit);
       setStatus(r.status);
       return;
     }
@@ -359,7 +367,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
               {/* Phones: the icon only, so the six buttons fit one row. */}
               <span className="max-sm:sr-only">Audio</span>
             </Button>
-          <form onSubmit={(e) => void onSubmit(e)} autoComplete="off" className="flex min-w-[min(100%,18rem)] flex-1 items-center gap-1.5">
+          <form onSubmit={(e) => void onSubmit(e)} autoComplete="off" className="flex min-w-[min(100%,18rem)] flex-1 flex-wrap items-center gap-1.5">
             <label htmlFor="flat-revise-prompt" className="sr-only">
               {MODE_LABEL[flatMode]}
             </label>
@@ -425,6 +433,27 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
             >
               {busyLabel || (flatMode === "animate" ? "Animate" : "Generate")}
             </Button>
+            {flatMode === "animate" ? (
+              // A second row: both optional. Remove makes Animate run twice (a first pass, then the kit erased).
+              <div className="flex basis-full gap-1.5">
+                {(["remove", "keep"] as const).map((key) => (
+                  <label key={key} className="contents">
+                    <span className="sr-only">{key === "remove" ? "Remove (optional)" : "Keep (optional)"}</span>
+                    <Input
+                      id={`flat-animate-${key}`}
+                      type="text"
+                      spellCheck={false}
+                      maxLength={KIT_MAX[key]}
+                      placeholder={key === "remove" ? REMOVE_HINT : KEEP_HINT}
+                      title={key === "remove" ? REMOVE_TITLE : KEEP_TITLE}
+                      value={kit[key] || ""}
+                      onChange={(e) => setKit((k) => ({ ...k, [key]: e.target.value }))}
+                      className="hit-44 h-9 min-w-0 flex-1 rounded-[10px] border-input bg-white px-3 text-[0.85rem] md:text-[0.85rem]"
+                    />
+                  </label>
+                ))}
+              </div>
+            ) : null}
           </form>
         </Card>
       </div>

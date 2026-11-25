@@ -421,24 +421,57 @@ export const ANIMATE_TITLE =
   "face the way picked, and its prompt is filled in; another skeleton needs words that say what happens and which " +
   "way the character faces. Makes a sprite strip and a new 2D version.";
 
+/** Animate's optional kit words: what the model invents and the factory erases from a first pass ("backpack"),
+ * and, with it, what must stay ("chest rig and pouches"). POST /2d/animate/<stem> takes them as remove and keep. */
+export interface AnimateKit {
+  remove?: string;
+  keep?: string;
+}
+
+/** The longest remove and keep the factory takes (scripts/factory_http.py animate_argv): a few words each. */
+export const KIT_MAX = { remove: 120, keep: 200 } as const;
+
+export const REMOVE_HINT = "Remove (optional): backpack…";
+export const KEEP_HINT = "Keep (optional): chest rig…";
+export const REMOVE_TITLE =
+  "Optional. Kit the model invents that the picture does not have (like a backpack): Animate runs LTX-2.3 once, " +
+  "erases this from that pass's frames, and animates again guided by them. Takes longer.";
+export const KEEP_TITLE =
+  "Optional, with Remove: kit that must stay when the removed kit is erased (asked only to remove a backpack, the " +
+  "edit model can take a chest rig too).";
+
+const words = (s: string | undefined) => (s || "").split(/\s+/).filter(Boolean).join(" ");
+
 /** Why Animate cannot start, or "" when it can. A cycle's prompt may be empty: the factory makes one. */
-export function animateBlock(prompt: string, pick: AnimatePick | undefined, anyJobRunning: boolean): string {
+export function animateBlock(prompt: string, pick: AnimatePick | undefined, anyJobRunning: boolean, kit: AnimateKit = {}): string {
   if (!pick) return "No skeletons to animate with.";
   if (!prompt && !pick.cycle) return "Say what happens and which way the character faces, for example: walks to the right, facing right.";
+  if (words(kit.keep) && !words(kit.remove)) return "Keep goes with Remove: name the kit to erase too, or clear Keep.";
   if (anyJobRunning) return "The factory is busy with another job.";
   return "";
 }
 
-export type AnimateBody = { cycle: string; facing: string; prompt?: string } | { prompt: string; skeleton: string; action?: string };
+export type AnimateBody = ({ cycle: string; facing: string; prompt?: string } | { prompt: string; skeleton: string; action?: string }) & AnimateKit;
 
 /** POST /2d/animate/<stem>'s body. A cycle goes as {cycle, facing}, with the prompt only when it is not the ready
  * one; the factory names its strip after the cycle and facing (run-left), so no cycle overwrites another. Another
  * skeleton goes with its prompt and its own strip name. */
-export function animateBody(prompt: string, pick: AnimatePick): AnimateBody {
+export function animateBody(prompt: string, pick: AnimatePick, kit: AnimateKit = {}): AnimateBody {
   const c = pick.cycle;
-  if (c) return prompt && prompt !== c.prompt ? { cycle: c.cycle, facing: c.facing, prompt } : { cycle: c.cycle, facing: c.facing };
   const k = pick.skeleton!;
-  return k.action ? { prompt, skeleton: k.name, action: k.action } : { prompt, skeleton: k.name };
+  const body: AnimateBody = c
+    ? prompt && prompt !== c.prompt
+      ? { cycle: c.cycle, facing: c.facing, prompt }
+      : { cycle: c.cycle, facing: c.facing }
+    : k.action
+      ? { prompt, skeleton: k.name, action: k.action }
+      : { prompt, skeleton: k.name };
+  // Remove and Keep go only when filled (Keep only with Remove), as one line of words each.
+  const remove = words(kit.remove);
+  const keep = words(kit.keep);
+  if (remove) body.remove = remove;
+  if (remove && keep) body.keep = keep;
+  return body;
 }
 
 /** The strip an Animate job's body makes, for its end line. */

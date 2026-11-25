@@ -17,6 +17,7 @@ import {
   STEP_RUNNING,
   type AudioRow,
   type SheetState,
+  type AnimateKit,
   type AnimatePick,
   type StepMode,
 } from "./flat";
@@ -54,11 +55,11 @@ export const animateSpecs = new WeakSet<object>();
  * Animate mode: a job (POST /2d/animate/<stem>) in the slot, followed in the stage's own progress card (watch false:
  * no Home job card). Returns the status line when it cannot start, else started.
  */
-export function animate(stem: string, prompt: string, pick: AnimatePick | undefined): { status: string; started: boolean } {
-  const block = animateBlock(prompt, pick, anyRunning() || useJobs.getState().busy);
+export function animate(stem: string, prompt: string, pick: AnimatePick | undefined, kit: AnimateKit = {}): { status: string; started: boolean } {
+  const block = animateBlock(prompt, pick, anyRunning() || useJobs.getState().busy, kit);
   if (block || !pick) return { status: block, started: false };
   // stem rides along so a refused start still names the asset on the chip; the route reads only its own keys.
-  const spec = { stem, ...animateBody(prompt, pick) };
+  const spec = { stem, ...animateBody(prompt, pick, kit) };
   animateSpecs.add(spec);
   void startJob(spec, { path: `/2d/animate/${enc(stem)}`, kind: "animate", title: `Animating ${displayStem(stem)}`, watch: false });
   return { status: "", started: true };
