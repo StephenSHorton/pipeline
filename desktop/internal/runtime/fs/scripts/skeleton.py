@@ -7,6 +7,11 @@ frames. scripts/skeletons/ holds the ones Pipeline ships (walk_side.json: a side
 - draw_video: the clip as an OpenPose-18 skeleton video on black, the control video LTX-2.3's Union-Control
   IC-LoRA takes (the same limb colours OpenPose uses).
 - retime: the clip at another frame rate or length, joints interpolated.
+- cycles: the code-made walk, run and attack (pipeline#14), each facing right or left: shipped as the walker's
+  (walker_<cycle>_<facing>.json), or made for an asset's own sprite-stack character by
+  desktop/frontend/scripts/skeleton-cycle.ts (cycle_for). Each starts facing the camera, turns to the side over
+  turn_frames, then loops a cycle of cycle_frames; its "figure" says where the standing figure is (top, ground line,
+  middle, 0..1), which the start picture is fitted to (info).
 - pose_error: how closely a clip's own skeleton (read back from its frames) follows the control, as a percent
   of the picture's width.
 
@@ -39,6 +44,15 @@ COLOURS = [(255, 0, 0), (255, 85, 0), (255, 170, 0), (255, 255, 0), (170, 255, 0
 MOVING = ("left_forearm_joint", "right_forearm_joint", "left_hand_joint", "right_hand_joint",
           "left_leg_joint", "right_leg_joint", "left_foot_joint", "right_foot_joint")
 CONFIDENT = 0.3
+CYCLES = ("walk", "run", "attack")
+FACINGS = ("right", "left")
+SHIPPED_CYCLE = "walker_{cycle}_{facing}"
+# what each cycle does, for the prompt (the flat skeleton does not say which way the body faces: the prompt must)
+CYCLE_WORDS = {
+    "walk": "walks on the spot with a steady walking stride, legs alternating and arms swinging",
+    "run": "runs on the spot with a fast running stride, knees lifting and arms pumping",
+    "attack": "raises the fists and throws a straight right punch, then pulls back to the guard",
+}
 
 
 class SkeletonError(ValueError):
@@ -61,6 +75,51 @@ def named(name: str) -> Path:
 
 def shipped() -> list[str]:
     return sorted(q.stem for q in SKELETONS.glob("*.json"))
+
+
+def shipped_cycle(cycle: str, facing: str) -> str:
+    """The shipped skeleton for a code-made cycle and facing (the walker's)."""
+    if cycle not in CYCLES:
+        raise SkeletonError(f"cycle must be one of {', '.join(CYCLES)}")
+    if facing not in FACINGS:
+        raise SkeletonError(f"facing must be one of {', '.join(FACINGS)}")
+    return SHIPPED_CYCLE.format(cycle=cycle, facing=facing)
+
+
+def cycle_prompt(cycle: str, facing: str, who: str = "A game character") -> str:
+    """A prompt for a code-made cycle: it turns from the camera to face its side, as the skeleton does."""
+    return (f"Side view. {who} turns to face {facing} and {CYCLE_WORDS[cycle]}, always seen from the side in profile, "
+            "staying in the centre of the frame. Static locked-off camera, full body visible from head to feet, plain "
+            "background, even flat lighting.")
+
+
+def info(path: str | Path) -> dict[str, Any]:
+    """What a skeleton file says besides its frames: the frame count, turn_frames and cycle_frames (code-made cycles),
+    and figure {top, ground, x} when it says where the standing figure is (else None)."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SkeletonError(f"cannot read skeleton {path}: {e}") from e
+    if not isinstance(doc, dict):
+        raise SkeletonError(f"{path} is not a skeleton clip")
+    fig = doc.get("figure")
+    figure = None
+    if isinstance(fig, dict):
+        try:
+            top, ground, x = float(fig["top"]), float(fig["ground"]), float(fig.get("x", 0.5))
+        except (KeyError, TypeError, ValueError):
+            top = ground = x = -1.0
+        if 0 <= top < ground <= 1 and 0 <= x <= 1:
+            figure = {"top": top, "ground": ground, "x": x}
+    whole = lambda k: doc.get(k) if isinstance(doc.get(k), int) and doc.get(k) >= 0 else None  # noqa: E731
+    return {"frames": len(doc.get("frames") or []), "turn_frames": whole("turn_frames"),
+            "cycle_frames": whole("cycle_frames"), "figure": figure}
+
+
+def scale_about(frames: list[dict], cx: float, gy: float, f: float) -> list[dict]:
+    """Every joint moved towards (cx, gy) by f (0..1 of the picture): the same clip, smaller, standing on the same
+    spot."""
+    return [{n: [cx + (p[0] - cx) * f, gy + (p[1] - gy) * f] + list(p[2:]) for n, p in j.items()} for j in frames]
 
 
 def action_of(name: str) -> str:

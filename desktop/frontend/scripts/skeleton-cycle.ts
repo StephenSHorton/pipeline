@@ -6,6 +6,11 @@
 //
 //   bun scripts/skeleton-cycle.ts --character ../../out/walker/stack --front ../../out/walker/character/views/front.png \
 //     --out /tmp/cycles [--cycle walk|run|attack|all] [--facing right|left|both] [--frames 73] [--turn 16] [--size 704]
+//     [--pose-only]
+//
+// Each pose file also says where the standing figure is in the picture ("figure": its top, its ground line and its
+// middle, 0..1 of the picture): the Animate stage (scripts/animate.py) fits a character's start picture to that box.
+// --pose-only writes only the pose files (what Animate reads), no videos; it is what Animate runs for a character.
 //
 // Every clip turns from facing the camera (the start picture) to the side over --turn frames, then plays the loop
 // on the spot. Frame k of the skeleton video and frame k of the stack video are the same pose.
@@ -15,7 +20,6 @@ import { spawnSync } from "node:child_process";
 import { isCharacterDoc, partCells, placeParts, placePoint, type CharacterDoc } from "../src/screens/asset/stack/character/parts";
 import type { V3 } from "../src/screens/asset/stack/character/rig";
 import { bodyFromRig, CYCLES, makeCycle, rigPose, shot, type CycleName, type JointName } from "../src/screens/asset/stack/character/skeleton";
-import { sliceShade } from "../src/screens/asset/stack/character/walkView";
 
 const arg = (k: string, d?: string) => {
   const i = process.argv.indexOf(`--${k}`);
@@ -30,6 +34,7 @@ const total = Number(arg("frames", "73"));
 const turn = Number(arg("turn", "16"));
 const W = Number(arg("size", "704"));
 const H = W;
+const poseOnly = process.argv.includes("--pose-only");
 mkdirSync(out, { recursive: true });
 
 function readRGBA(file: string): { w: number; h: number; px: Uint8Array } {
@@ -144,8 +149,11 @@ function skeletonFrame(j: Partial<Record<JointName, V3>>): Uint8Array {
   return px;
 }
 
-// The stack: each part's surface cells, drawn as squares from a camera a little above, far ones first.
-const cellsByPart = new Map(doc.parts.map((p) => [p.name, partCells(p, readRGBA(path.join(charDir, p.file)).px)]));
+// The stack: each part's surface cells, drawn as squares from a camera a little above, far ones first. walkView
+// (and three.js with it) is loaded only when the stack is drawn.
+const sliceShade = poseOnly ? () => 1 : (await import("../src/screens/asset/stack/character/walkView")).sliceShade;
+const cellsByPart = poseOnly ? new Map() :
+  new Map(doc.parts.map((p) => [p.name, partCells(p, readRGBA(path.join(charDir, p.file)).px)]));
 const EL = (Number(arg("elevation", "20")) * Math.PI) / 180;
 function stackFrame(pose: ReturnType<typeof rigPose>): Uint8Array {
   const placed = placeParts(doc, pose);
@@ -212,7 +220,13 @@ for (const name of names) {
       }
       return { joints2d };
     });
-    writeFileSync(path.join(out, `${stem}.pose.json`), JSON.stringify({ frames: pose2d, turn_frames: turn, cycle_frames: cycle.frames }));
+    // the standing figure, as the start picture is placed: its top, its ground line and its middle
+    const figure = { top: +((ground - doc.height * pxPerCell) / H).toFixed(4), ground: +(ground / H).toFixed(4), x: 0.5 };
+    writeFileSync(path.join(out, `${stem}.pose.json`), JSON.stringify({ frames: pose2d, turn_frames: turn, cycle_frames: cycle.frames, figure }));
+    if (poseOnly) {
+      console.log(`${stem}: ${total} frames (pose only)`);
+      continue;
+    }
     writeVideo(path.join(out, `${stem}_skel.mp4`), s.frames.map((f) => skeletonFrame(seen(f.joints))), cycle.fps);
     writeVideo(path.join(out, `${stem}_stack.mp4`), s.frames.map((f) => stackFrame(rigPose(f.frame, body, 0, 0, f.heading))), cycle.fps);
     console.log(`${stem}: ${total} frames (turn ${turn}, loop of ${cycle.frames}, travel ${cycle.travel.toFixed(2)} cells)`);
