@@ -397,6 +397,19 @@ class RouteTests(unittest.TestCase):
         self.assertIn("LoRA", doc["error"])
         self.assertEqual(http_json(self.base_url + "/status")[1]["state"], "idle")
 
+    def test_skeleton_list(self):
+        code, doc = http_json(self.base_url + "/2d/skeletons")
+        self.assertEqual(code, 200)
+        self.assertEqual([s["name"] for s in doc["skeletons"]], SK.shipped())
+        self.assertEqual(doc["default"], "walk_side")
+        by = {s["name"]: s for s in doc["skeletons"]}
+        self.assertEqual(by["walk_side"], {"name": "walk_side", "label": "Walk, side on", "action": "walk"})
+        self.assertEqual(by["walker_run_left"]["label"], "Run, facing left")
+        actions = [s["action"] for s in doc["skeletons"]]
+        self.assertEqual(len(set(actions)), len(actions))  # one strip per skeleton: none overwrites another
+        for a in actions:  # every default strip name is one POST /2d/animate takes
+            self.assertEqual(factory_http.animate_argv("py", self.root, "op", {"prompt": "x", "action": a})[-1], a)
+
     def test_animate_job(self):
         code, doc = self.post({"prompt": "The soldier faces right and walks to the right.", "frames": 17,
                                "size": 256, "action": "walk"})

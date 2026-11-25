@@ -23,6 +23,7 @@ POST /generate
 POST /2d/draw            a 2D still (or Ideas) as a job: /status, /cancel
 POST /2d/building        a building's walls drawn, then built as a sprite stack (scripts/stack_building.py), as a job
 POST /2d/animate/<stem>  a character picture plus a skeleton clip animated by LTX-2.3 (scripts/animate.py), as a job
+GET  /2d/skeletons       the skeleton clips Pipeline ships, for Animate's picker: {name, label, action}
 GET  /2d/<stem>/drawing  the picture filling in while it draws
 """
 from __future__ import annotations
@@ -1779,6 +1780,10 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             return _json_bytes({"ok": False, "error": str(e)}, 400)
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+    if method == "GET" and path == "/2d/skeletons":  # before GET /2d/<stem>, which would take it for an asset
+        import skeleton as SK
+
+        return _json_bytes({"ok": True, "skeletons": SK.catalogue(), "default": "walk_side"})
     if method == "GET" and len(parts) == 3 and parts[0] == "2d" and parts[2] == "drawing":
         try:
             drawing = stem_dir(factory.root, check_stem(parts[1])) / "flat" / "drawing.jpg"
@@ -1882,6 +1887,7 @@ def _dispatch(
                     "POST /2d/draw",
                     "POST /2d/building",
                     "POST /2d/animate/<stem>",
+                    "GET /2d/skeletons",
                     "GET /2d/<stem>/drawing",
                     "POST /2d/drop",
                     "POST /2d/split",

@@ -63,6 +63,33 @@ def shipped() -> list[str]:
     return sorted(q.stem for q in SKELETONS.glob("*.json"))
 
 
+def action_of(name: str) -> str:
+    """The strip a shipped skeleton makes by default (walker_run_left -> run-left, walk_side -> walk): a strip
+    name the 2D sheet takes (letters, digits and hyphens), one per skeleton, so a run never overwrites the walk."""
+    words = name.lower().removeprefix("walker_").split("_")
+    if words[-1:] == ["side"]:
+        words = words[:-1]
+    return "-".join(w for w in words if w) or "walk"
+
+
+def label_of(name: str) -> str:
+    """A shipped skeleton in plain words (walker_run_left -> "Run, facing left", walk_side -> "Walk, side on")."""
+    words = name.lower().removeprefix("walker_").split("_")
+    tail = ""
+    if words[-1:] in (["left"], ["right"]):
+        tail = f", facing {words.pop()}"
+    elif words[-1:] == ["side"]:
+        words.pop()
+        tail = ", side on"
+    head = " ".join(w for w in words if w) or name
+    return head[:1].upper() + head[1:] + tail
+
+
+def catalogue() -> list[dict[str, str]]:
+    """Every shipped skeleton for the app's picker: {name, label, action}."""
+    return [{"name": n, "label": label_of(n), "action": action_of(n)} for n in shipped()]
+
+
 def load(path: str | Path) -> list[dict[str, list[float]]]:
     """The clip's joints per frame. A frame where no skeleton was found keeps the last frame's joints."""
     try:

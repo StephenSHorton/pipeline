@@ -26,6 +26,10 @@ import {
   SPEAKERS,
   stagePicture,
   STEP_RUNNING,
+  animateBlock,
+  animateBody,
+  animateEndLine,
+  FLAT_MODE_LIST,
 } from "./flat";
 
 describe("copy", () => {
@@ -36,6 +40,7 @@ describe("copy", () => {
       pieces: "Name the pieces…",
       say: "What it says…",
       sound: "The sound it makes…",
+      animate: "What happens, and which way it faces…",
     });
     expect(STEP_RUNNING).toEqual({ pieces: "Cutting separate shapes.", motion: "Packing the motion.", say: "Speaking.", sound: "Writing the sound." });
     expect(SPEAKERS).toEqual(["af_heart", "af_bella", "af_sarah", "am_adam", "am_michael", "bf_emma", "bm_george"]);
@@ -263,5 +268,30 @@ describe("finishFlat", () => {
       hear: "voices/v.wav",
       toast: "Sprite ready: hen",
     });
+  });
+});
+
+describe("Animate", () => {
+  const list = [
+    { name: "walk_side", label: "Walk, side on", action: "walk" },
+    { name: "walker_run_left", label: "Run, facing left", action: "run-left" },
+  ];
+  it("is the last 2D mode", () => {
+    expect(FLAT_MODE_LIST).toEqual(["picture", "motion", "pieces", "say", "sound", "animate"]);
+  });
+  it("says why it cannot start", () => {
+    expect(animateBlock("walks right", "", false)).toBe("No skeletons to animate with.");
+    expect(animateBlock("", "walk_side", false)).toMatch(/^Say what happens and which way the character faces/);
+    expect(animateBlock("walks right", "walk_side", true)).toBe("The factory is busy with another job.");
+    expect(animateBlock("walks right", "walk_side", false)).toBe("");
+  });
+  it("names the strip after the skeleton", () => {
+    expect(animateBody("runs left, facing left", "walker_run_left", list)).toEqual({ prompt: "runs left, facing left", skeleton: "walker_run_left", action: "run-left" });
+    expect(animateBody("walks", "other", list)).toEqual({ prompt: "walks", skeleton: "other" });
+  });
+  it("says how it ended", () => {
+    expect(animateEndLine("ok", "", "run-left")).toBe("Animated: the run-left strip, saved as a new 2D version.");
+    expect(animateEndLine("cancelled", "Cancelled", "walk")).toBe("Animate cancelled. The 2D files are as they were.");
+    expect(animateEndLine("error", "LTX-2.3 stopped (exit 3) without a clip", "walk")).toBe("LTX-2.3 stopped (exit 3) without a clip");
   });
 });
