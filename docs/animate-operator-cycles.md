@@ -73,6 +73,14 @@ short (moving joints 16.6%, 18.7% in the cycle). **Three of the 24 strip cells a
 the motion blur on the legs makes Vision's cut-out drop the legs, so the cell is a floating torso. The strip needs
 those cells dropped or the cut-out redone before use.
 
+**Since pipeline#25** Animate catches these itself: a cut-out much smaller than the frames around it (area under
+80% of theirs, height under 90%, or its lowest point more than 5% of the frame above theirs) is redone against the
+ground those frames show behind it (the camera is still, so their median, where they have no character, is a
+picture of the bare ground), and the strip leaves out any it cannot redo. One ground colour cannot key this clip:
+the studio floor shades from about 130 to 235 grey across a row. A re-run of run left (seed 42, same skeleton,
+the clip differs from the one above) lost the legs or feet in frames 28, 38, 48, 52 and 64; all five were redone
+and the strip's 24 cells all have legs. Faint floor shadow can stay at the boots of a redone cell.
+
 ![run left](animate-operator-cycles/run_left.jpg)
 
 ### Attack right: 10.20%
@@ -105,3 +113,35 @@ On MACBOOK-STEPHEN only (`out/` is not in git): the pipeline-18 worktree's `out/
 (clip, frames, cut-outs, control, pose.json, anim.json) and `out/operator/flat/sheets/`. The fitted skeletons are in
 `out/_skel/operator_*.json`. LTX ran from `~/projects/video-trials` (ltx-2-mlx at the pinned 747b30e, its q8 weights
 and the IC-LoRA) through the `PIPELINE_LTX_DIR`, `PIPELINE_LTX_MODEL` and `PIPELINE_LTX_LORA` overrides.
+
+## Refitted to the operator's own body (pipeline#24)
+
+Animate now refits the skeleton to the start picture's own body before drawing it (`skeleton.refit`, called from
+`scripts/animate.py`'s skeleton stage). Apple Vision reads the guide picture's skeleton. Each part of the shipped
+skeleton (torso, shoulder and hip widths, upper arm, forearm, thigh, shin, head) is scaled to the picture's length,
+left and right averaged. The hips start where the picture's are, and the lower foot stays on the picture's ground
+line. Each bone keeps the clip's direction, so the turn's foreshortening and the motion are the walker's. On the
+operator the walker's parts came out torso ×0.74, shoulders ×0.63, hips ×0.84, upper arm ×0.89, forearm ×0.70,
+thigh ×1.74, shin ×1.63, against ×1.117 overall. The fit is recorded as `fit` in `control.json` and as
+`skeleton_fit` in `anim.json`.
+
+Walk right, run again on 2026-11-24 on MACBOOK-STEPHEN with the same prompt for both. The prompt was "Side view. A
+soldier in a green flight suit with a radio on his chest and black boots turns to face right and walks on the spot
+with steady strides, swinging his arms, always seen from the side in profile, staying in the centre of the frame.
+Static locked-off camera, full body visible from head to boots, plain white studio background, even soft lighting."
+Seed 42, 73 frames, 704 px. Vision found a skeleton in all 73 frames of both runs.
+
+| Skeleton | frames 1–8 (standing) | moving joints, 1–8 | turn (1–16) | cycle (17–72) | all joints | moving joints |
+|---|---|---|---|---|---|---|
+| ×1.117 moved and scaled (pipeline#18's fit, rerun) | 6.23% | 6.53% | 6.58% | 7.62% | 7.39% | 7.50% |
+| **refitted to the operator** | **2.91%** | 4.77% | 3.79% | 5.63% | **5.22%** | 6.38% |
+
+The rerun of pipeline#18's fit gives back its recorded 6.24% for frames 1–8, so the two runs compare like for like.
+The refit halves the standing error. What is left there is mostly the arms: the operator holds his arms out from
+his sides, and the walker's hang straight down. The refit fits lengths, not angles. The walk itself also follows
+the control more closely (cycle 7.62% → 5.63%).
+
+Frames 0, 4, 8, 16, 24, 32, 40, 52 and 64 of the refitted run, with the control skeleton in red and Vision's read
+in green:
+
+![walk right, refitted](animate-operator-cycles/walk_right_refit.jpg)

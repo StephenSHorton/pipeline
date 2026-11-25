@@ -13,11 +13,14 @@ What it writes, under out/<stem>/:
   flat/anim/<action>/side.png       with --side: the side view, fitted the same way, LTX's second guide
   flat/anim/<action>/first/         with --remove: the first pass's frames at --remove-frames, as LTX drew them
   flat/anim/<action>/keys/          with --remove: the same frames with the named kit erased, LTX's later guides
-  flat/anim/<action>/control.json   the skeleton per frame (24 fps), and skeleton.mp4 drawn from it
+  flat/anim/<action>/control.json   the skeleton per frame (24 fps), refitted to the guide picture's own body
+                                    (its "fit"), and skeleton.mp4 drawn from it
   flat/anim/<action>/clip.mp4       what LTX-2.3 made (frame 0 is the guide picture)
   flat/anim/<action>/frames/        every frame, NNNN.png
   flat/anim/<action>/cutouts/       every frame cut out (Apple Vision's foreground mask, bin/lift-subject; else
-                                    the ground keyed out)
+                                    the ground keyed out). A cut-out far smaller than the frames around it
+                                    (Vision drops motion-blurred legs) is redone against the ground those
+                                    frames show behind it, or, if that fails too, left out of the strip
   flat/anim/<action>/anim.json      what made it, the AI-disclosure note, and the skeleton check when it ran
                                     (all built in out/<stem>/.animate/ first and moved in only when the run worked)
   flat/sheets/<action>.png          the sprite strip: every --every'th cut-out after frame 0, cropped to one box,
@@ -25,6 +28,12 @@ What it writes, under out/<stem>/:
 The 2D Version is saved before (what was there) and after (the result).
 
 The prompt must say which way the character faces and moves: a flat skeleton does not.
+
+The skeleton is refitted to the picture's own body before it is drawn (skeleton.refit): Apple Vision reads the
+guide picture's skeleton and each part of the shipped one (torso, shoulder and hip widths, upper arm, forearm,
+thigh, shin, head) takes the picture's length, the hips start where the picture's are and the feet stay on its
+ground line. Moving and scaling alone left a realistic operator ~6% off the cartoon-built walker while standing
+still (docs/animate-operator-cycles.md). Without bin/bodypose, or with no skeleton read, it is used as shipped.
 
 A front picture alone leaves the model to guess what the character looks like side-on, and it invents kit (a
 backpack, a pack where the chest rig was). --side gives it a side view too: a second --image guide (a keyframe,
@@ -41,7 +50,7 @@ that must stay (asked only to remove the backpack, the model took the operator's
 that through the whole clip). An erased frame whose skeleton (Apple Vision) is more than 2.5% off the control's (or 1% further than
 the first pass's own frame, when that is already off) is erased again with the next seed, up to three tries, keeping
 the closest. About three times as long as one pass. On the
-operator's walk: about 1.9% (front picture alone 1.80%, side view 5.1%), no backpack. The edit model is freed before
+operator's walk: 1.87% (front picture alone 1.68%, side view 5.1%), no backpack, chest rig kept. The edit model is freed before
 the second pass.
 
 LTX runs as its own process, the LTX venv's python under -I, from the ltx-2-mlx clone's source folders
@@ -53,7 +62,8 @@ overridable by environment):
   PIPELINE_LTX_LORA    <root>/weights/ic-lora-union/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors
   PIPELINE_LTX_GEMMA   <root>/weights/gemma-3-12b-it-4bit, else the Hugging Face cache's
                        mlx-community/gemma-3-12b-it-4bit snapshot
-  PIPELINE_BODYPOSE    <root>/bin/bodypose (scripts/bodypose.swift): reads the result's skeleton for the check
+  PIPELINE_BODYPOSE    <root>/bin/bodypose (scripts/bodypose.swift): reads the guide picture's skeleton, which
+                       the shipped skeleton is refitted to, and the result's skeleton for the check
 scripts/bootstrap.sh animate sets these up. About 40 GB at its peak and a minute or so a clip: one big model at a
 time on the Mac (the factory runs it in its one job slot, after freeing the draw model).
 """
@@ -66,6 +76,7 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -81,8 +92,8 @@ MODEL_NOTE = "LTX-2.3 distilled 1.1 (q8, dgrauet/ltx-2-mlx) with the IC-LoRA Uni
 LICENCE = "LTX-2 Community License Agreement (Lightricks), see NOTICE"
 DISCLOSURE = ("Machine-generated: made with the LTX-2.3 video model. Under the LTX-2 Community License, content "
               "published from it must say plainly that it is machine-generated.")
-STAGES = ("skeleton", "guide", "ltx", "frames", "cutouts", "strip", "pose_check")
-REMOVE_STAGES = ("skeleton", "guide", "first_pass", "erase", "ltx", "frames", "cutouts", "strip", "pose_check")
+STAGES = ("guide", "skeleton", "ltx", "frames", "cutouts", "strip", "pose_check")
+REMOVE_STAGES = ("guide", "skeleton", "first_pass", "erase", "ltx", "frames", "cutouts", "strip", "pose_check")
 KEY_STRENGTH = 0.8
 KEY_TRIES = 3
 KEY_POSE_PCT = 2.5  # an erased frame further than this from the control's skeleton is erased again
@@ -418,12 +429,151 @@ def cut_out(frames: list[Path], dest: Path, lift: Path | None) -> tuple[list[Pat
     return out, how
 
 
-def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4):
-    """Every every'th cut-out after frame 0 (frame 0 is the guide picture, not a pose), all cropped to the one box
-    that holds the character in every one of them, so the strip's frames line up, then scaled to cell_h tall."""
+# A cut-out has lost part of the character when, against the median of the frames around it (LOST_SPAN each side),
+# its area is below LOST_AREA of theirs, its height below LOST_HEIGHT of theirs, or its lowest point sits more than
+# LOST_FEET of the frame's height above theirs (the feet gone). Apple Vision drops motion-blurred legs this way.
+LOST_SPAN = 4
+LOST_AREA = 0.8
+LOST_HEIGHT = 0.9
+LOST_FEET = 0.05
+# The repair: the ground behind the character, as the median of the frames around it (PLATE_SPAN each side) where
+# their own cut-outs are not (grown by PLATE_GROW px), and whatever differs from it by more than PLATE_HOLD
+# (summed over RGB) is the character, fully so from PLATE_HOLD + PLATE_FEATHER.
+PLATE_SPAN = 8
+PLATE_GROW = 15
+PLATE_HOLD = 30
+PLATE_FEATHER = 45
+PLATE_LIMB = 0.03
+PLATE_EDGE = 3
+
+
+def _shape(path: Path):
+    """(area, top, bottom) of a cut-out's character, in pixels; area 0 when it is empty."""
+    import numpy as np
     from PIL import Image
 
-    picks = cutouts[1::every] or cutouts[:1]
+    with Image.open(path) as im:
+        a = np.asarray(im.convert("RGBA").getchannel("A")) > 24
+    rows = np.where(a.any(1))[0]
+    if not len(rows):
+        return 0, 0, 0
+    return int(a.sum()), int(rows.min()), int(rows.max()) + 1
+
+
+def lost_frames(shapes: list[tuple[int, int, int]], frame_h: int) -> dict[int, str]:
+    """The frames whose cut-out lost much of the character, by index, each with why, judged against the median of
+    the frames around it (see LOST_*). Needs at least three frames each side to judge."""
+    import statistics
+
+    lost = {}
+    for i, (area, top, bottom) in enumerate(shapes):
+        near = [shapes[j] for j in range(max(0, i - LOST_SPAN), min(len(shapes), i + LOST_SPAN + 1))
+                if j != i and shapes[j][0] > 0]
+        if len(near) < 3:
+            continue
+        m_area = statistics.median(s[0] for s in near)
+        m_h = statistics.median(s[2] - s[1] for s in near)
+        m_bottom = statistics.median(s[2] for s in near)
+        if area < LOST_AREA * m_area:
+            lost[i] = f"area {area / m_area:.0%} of its neighbours'"
+        elif bottom - top < LOST_HEIGHT * m_h:
+            lost[i] = f"height {(bottom - top) / m_h:.0%} of its neighbours'"
+        elif m_bottom - bottom > LOST_FEET * frame_h:
+            lost[i] = f"feet {(m_bottom - bottom) / frame_h:.0%} of the frame above its neighbours'"
+    return lost
+
+
+def repair_cutout(frames: list[Path], cutouts: list[Path], i: int, out: Path) -> None:
+    """Redo frame i's cut-out against the ground behind it: the camera is still, so the frames around it show the
+    ground where the character is not; the median of those is a picture of the ground alone, and what differs from
+    it is the character. The result keeps the first cut-out and adds what it lost, within the box the character
+    fills in the frames around it."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    near = [j for j in range(max(0, i - PLATE_SPAN), min(len(frames), i + PLATE_SPAN + 1)) if j != i]
+    with Image.open(cutouts[i]) as im:
+        first = np.asarray(im.convert("RGBA").getchannel("A"))
+    h, w = first.shape
+    box = [w, h, 0, 0]
+    masks = []
+    for j in near:
+        with Image.open(cutouts[j]) as im:
+            a = im.convert("RGBA").getchannel("A").point(lambda v: 255 if v > 24 else 0)
+        b = a.getbbox()
+        if b:
+            box = [min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3])]
+        masks.append(np.asarray(a.filter(ImageFilter.MaxFilter(PLATE_GROW))) > 0)
+    if box[2] <= box[0]:
+        return
+    pad = PLATE_GROW
+    x0, y0, x1, y1 = max(0, box[0] - pad), max(0, box[1] - pad), min(w, box[2] + pad), min(h, box[3] + pad)
+    stack = np.empty((len(near), y1 - y0, x1 - x0, 3), np.float32)
+    for k, j in enumerate(near):
+        with Image.open(frames[j]) as im:
+            stack[k] = np.asarray(im.convert("RGB"), np.float32)[y0:y1, x0:x1]
+        stack[k][masks[k][y0:y1, x0:x1]] = np.nan
+    with warnings.catch_warnings():  # a pixel the character covers in every frame around has no ground: NaN
+        warnings.simplefilter("ignore", RuntimeWarning)
+        plate = np.nanmedian(stack, 0)
+    with Image.open(frames[i]) as im:
+        rgb = np.asarray(im.convert("RGB"))
+    d = np.nan_to_num(np.abs(rgb[y0:y1, x0:x1].astype(np.float32) - plate).sum(2), nan=0.0)
+    add = np.zeros_like(first)
+    add[y0:y1, x0:x1] = (np.clip((d - PLATE_HOLD) / PLATE_FEATHER, 0, 1) * 255).astype(np.uint8)
+    alpha = np.maximum(first, add)
+    # What the ground plate adds and does not touch the first cut-out is floor (shadow, flecks), unless it is big
+    # enough to be a limb of its own (PLATE_LIMB of the first cut-out's area).
+    from scipy import ndimage
+
+    # Judged on the solid part (alpha over half), so a faint shadow does not join a fleck to a boot; the faint
+    # edge is kept only within PLATE_EDGE px of what is kept.
+    body = first > 24
+    lab, _ = ndimage.label(alpha > 127)
+    sizes = np.bincount(lab.ravel())
+    keep = (lab > 0) & (np.isin(lab, np.unique(lab[body])) | (sizes[lab] >= PLATE_LIMB * max(1, int(body.sum()))))
+    keep = ndimage.binary_dilation(keep, iterations=PLATE_EDGE) | body
+    alpha = np.where(keep, alpha, 0).astype(np.uint8)
+    Image.fromarray(np.dstack([rgb, alpha]), "RGBA").save(out)
+
+
+def check_cutouts(frames: list[Path], cutouts: list[Path]) -> list[dict]:
+    """Find the cut-outs that lost much of the character (lost_frames), redo each against the ground behind it
+    (repair_cutout) and keep the redo when it no longer looks lost; a frame still lost after that is marked dropped,
+    and the strip leaves it out. Returns one row per lost frame: its number, why, and repaired or dropped."""
+    from PIL import Image
+
+    if len(cutouts) < 7:
+        return []
+    with Image.open(cutouts[0]) as im:
+        frame_h = im.size[1]
+    shapes = [_shape(p) for p in cutouts]
+    lost = lost_frames(shapes, frame_h)
+    rows = []
+    for i, why in sorted(lost.items()):
+        redo = cutouts[i].with_suffix(".redo.png")
+        repair_cutout(frames, cutouts, i, redo)
+        fixed = False
+        if redo.is_file():
+            trial = list(shapes)
+            trial[i] = _shape(redo)
+            fixed = i not in lost_frames(trial, frame_h)
+            if fixed:
+                redo.replace(cutouts[i])
+                shapes[i] = trial[i]
+            else:
+                redo.unlink()
+        rows.append({"frame": int(cutouts[i].stem), "why": why, "fix": "repaired" if fixed else "dropped"})
+    return rows
+
+
+def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4, dropped: set[int] = frozenset()):
+    """Every every'th cut-out after frame 0 (frame 0 is the guide picture, not a pose), all cropped to the one box
+    that holds the character in every one of them, so the strip's frames line up, then scaled to cell_h tall.
+    A frame in dropped (its cut-out lost the character, check_cutouts) is left out of the strip."""
+    from PIL import Image
+
+    picks = [p for p in cutouts[1::every] if int(p.stem) not in dropped] or cutouts[:1]
     ims = [Image.open(p).convert("RGBA") for p in picks]
     box = None
     for im in ims:
@@ -455,6 +605,26 @@ def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> 
     res = SK.pose_error(control, got, skip=1)
     res["frames_with_skeleton"] = sum(1 for j in got if j)
     return res
+
+
+def fit_control(root: Path, control: list[dict], work: Path) -> tuple[list[dict], dict]:
+    """The skeleton refitted to the guide picture's own body (skeleton.refit: its hips, shoulders, limb lengths
+    and feet, read by Apple Vision), so a character built unlike the skeleton's does not start off it. Without
+    bin/bodypose, or when Vision reads no neck, hips and feet in the picture, the skeleton is used as shipped and
+    the returned note says why."""
+    tool = bodypose_tool(root)
+    if not tool:
+        print("animate: no bin/bodypose; the skeleton is used as shipped, not fitted to the picture", flush=True)
+        return control, {"fitted": False, "why": "no bin/bodypose"}
+    target = SK.read_picture(tool, work / "guide.png", work)
+    try:
+        fitted, info = SK.refit(control, target)
+    except SK.SkeletonError as e:
+        print(f"animate: {e}; the skeleton is used as shipped", flush=True)
+        return control, {"fitted": False, "why": str(e)}
+    print(f"animate: skeleton fitted to the picture (x{info['scale']}; " +
+          ", ".join(f"{p} x{r}" for p, r in info["ratios"].items()) + ")", flush=True)
+    return fitted, {"fitted": True, **info}
 
 
 # ------------------------------------------------------------------ the run
@@ -542,17 +712,19 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
     from flat2d.atlas import save_cells
     from flat2d.store import write_center
 
-    stage("skeleton", "Draw the skeleton video")
-    control = SK.fit_frames(SK.retime(SK.load(control_src), skeleton_fps, FPS, frames)
-                            if skeleton_fps != FPS else SK.load(control_src), frames)
-    (work / "control.json").write_text(json.dumps({"fps": FPS, "frames": [{"joints2d": j} for j in control]}) + "\n")
-    SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
-
     stage("guide", "Fit the picture")
     ground = make_guide(pic, size, work / "guide.png")
     side_fitted = None
     if side_pic is not None:
         side_fitted = fit_side(side_pic, work / "guide.png", size, work / "side.png", tuple(ground), lift_tool(root))
+
+    stage("skeleton", "Fit and draw the skeleton video")
+    control = SK.fit_frames(SK.retime(SK.load(control_src), skeleton_fps, FPS, frames)
+                            if skeleton_fps != FPS else SK.load(control_src), frames)
+    control, fit = fit_control(root, control, work)
+    (work / "control.json").write_text(json.dumps({"fps": FPS, "fit": fit,
+                                                   "frames": [{"joints2d": j} for j in control]}) + "\n")
+    SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
 
     keys: list[tuple[Path, int]] = []
     t_ltx = time.time()
@@ -605,9 +777,13 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
 
     stage("cutouts", "Cut out the character")
     cut_files, how = cut_out(frame_files, work / "cutouts", lift_tool(root))
+    lost = check_cutouts(frame_files, cut_files)
+    for row in lost:
+        print(f"animate: frame {row['frame']} cut-out lost the character ({row['why']}): {row['fix']}", flush=True)
 
     stage("strip", "Pack the sprite strip")
-    cells, picked, box = strip_cells(cut_files, every, cell)
+    cells, picked, box = strip_cells(cut_files, every, cell,
+                                     dropped={r["frame"] for r in lost if r["fix"] == "dropped"})
     strip_fps = max(1, round(FPS / every))
 
     stage("pose_check", "Check the skeleton")
@@ -633,12 +809,14 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
                    "edit_model": "Qwen-Image-Edit-2511", "prompt": erase_prompt(remove, keep), "seconds": erase_s,
                    "keys": key_notes} if remove else None,
         "skeleton": control_src.stem if control_src.parent == SK.SKELETONS else str(control_src),
+        "skeleton_fit": fit,
         "prompt": prompt,
         "seed": seed,
         "frames": len(frame_files),
         "fps": FPS,
         "size": size,
         "cutouts": how,
+        "lost_cutouts": lost,
         "strip": {"file": f"sheets/{action}.png", "every": every, "from_frames": picked, "box": box,
                   "cell": {"w": cells[0].size[0], "h": cells[0].size[1]}, "fps": strip_fps},
         "pose_check": {k: v for k, v in pose.items() if k != "per_frame_pct"} if pose else None,

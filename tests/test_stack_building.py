@@ -607,6 +607,41 @@ class RouteTests(unittest.TestCase):
             self.assertEqual(status, 400, out)
             self.assertTrue(out["error"], out)
 
+    def test_a_tower_is_made_from_a_building_from_the_app(self) -> None:
+        status, job = http_json(self.base + "/2d/building", method="POST", data=self.BODY)
+        self.assertEqual(self.wait(job["job_id"])["state"], "ok")
+        status, out = http_json(self.base + "/2d/tower", method="POST",
+                                data={"stem": "shop-tower", "from": "shop", "tiers": 2, "floors": 3, "project": None})
+        self.assertEqual(status, 200, out)
+        self.assertEqual(out["tiers"], [{"floors": 3, "wide": 4, "deep": 4}, {"floors": 3, "wide": 2, "deep": 2}])
+        asset = self.root / "out" / "shop-tower"
+        meta = json.loads((asset / "stack" / "stack.json").read_text())
+        self.assertEqual((meta["maker"], meta["shape"], meta["tower"]["from"]), ("walls", "tower", "shop"))
+        self.assertTrue((asset / "flow.json").is_file())  # a new Stack version
+        self.assertEqual(json.loads((asset / "intent.json").read_text())["output"], "stack")
+        _, listed = http_json(self.base + "/assets")
+        self.assertTrue(next(a for a in listed["assets"] if a["id"] == "shop-tower")["building"])
+        # Bays run out, a missing or wrong building, bad numbers: a plain 400, nothing written.
+        for bad in ({"stem": "t3", "from": "shop", "tiers": 3, "floors": 3},
+                    {"stem": "t3", "from": "nowhere", "tiers": 2, "floors": 3},
+                    {"stem": "t3", "from": "shop-tower", "tiers": 2, "floors": 3},
+                    {"stem": "t3", "from": "shop", "tiers": "two", "floors": 3},
+                    {"stem": "shop", "from": "shop", "tiers": 2, "floors": 3}):
+            status, out = http_json(self.base + "/2d/tower", method="POST", data=bad)
+            self.assertEqual(status, 400, (bad, out))
+            self.assertTrue(out["error"], out)
+        self.assertFalse((self.root / "out" / "t3").exists())
+        status, out = http_json(self.base + "/2d/tower", method="POST",
+                                data={"stem": "t3", "from": "shop", "tiers": 3, "floors": 3})
+        self.assertIn("room for 2 tiers, not 3", out["error"])
+
+    def test_a_tower_waits_while_a_job_runs(self) -> None:
+        self.factory._job = {"state": "running", "job_id": "x", "stem": "other"}
+        status, out = http_json(self.base + "/2d/tower", method="POST",
+                                data={"stem": "t", "from": "a", "tiers": 2, "floors": 3})
+        self.assertEqual(status, 409, out)
+        self.factory._job = None
+
     def test_a_join_waits_while_a_job_runs(self) -> None:
         self.factory._job = {"state": "running", "job_id": "x", "stem": "other"}
         status, out = http_json(self.base + "/2d/join", method="POST",

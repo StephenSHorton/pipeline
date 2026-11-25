@@ -55,9 +55,13 @@ import {
   type WalkMotion,
 } from "./stack";
 import { createStackView, loadImage, type PaintMode, type StackView } from "./view";
+import { TowerPanel } from "./TowerPanel";
+import { towerable } from "@/screens/home/building";
 
 const CUBBIES: StackCubby[] = ["stack-look", "stack-sliders", "stack-palette", "paint"];
 const cubbyId = (stem: string, c: StackCubby) => `stack-${c === "stack-look" ? "look" : c.replace("stack-", "")}-${stem}`;
+/** A building drawn from walls also gets Tower: it can be stepped up into a tower (pipeline#20). */
+const cubbiesFor = (meta: StackMeta | null): StackCubby[] => (towerable(meta) ? [...CUBBIES, "tower"] : CUBBIES);
 const PAINT0: PaintMode = { on: false, drop: false, erase: false, color: PAINT_COPY.color.value, radius: PAINT_COPY.radius.value };
 const PBR0: Record<PbrKey, number> = { metal: 0, rough: 0.7, emit: 0 };
 /** A flow re-read this soon after our own Save is the one it queued (factoryJson's /paint/ hook, ~300 ms later):
@@ -267,7 +271,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
         <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] max-w-[calc(100%-24px)] flex-col items-end gap-2 max-md:top-auto max-md:bottom-3 max-md:max-h-[60%]">
           <Card size="hud" role="group" aria-label="Dock" className={cn(PANEL, "w-max max-w-full flex-row flex-wrap items-center justify-end gap-1 p-1")}>
             {ready
-              ? CUBBIES.map((c) => (
+              ? cubbiesFor(meta).map((c) => (
                   <Button
                     key={c}
                     ref={(el) => {
@@ -432,6 +436,12 @@ function StackBody({ stem, flowVersion }: StageProps) {
                   }}
                 />
               </Cubby>
+
+              {towerable(meta) ? (
+                <Cubby id={cubbyId(stem, "tower")} cubby="tower" open={open === "tower"} onClose={() => closeCubby("tower")}>
+                  <TowerPanel stem={stem} meta={meta} />
+                </Cubby>
+              ) : null}
             </div>
           ) : null}
         </div>

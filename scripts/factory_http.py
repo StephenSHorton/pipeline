@@ -25,6 +25,7 @@ POST /2d/building        a building's walls drawn, then built as a sprite stack 
 POST /2d/animate/<stem>  a character picture plus a skeleton clip animated by LTX-2.3 (scripts/animate.py), as a job
 GET  /2d/skeletons       the skeleton clips Pipeline ships, for Animate's picker: {name, label, action}
 POST /2d/join            buildings already made joined into a row or a corner (scripts/stack_join.py), no model
+POST /2d/tower           a building already made stepped up into a tower (scripts/stack_tower.py), no model
 GET  /2d/<stem>/drawing  the picture filling in while it draws
 """
 from __future__ import annotations
@@ -246,8 +247,10 @@ STAGE_LABELS = {
     "check": "Check the rig",
     "fbx": "FBX for s&box",
     # scripts/animate.py
-    "skeleton": "Draw the skeleton video",
     "guide": "Fit the picture",
+    "skeleton": "Fit and draw the skeleton video",
+    "first_pass": "First pass with LTX-2.3",
+    "erase": "Erase the invented kit",
     "ltx": "Animate with LTX-2.3",
     "frames": "Cut the frames",
     "cutouts": "Cut out the character",
@@ -1412,6 +1415,33 @@ class Factory:
         return {"ok": True, "stem": stem, "layout": layout, "size": out["size"], "layers": out["layers"],
                 "colors": out["colors"], "parts": out["parts"], "line": " ".join(lines)}
 
+    def tower_building(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /2d/tower: a building already made (its drawn walls) stepped up into a tower with setbacks
+        (scripts/stack_tower.py), a new asset saved as a Stack version. No model and quick, so not a job; it waits
+        while a job runs, as a join does. Body {stem, from, tiers, floors, roof?, ridge?, roof_colour?, project?}."""
+        import stack_tower
+
+        req = stack_tower.parse_request(body)
+        stem = req["stem"]
+        with self._lock:
+            if (self._job and self._job.get("state") == "running") or self._sync_draws:
+                raise RuntimeError("the factory is busy with another job")
+            if stem in self._joining:
+                raise RuntimeError(f"{stem} is already being written")
+            self._joining.add(stem)
+        try:
+            lines: list[str] = []
+            out = stack_tower.write_requested(self.root, req, line=lines.append)
+            write_intent(self.root, stem, BUILDING_INTENT)
+            projects.file_made(self.root, stem, body)
+        finally:
+            with self._lock:
+                self._joining.discard(stem)
+        return {"ok": True, "stem": stem, "from": req["from"], "size": out["size"], "layers": out["layers"],
+                "colors": out["colors"],
+                "tiers": [{k: t[k] for k in ("floors", "wide", "deep")} for t in out["tiers"]],
+                "line": " ".join(lines)}
+
     def sync_draw(self, on: bool) -> None:
         """A plain POST /2d/generate or /2d/idea began (True) or ended (False). Raises when a job runs."""
         with self._lock:
@@ -1868,6 +1898,18 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             return _json_bytes({"ok": False, "error": str(e)}, 400)
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+    if method == "POST" and path == "/2d/tower":
+        from stack_building import WallsError
+
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.tower_building(raw))
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except (ValueError, WallsError) as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
     if method == "GET" and len(parts) == 3 and parts[0] == "2d" and parts[2] == "drawing":
         try:
             drawing = stem_dir(factory.root, check_stem(parts[1])) / "flat" / "drawing.jpg"
@@ -1973,6 +2015,7 @@ def _dispatch(
                     "POST /2d/animate/<stem>",
                     "GET /2d/skeletons",
                     "POST /2d/join",
+                    "POST /2d/tower",
                     "GET /2d/<stem>/drawing",
                     "POST /2d/drop",
                     "POST /2d/split",

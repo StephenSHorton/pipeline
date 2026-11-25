@@ -186,3 +186,75 @@ export function joinedText(name: string, out: { size?: { width: number; length: 
   const s = out.size;
   return `Joined ${out.parts?.length ?? 2} buildings: ${name}${s ? ` · ${s.width} by ${s.length} cells, ${s.height} layers` : ""}`;
 }
+
+/* ---------------------------------------------------------------- a tower from a building (Stack stage) */
+
+/** stack_tower.MAX_TIERS. */
+export const MAX_TIERS = 5;
+/** stack_building.FLOOR_MAX: at most this many floors in one tier. */
+export const FLOOR_MAX = 40;
+export const TIER_CHOICES: readonly number[] = Array.from({ length: MAX_TIERS }, (_, i) => i + 1);
+export const FLOOR_CHOICES: readonly number[] = Array.from({ length: FLOOR_MAX }, (_, i) => i + 1);
+export const DEFAULT_TIERS = 2;
+export const DEFAULT_TIER_FLOORS = 4;
+
+/** What a Version's stack.json says about a building, as far as a tower needs it. */
+export interface TowerSource {
+  maker?: string;
+  shape?: string;
+  bays?: { wide?: number; deep?: number; drawn?: number } | null;
+}
+
+/** A tower is made from a building drawn from walls (stack.json maker "walls", shape "code"): not from a joined
+ * building or a tower, which have no drawn walls of their own. */
+export const towerable = (meta: TowerSource | null | undefined): boolean => meta?.maker === "walls" && meta.shape === "code";
+
+/** The building's own window bays [across, along]: as it was made (stack.json bays), null when it does not say. */
+export function sourceBays(meta: TowerSource | null | undefined): [number, number] | null {
+  const b = meta?.bays;
+  const wide = b?.wide ?? b?.drawn;
+  const deep = b?.deep ?? b?.drawn;
+  return wide && deep ? [wide, deep] : null;
+}
+
+/** The tiers bottom first, [across, along] bays each: the building's own, then one window bay narrower on every
+ * side (2 fewer across, 2 fewer along) each tier up. As stack_tower.stepped_tiers works them out. */
+export function towerTiers(wide: number, deep: number, tiers: number): [number, number][] {
+  return Array.from({ length: tiers }, (_, i) => [wide - 2 * i, deep - 2 * i] as [number, number]);
+}
+
+/** How many tiers the bays leave room for. */
+export const towerRoom = (wide: number, deep: number): number => 1 + Math.floor((Math.min(wide, deep) - 1) / 2);
+
+/** What stops Make tower, as one plain line; "" when it can go. The bays running out is said, never made fewer. */
+export function towerProblem(bays: [number, number] | null, tiers: number, floors: number): string {
+  if (!bays) return "This building's stack does not say its window bays: make it again to make a tower from it.";
+  if (tiers < 1 || tiers > MAX_TIERS) return `A tower is 1 to ${MAX_TIERS} tiers.`;
+  if (floors < 1 || floors > FLOOR_MAX) return `A tier is 1 to ${FLOOR_MAX} floors.`;
+  const [w, d] = bays;
+  const room = towerRoom(w, d);
+  if (tiers > room)
+    return `This building is ${w} window bay${w === 1 ? "" : "s"} across and ${d} along. Each tier steps in one bay on every side, so it has room for ${room} tier${room === 1 ? "" : "s"}, not ${tiers}.`;
+  return "";
+}
+
+/** The tiers in a few words: "4 by 4 bays, then 2 by 2". */
+export function tiersText(bays: [number, number], tiers: number): string {
+  return towerTiers(bays[0], bays[1], tiers)
+    .map(([w, d], i) => `${w} by ${d}${i === 0 ? " bays" : ""}`)
+    .join(", then ");
+}
+
+/** The tower's name: the building's, with "tower". */
+export const towerName = (source: string): string => slugStem(`${source} tower`) || "tower";
+
+/** POST /2d/tower. The top tier's roof is the building's own (left out, the factory reads it). */
+export function towerBody(stem: string, source: string, tiers: number, floors: number, project: string | null): Record<string, unknown> {
+  return { stem, from: source, tiers, floors, project };
+}
+
+/** The line after a tower is made: its tiers and size, from the factory's answer. */
+export function toweredText(name: string, out: { size?: { width: number; length: number; height: number }; tiers?: unknown[] }): string {
+  const s = out.size;
+  return `Tower of ${out.tiers?.length ?? 1} tiers: ${name}${s ? ` · ${s.width} by ${s.length} cells, ${s.height} layers` : ""}`;
+}
