@@ -145,6 +145,30 @@ follow. The rig never stretches a limb (a part stack cannot stretch): a swinging
 reach and the hips drop as far as a planted foot needs. `rig.ts` is plain TypeScript with no dependencies, so a
 game can use it as is.
 
+### Skeleton cycles: one motion for a drawn sprite and a sprite stack
+
+`desktop/frontend/src/screens/asset/stack/character/skeleton.ts` makes **walk**, **run** and **attack** (a right
+straight punch from a guard) in code, as 3D joints with Apple Vision's names (the ones `runners/bodypose` gives,
+drawn as OpenPose-18). A cycle is made for a body (`bodyFromRig(rig, height)`), so it fits a sprite stack exactly,
+and is solved like the rig: planted feet never slide, knees and elbows are two-bone IK, no bone stretches, the last
+frame leads into the first. Facing left is the same cycle turned to heading π.
+
+- `rigPose(frame, body, x, y, heading)` gives the rig's `Pose` for a frame, so `placeParts` hangs the stack's parts
+  on it as it does for the walk (the torso and head now lean with `Pose.lean`). `createWalkView({ cycle: "run" })`
+  plays a cycle round the Stack stage's lap; the stage has no picker for it yet.
+- `cd desktop/frontend && bun scripts/skeleton-cycle.ts --character ../../out/<s>/stack --front ../../out/<s>/character/views/front.png --out <dir>`
+  writes, for each cycle and facing: `<cycle>_<facing>.cycle.json` (`"format": "pipeline-skeleton-cycle"`: `fps`,
+  `frames` in a loop, `travel` per loop in cells, `body`, and per frame `joints`, `contact`, `footYaw`, `hips`,
+  `shoulders`, `lean`), `<cycle>_<facing>.pose.json` (the side view as `{"frames":[{"joints2d":{joint:[x,y,1]}}]}`,
+  0..1 from the top left, 24 fps), `<cycle>_<facing>_skel.mp4` (the OpenPose skeleton video for LTX-2.3's
+  Union-Control IC-LoRA), `<cycle>_<facing>_stack.mp4` (the sprite stack posed by the same frames, same side, same
+  scale) and `start.png` (the drawn front view on white, standing where the skeleton's first frame stands: LTX's
+  first frame). Each clip turns from facing the camera over `--turn` frames (16), then plays the loop on the spot,
+  73 frames in all. `scripts/skeletons/walker_<cycle>_<facing>.json` holds these side views for the walker.
+- LTX run (in `~/Projects/video-trials`, about 80 s and 40 GB a clip):
+  `ltx-venv/bin/python -I runners/ltx.py ic-lora --prompt "<character>, <action>, side view, on the spot, plain white background" --model weights/ltx-2.3-mlx-q8 --lora weights/ic-lora-union/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors 1.0 --video-conditioning <dir>/walk_right_skel.mp4 1.0 --image <dir>/start.png --height 704 --width 704 --frames 73 --frame-rate 24 -o walk_right_ltx.mp4`.
+  Frame k of the LTX clip and of the stack video are the same pose.
+
 ## Hard-surface props (cars, wheelbarrows, mailboxes)
 
 Props are the weak class. There is no route that makes a clean one on its own:

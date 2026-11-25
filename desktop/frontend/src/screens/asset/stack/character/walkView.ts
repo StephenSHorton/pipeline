@@ -20,7 +20,8 @@ import {
   UnsignedByteType,
   Vector3,
 } from "three";
-import { createWalker, lapPoint, place, pose, step, type Walker } from "./rig";
+import { createWalker, lapPoint, place, pose, step, type Pose, type Walker } from "./rig";
+import { bodyFromRig, cycleFrame, makeCycle, rigPose, type CycleName } from "./skeleton";
 import { partCells, partKind, placeParts, type CharacterDoc, type CharacterPart, type PartCells, type Placement } from "./parts";
 
 export interface WalkViewOptions {
@@ -36,6 +37,8 @@ export interface WalkViewOptions {
   color: (byte: number, layer: number) => number;
   /** "slices": each part slice one flat picture (the sprite-stack look), not cubes. */
   look?: "cubes" | "slices";
+  /** Play a code-made skeleton cycle (pipeline#14) round the lap instead of the rig's own walk. */
+  cycle?: CycleName;
 }
 
 /** A slice's darkening in the sprite-stack look: the lowest layer at 0.62 of its colour, the top at full. Darker
@@ -197,9 +200,31 @@ export function createWalkView(o: WalkViewOptions): WalkView {
   }
   frame = lapFrames;
 
+  // A skeleton cycle round the same lap: its frames at its own rate, the body moved along the circle by the cycle's
+  // own travel and turned along it (on the spot for the attack, which does not travel).
+  const body = bodyFromRig(doc.rig, doc.height);
+  const cyc = o.cycle ? makeCycle(o.cycle, body) : null;
+  let cycFrame = 0;
+  let cycAcc = 0;
+  const cycWhere = { x: start.x, y: start.y, h: start.h };
+  function cyclePose(): Pose {
+    const c = cyc!;
+    const f = cycleFrame(c, cycFrame % c.frames);
+    const own = ((cycFrame % c.frames) / c.frames) * c.travel; // the travel, not the pelvis (it sways)
+    const circ = strides * walker.c.stride;
+    const d = ((cycFrame * c.travel) / c.frames) % circ;
+    const a = (d / circ) * Math.PI * 2;
+    const R = start.radius;
+    cycWhere.x = R * Math.cos(a);
+    cycWhere.y = R * Math.sin(a);
+    cycWhere.h = a + Math.PI / 2;
+    const inPlace = { ...f, joints: Object.fromEntries(Object.entries(f.joints).map(([n, p]) => [n, [p[0] - own, p[1], p[2]]])) } as typeof f;
+    return rigPose(inPlace, body, cycWhere.x, cycWhere.y, cycWhere.h, (cycFrame % c.frames) / c.frames);
+  }
+
   const mat = new Matrix4();
   function apply() {
-    const placed = placeParts(doc, pose(walker));
+    const placed = placeParts(doc, cyc ? cyclePose() : pose(walker));
     for (const p of pieces) {
       const at = placed.get(p.part);
       if (!at) {
@@ -224,6 +249,17 @@ export function createWalkView(o: WalkViewOptions): WalkView {
   const where = new Vector3();
   return {
     tick(dt: number) {
+      if (cyc) {
+        cycAcc = Math.min(cycAcc + dt, 4 / cyc.fps);
+        let moved = false;
+        while (cycAcc >= 1 / cyc.fps) {
+          cycAcc -= 1 / cyc.fps;
+          cycFrame += 1;
+          moved = true;
+        }
+        if (moved) apply();
+        return;
+      }
       acc = Math.min(acc + dt, 4 / fps);
       let moved = false;
       while (acc >= 1 / fps) {
@@ -237,6 +273,7 @@ export function createWalkView(o: WalkViewOptions): WalkView {
     },
     where() {
       // rig (x, y) -> three (x, -y) on the ground
+      if (cyc) return where.set(cycWhere.x * pitch, 0, -cycWhere.y * pitch);
       return where.set(walker.x * pitch, 0, -walker.y * pitch);
     },
     height: doc.height * pitch,

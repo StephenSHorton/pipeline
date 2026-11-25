@@ -112,6 +112,8 @@ export interface Pose {
   shouldersAngle: number;
   legs: LegPose[];
   arms: ArmPose[];
+  /** The upper body's tilt forward along the heading (radians); the walk leaves it out (upright). */
+  lean?: number;
 }
 
 const TAU = Math.PI * 2;
