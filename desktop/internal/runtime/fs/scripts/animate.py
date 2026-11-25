@@ -5,9 +5,11 @@ frames, transparent cut-outs and a sprite strip, saved as a new 2D Version of th
 
     python scripts/animate.py --root R --stem S --prompt "The soldier faces right and walks to the right ..." \\
         [--skeleton walk_side] [--action walk] [--picture flat/source.png] [--seed 42] [--frames 73] [--size 704]
+        [--side flat/views/side.png [--side-frame 24] [--side-strength 0.8]]
 
 What it writes, under out/<stem>/:
   flat/anim/<action>/guide.png      the picture LTX starts from: the character, square, on its ground
+  flat/anim/<action>/side.png       with --side: the side view, fitted the same way, LTX's second guide
   flat/anim/<action>/control.json   the skeleton per frame (24 fps), and skeleton.mp4 drawn from it
   flat/anim/<action>/clip.mp4       what LTX-2.3 made (frame 0 is the guide picture)
   flat/anim/<action>/frames/        every frame, NNNN.png
@@ -20,6 +22,13 @@ What it writes, under out/<stem>/:
 The 2D Version is saved before (what was there) and after (the result).
 
 The prompt must say which way the character faces and moves: a flat skeleton does not.
+
+A front picture alone leaves the model to guess what the character looks like side-on, and it invents kit (a
+backpack, a pack where the chest rig was). --side gives it a side view too: a second --image guide (a keyframe,
+not the first frame) at --side-frame, by default one second in (frame 44 tested worse on the operator). It must
+face the way the prompt says the character moves. Its character is cut out, scaled to the first picture's
+character's height and stood on the same spot, on the same ground (flat/anim/<action>/side.png). It costs some
+skeleton accuracy: the character holds the side view's pose around that frame.
 
 LTX runs as its own process, the LTX venv's python under -I, from the ltx-2-mlx clone's source folders
 (scripts/ltx_run.py), with local paths only and HF_HUB_OFFLINE=1, so it never downloads. Where it looks (each
@@ -115,12 +124,16 @@ def check_ltx(paths: dict[str, Path]) -> None:
 
 
 def ltx_argv(paths: dict[str, Path], *, prompt: str, out: Path, control: Path, guide: Path, size: int,
-             frames: int, seed: int) -> list[str]:
+             frames: int, seed: int, side: Path | None = None, side_frame: int = FPS,
+             side_strength: float = 0.8) -> list[str]:
+    images = ["--image", str(guide), "0", "1.0"]
+    if side is not None:  # a later frame: ltx-2-mlx binds it as a keyframe guide, not the first latent
+        images += ["--image", str(side), str(side_frame), f"{side_strength:g}"]
     return [str(paths["python"]), "-I", str(HERE / "ltx_run.py"), str(paths["clone"]), "ic-lora",
             "--model", str(paths["model"]), "--gemma", str(paths["gemma"]),
             "--lora", str(paths["lora"]), "1.0",
             "--video-conditioning", str(control), "1.0",
-            "--image", str(guide), "0", "1.0",
+            *images,
             "-H", str(size), "-W", str(size), "-f", str(frames), "--frame-rate", str(FPS),
             "--seed", str(seed), "--prompt", prompt, "--output", str(out)]
 
@@ -145,10 +158,11 @@ def pick_picture(folder: Path, rel: str | None) -> Path:
     raise AnimateError("this asset has no character picture yet (draw or add one first)")
 
 
-def make_guide(picture: Path, size: int, out: Path) -> tuple[int, int, int]:
+def make_guide(picture: Path, size: int, out: Path, onto: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
     """The picture as LTX's first frame: square, the whole picture fitted in, padded with its own ground. A cut-out
     (with transparency) and a picture on a strong key colour (magenta) go onto white instead, which the prompt
-    asks for. Returns the ground colour."""
+    asks for. With onto (the side view: it must sit on the first picture's ground), the picture is cut from its
+    own ground and put onto that one. Returns the ground colour."""
     from PIL import Image
 
     from flat2d.parts import ground_key
@@ -156,7 +170,7 @@ def make_guide(picture: Path, size: int, out: Path) -> tuple[int, int, int]:
     im = Image.open(picture)
     if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
         rgba = im.convert("RGBA")
-        ground = (255, 255, 255)
+        ground = onto or (255, 255, 255)
         base = Image.new("RGB", rgba.size, ground)
         base.paste(rgba, (0, 0), rgba)
         rgb = base
@@ -164,12 +178,12 @@ def make_guide(picture: Path, size: int, out: Path) -> tuple[int, int, int]:
         rgb = im.convert("RGB")
         key = tuple(ground_key(rgb)["rgb"])
         light = min(key) >= 190 and max(key) - min(key) <= 40
-        if light:
+        if (onto is None and light) or onto == key:
             ground = key
         else:
             from flat2d.atlas import unmix
 
-            ground = (255, 255, 255)
+            ground = onto or (255, 255, 255)
             cut = unmix(rgb, key)
             base = Image.new("RGB", rgb.size, ground)
             base.paste(cut, (0, 0), cut)
@@ -182,6 +196,68 @@ def make_guide(picture: Path, size: int, out: Path) -> tuple[int, int, int]:
     out.parent.mkdir(parents=True, exist_ok=True)
     sq.save(out)
     return ground
+
+
+def _figure_box(im, ground: tuple[int, int, int], lift: Path | None, scratch: Path):
+    """The character's box in a picture: Apple Vision's foreground (bin/lift-subject) when it is there, else what
+    stands off the ground colour (rows and columns with enough of it; a box that runs into the frame's edge, as a
+    studio floor's shading does, counts as not found).
+    Returns (cut-out RGBA or None, box or None)."""
+    import numpy as np
+    from PIL import Image
+
+    if lift:
+        src, dst = scratch / "lift-in.png", scratch / "lift-out.png"
+        im.convert("RGB").save(src)
+        r = subprocess.run([str(lift), str(src), str(dst)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cut = Image.open(dst).convert("RGBA") if r.returncode == 0 and dst.is_file() else None
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+        if cut is not None:
+            box = cut.getchannel("A").point(lambda a: 255 if a > 24 else 0).getbbox()
+            if box:
+                return cut, box
+    a = np.asarray(im.convert("RGB")).astype(int)
+    m = np.abs(a - np.array(ground)).sum(2) > 60
+    rows = np.where(m.sum(1) > m.shape[1] * 0.01)[0]
+    cols = np.where(m.sum(0) > m.shape[0] * 0.01)[0]
+    if not len(rows) or not len(cols):
+        return None, None
+    box = (int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1)
+    h, w = m.shape
+    if box[0] <= 1 or box[1] <= 1 or box[2] >= w - 1 or box[3] >= h - 1:  # runs into the frame: a floor, not a body
+        return None, None
+    return None, box
+
+
+def fit_side(picture: Path, guide: Path, size: int, out: Path, ground: tuple[int, int, int],
+             lift: Path | None) -> bool:
+    """The side view as LTX's second guide, its character the same height as the first picture's and standing on
+    the same spot (feet on the same line, centred on the same column), on the first picture's ground: a figure
+    smaller or off to one side pulls the body off the skeleton. Falls back to make_guide's whole-picture fit (and
+    returns False) when either character cannot be found."""
+    from PIL import Image
+
+    scratch = out.parent
+    _, front = _figure_box(Image.open(guide), ground, lift, scratch)
+    make_guide(picture, size, out, onto=ground)  # the side view on the first picture's ground, as the fallback
+    fitted = Image.open(out).convert("RGB")
+    cut, box = _figure_box(fitted, ground, lift, scratch)
+    if not front or not box:
+        return False
+    if cut is None:
+        from flat2d.atlas import unmix
+
+        cut = unmix(fitted, ground)
+    fig = cut.crop(box)
+    h = front[3] - front[1]
+    w = max(1, round(fig.size[0] * h / fig.size[1]))
+    fig = fig.resize((w, h), Image.LANCZOS)
+    sq = Image.new("RGB", (size, size), ground)
+    cx = (front[0] + front[2]) // 2
+    sq.paste(fig, (cx - w // 2, front[3] - h), fig)
+    sq.save(out)
+    return True
 
 
 # ------------------------------------------------------------------ after LTX
@@ -280,7 +356,8 @@ def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> 
 
 def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", action: str = "walk",
             picture: str | None = None, seed: int = 42, frames: int = 73, size: int = 704, every: int = 3,
-            cell: int = 256, skeleton_fps: float = FPS, check: bool = True, save: bool = True) -> dict:
+            cell: int = 256, skeleton_fps: float = FPS, check: bool = True, save: bool = True,
+            side: str | None = None, side_frame: int | None = None, side_strength: float = 0.8) -> dict:
     from flat2d.atlas import action_name
 
     import flow
@@ -300,9 +377,16 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
         raise AnimateError("size must be a multiple of 32 from 256 to 1024")
     if not 1 <= every <= 12:
         raise AnimateError("every must be 1 to 12")
+    if side_frame is None:
+        side_frame = min(FPS, frames - 1)
+    if side and not 1 <= side_frame <= frames - 1:
+        raise AnimateError(f"side-frame must be 1 to {frames - 1} (frame 0 is the first picture)")
+    if side and not 0 < side_strength <= 1:
+        raise AnimateError("side-strength must be above 0 and at most 1")
     paths = ltx_paths(root)
     check_ltx(paths)
     pic = pick_picture(folder, picture)
+    side_pic = pick_picture(folder, side) if side else None
     control_src = SK.named(skeleton)
 
     print("STAGES " + " ".join(STAGES), flush=True)
@@ -316,7 +400,8 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
         shutil.rmtree(work)
     work.mkdir(parents=True)
     try:
-        doc = _run(root, stem, folder, work, paths, pic, control_src, prompt=prompt, action=action, seed=seed,
+        doc = _run(root, stem, folder, work, paths, pic, control_src, side_pic=side_pic, side_frame=side_frame,
+                   side_strength=side_strength, prompt=prompt, action=action, seed=seed,
                    frames=frames, size=size, every=every, cell=cell, skeleton_fps=skeleton_fps, check=check, t0=t0)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
@@ -329,8 +414,8 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
 
 
 def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path], pic: Path, control_src: Path, *,
-         prompt: str, action: str, seed: int, frames: int, size: int, every: int, cell: int, skeleton_fps: float,
-         check: bool, t0: float) -> dict:
+         side_pic: Path | None, side_frame: int, side_strength: float, prompt: str, action: str, seed: int,
+         frames: int, size: int, every: int, cell: int, skeleton_fps: float, check: bool, t0: float) -> dict:
     from flat2d.atlas import save_cells
     from flat2d.store import write_center
 
@@ -341,13 +426,17 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
     SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
 
     stage("guide", "Fit the picture")
-    make_guide(pic, size, work / "guide.png")
+    ground = make_guide(pic, size, work / "guide.png")
+    side_fitted = None
+    if side_pic is not None:
+        side_fitted = fit_side(side_pic, work / "guide.png", size, work / "side.png", tuple(ground), lift_tool(root))
 
     stage("ltx", "Animate with LTX-2.3")
     clip = work / "clip.mp4"
     clip.unlink(missing_ok=True)
     argv = ltx_argv(paths, prompt=prompt, out=clip, control=work / "skeleton.mp4", guide=work / "guide.png",
-                    size=size, frames=frames, seed=seed)
+                    size=size, frames=frames, seed=seed, side=work / "side.png" if side_pic else None,
+                    side_frame=side_frame, side_strength=side_strength)
     t_ltx = time.time()
     rc = subprocess.run(argv, env=ltx_env(), cwd=str(root), stdin=subprocess.DEVNULL).returncode
     if rc != 0 or not clip.is_file():
@@ -381,6 +470,8 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         "machine_generated": True,
         "disclosure": DISCLOSURE,
         "picture": pic.relative_to(folder).as_posix(),
+        "side": {"picture": side_pic.relative_to(folder).as_posix(), "frame": side_frame,
+                 "strength": side_strength, "fitted_to_figure": side_fitted} if side_pic else None,
         "skeleton": control_src.stem if control_src.parent == SK.SKELETONS else str(control_src),
         "prompt": prompt,
         "seed": seed,
@@ -416,6 +507,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skeleton-fps", type=float, default=FPS)
     ap.add_argument("--action", default="walk")
     ap.add_argument("--picture", default=None, help="a picture under out/<stem>/ (default: the concept still)")
+    ap.add_argument("--side", default=None,
+                    help="a side view under out/<stem>/, facing the way the character moves: a second guide")
+    ap.add_argument("--side-frame", type=int, default=None, help=f"the frame the side view guides (default {FPS})")
+    ap.add_argument("--side-strength", type=float, default=0.8, help="how hard the side view pulls, 0 to 1")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--frames", type=int, default=73)
     ap.add_argument("--size", type=int, default=704)
@@ -426,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         animate(Path(a.root), a.stem, prompt=a.prompt, skeleton=a.skeleton, action=a.action, picture=a.picture,
                 seed=a.seed, frames=a.frames, size=a.size, every=a.every, cell=a.cell, skeleton_fps=a.skeleton_fps,
-                check=not a.no_check)
+                check=not a.no_check, side=a.side, side_frame=a.side_frame, side_strength=a.side_strength)
     except (AnimateError, SK.SkeletonError, ValueError) as e:
         print(f"animate: {e}", file=sys.stderr, flush=True)
         return 1

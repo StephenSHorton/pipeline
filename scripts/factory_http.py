@@ -422,7 +422,8 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     happens and which way the character faces), "skeleton"?: a skeleton Pipeline ships (scripts/skeletons/,
     default walk_side), "action"?: the strip's name (default walk), "picture"?: a picture under out/<stem>/ (default
     the concept still), "seed"?, "frames"?: 8k+1 (default 73), "size"?: 256 to 1024 in 32s (default 704),
-    "every"?: every n'th frame goes in the strip (default 3)}."""
+    "every"?: every n'th frame goes in the strip (default 3), "side"?: a side view under out/<stem>/ as a second
+    guide, "side_frame"?: the frame it guides (default 24)}."""
     import skeleton as SK
     from flat2d.atlas import action_name
     from flat2d.store import FlatError
@@ -449,7 +450,14 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
         if rel.startswith("/") or ".." in Path(rel).parts:
             raise ValueError("picture must be a path inside the asset")
         argv += ["--picture", rel]
-    for key, lo, hi in (("seed", 0, 2**31 - 1), ("frames", 9, 257), ("size", 256, 1024), ("every", 1, 12)):
+    side = body.get("side")
+    if side not in (None, ""):
+        rel = str(side)
+        if rel.startswith("/") or ".." in Path(rel).parts:
+            raise ValueError("side must be a path inside the asset")
+        argv += ["--side", rel]
+    for key, lo, hi in (("seed", 0, 2**31 - 1), ("frames", 9, 257), ("size", 256, 1024), ("every", 1, 12),
+                         ("side_frame", 1, 256)):
         if body.get(key) in (None, ""):
             continue
         value = body[key]
@@ -459,7 +467,7 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
             raise ValueError("frames must be 8k+1 (9, 17, ... 73, ...)")
         if key == "size" and value % 32:
             raise ValueError("size must be a multiple of 32")
-        argv += [f"--{key}", str(value)]
+        argv += [f"--{key.replace('_', '-')}", str(value)]
     return argv
 
 
