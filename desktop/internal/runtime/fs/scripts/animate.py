@@ -7,6 +7,26 @@ frames, transparent cut-outs and a sprite strip, saved as a new 2D Version of th
         [--skeleton walk_side] [--action walk] [--picture flat/source.png] [--seed 42] [--frames 73] [--size 704]
         [--side [flat/views/side.png] [--side-frame 24] [--side-strength 0.8]]
         [--remove "backpack" [--keep "chest rig, radio and pouches"] [--remove-frames 24,48,72]]
+    python scripts/animate.py --root R --stem S --cycle walk|run|attack [--facing right|left] [--prompt "..."]
+
+--cycle picks one of the code-made cycles (pipeline#14: skeleton.ts): the character starts facing the camera, turns
+to face --facing over the first 16 frames, then walks, runs or punches on the spot. An asset with a sprite-stack
+character (stack/character.json) gets the cycle made for its own body by desktop/frontend/scripts/skeleton-cycle.ts
+when that script and bun are here; otherwise (and in the app, which ships neither) the walker's from
+scripts/skeletons/ (walker_<cycle>_<facing>.json). The action defaults to the cycle's name, the picture to the
+character's front view, and the prompt to one that says the turn and the facing.
+
+A skeleton that says where its standing figure is (the code-made cycles' "figure": top, ground line, middle) gets the
+picture fitted to it: the character cut from its ground, scaled to the figure's height, feet on its ground line,
+centred on it, as skeleton-cycle.ts places its start picture. Other skeletons (walk_side) get the whole picture,
+centred.
+
+A front picture alone leaves the model to guess what the character looks like side-on, and it invents kit (a
+backpack, a pack where the chest rig was). --side gives it a side view too: a second --image guide (a keyframe,
+not the first frame) at --side-frame, by default one second in (frame 44 tested worse on the operator). It must
+face the way the prompt says the character moves. Its character is cut out, scaled to the first picture's
+character's height and stood on the same spot, on the same ground (flat/anim/<action>/side.png). It costs some
+skeleton accuracy: the character holds the side view's pose around that frame.
 
 What it writes, under out/<stem>/:
   flat/anim/<action>/guide.png      the picture LTX starts from: the character, square, on its ground
@@ -33,14 +53,8 @@ The skeleton is refitted to the picture's own body before it is drawn (skeleton.
 guide picture's skeleton and each part of the shipped one (torso, shoulder and hip widths, upper arm, forearm,
 thigh, shin, head) takes the picture's length, the hips start where the picture's are and the feet stay on its
 ground line. Moving and scaling alone left a realistic operator ~6% off the cartoon-built walker while standing
-still (docs/animate-operator-cycles.md). Without bin/bodypose, or with no skeleton read, it is used as shipped.
-
-A front picture alone leaves the model to guess what the character looks like side-on, and it invents kit (a
-backpack, a pack where the chest rig was). --side gives it a side view too: a second --image guide (a keyframe,
-not the first frame) at --side-frame, by default one second in (frame 44 tested worse on the operator). It must
-face the way the prompt says the character moves. Its character is cut out, scaled to the first picture's
-character's height and stood on the same spot, on the same ground (flat/anim/<action>/side.png). It costs some
-skeleton accuracy: the character holds the side view's pose around that frame.
+still (docs/animate-operator-cycles.md). Without bin/bodypose, or with no skeleton read, it is used as shipped. A
+cycle made for the asset's own sprite-stack character is not refitted: it already has that body's proportions.
 
 --side with no picture uses the asset's own side view, the one the 2D stage drew (find_side): the turnaround's
 flat/views/right.png or left.png (head right, head left), else the pixel sheet's flat/views/side.png or the sprite
@@ -78,6 +92,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -114,6 +129,9 @@ ERASE_PROMPT = ("Remove only the {what} from the person, together with anything 
 def erase_prompt(what: str, keep: str | None = None) -> str:
     return ERASE_PROMPT.format(what=what, keep=f"Keep the {keep} exactly as they are. " if keep else "")
 PICTURES = ("lifted.png", "flat/source.png", "input.png", "input.jpg", "input.jpeg", "input.webp")
+# a code-made cycle starts facing the camera, so its picture is the character's front view when there is one
+FRONT_PICTURES = ("character/views/front.png", "flat/views/front.png")
+CYCLE_MAKER = Path("desktop") / "frontend" / "scripts" / "skeleton-cycle.ts"
 
 
 class AnimateError(RuntimeError):
@@ -202,13 +220,13 @@ def ltx_env() -> dict[str, str]:
 
 # ------------------------------------------------------------------ the picture
 
-def pick_picture(folder: Path, rel: str | None) -> Path:
+def pick_picture(folder: Path, rel: str | None, front: bool = False) -> Path:
     if rel:
         p = (folder / rel).resolve()
         if folder.resolve() not in p.parents or not p.is_file():
             raise AnimateError(f"no picture {rel!r} in this asset")
         return p
-    for name in PICTURES:
+    for name in (FRONT_PICTURES if front else ()) + PICTURES:
         if (folder / name).is_file():
             return folder / name
     raise AnimateError("this asset has no character picture yet (draw or add one first)")
@@ -248,13 +266,14 @@ def find_side(folder: Path, way: str | None) -> tuple[Path, str]:
     return next((h for h in have if h[1] == way), have[0])
 
 
-def make_guide(picture: Path, size: int, out: Path, onto: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
-    """The picture as LTX's first frame: square, the whole picture fitted in, padded with its own ground. A cut-out
-    (with transparency) and a picture on a strong key colour (magenta) go onto white instead, which the prompt
-    asks for. With onto (the side view: it must sit on the first picture's ground), the picture is cut from its
-    own ground and put onto that one. Returns the ground colour."""
+def _on_ground(picture: Path, onto: tuple[int, int, int] | None = None):
+    """The picture on its ground, the character's mask and the ground colour. A cut-out (with transparency) and a
+    picture on a strong key colour (magenta) go onto white instead, which the prompt asks for; a light ground is
+    kept. With onto (the side view: it must sit on the first picture's ground), the picture is cut from its own
+    ground and put onto that one."""
     from PIL import Image
 
+    from flat2d.atlas import unmix
     from flat2d.parts import ground_key
 
     im = Image.open(picture)
@@ -263,29 +282,65 @@ def make_guide(picture: Path, size: int, out: Path, onto: tuple[int, int, int] |
         ground = onto or (255, 255, 255)
         base = Image.new("RGB", rgba.size, ground)
         base.paste(rgba, (0, 0), rgba)
-        rgb = base
-    else:
-        rgb = im.convert("RGB")
-        key = tuple(ground_key(rgb)["rgb"])
-        light = min(key) >= 190 and max(key) - min(key) <= 40
-        if (onto is None and light) or onto == key:
-            ground = key
-        else:
-            from flat2d.atlas import unmix
+        return base, rgba.getchannel("A"), ground
+    rgb = im.convert("RGB")
+    key = tuple(ground_key(rgb)["rgb"])
+    cut = unmix(rgb, key)
+    light = min(key) >= 190 and max(key) - min(key) <= 40
+    if (onto is None and light) or onto == key:
+        return rgb, cut.getchannel("A"), key
+    ground = onto or (255, 255, 255)
+    base = Image.new("RGB", rgb.size, ground)
+    base.paste(cut, (0, 0), cut)
+    return base, cut.getchannel("A"), ground
 
-            ground = onto or (255, 255, 255)
-            cut = unmix(rgb, key)
-            base = Image.new("RGB", rgb.size, ground)
-            base.paste(cut, (0, 0), cut)
-            rgb = base
-    w, h = rgb.size
-    s = size / max(w, h)
-    small = rgb.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
+
+def _resize(im, size):
+    from PIL import Image
+
+    # pixel art scaled up stays crisp (as skeleton-cycle.ts draws its start picture); a big drawing scaled down smooth
+    return im.resize(size, Image.NEAREST if size[1] >= 2 * im.size[1] else Image.LANCZOS)
+
+
+def make_guide(picture: Path, size: int, out: Path, figure: dict | None = None,
+               onto: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
+    """The picture as LTX's first frame, square, on its ground (_on_ground). Without figure: the whole picture fitted
+    in. With figure ({top, ground, x}, 0..1, where the skeleton's standing figure is): the character alone (its
+    mask's box) scaled to the figure's height, its feet on the figure's ground line, its middle on the figure's x
+    (fit_guide). onto: see _on_ground. Returns the ground colour."""
+    return fit_guide(picture, size, out, figure, onto)[0]
+
+
+def fit_guide(picture: Path, size: int, out: Path, figure: dict | None = None,
+              onto: tuple[int, int, int] | None = None) -> tuple[tuple[int, int, int], float]:
+    """make_guide, and how much the skeleton must shrink about its ground point to match (1.0 unless the character
+    is too wide for the frame at the figure's height, when it is made smaller and so must the skeleton)."""
+    from PIL import Image
+
+    rgb, mask, ground = _on_ground(picture, onto)
     sq = Image.new("RGB", (size, size), ground)
-    sq.paste(small, ((size - small.size[0]) // 2, (size - small.size[1]) // 2))
+    shrink = 1.0
+    box = mask.point(lambda a: 255 if a >= 128 else 0).getbbox() if figure else None
+    if box:
+        part = rgb.crop(box)
+        bw, bh = part.size
+        want = (figure["ground"] - figure["top"]) * size
+        k = want / bh
+        if bw * k > 0.96 * size:  # too wide: as wide as fits, and the skeleton made as much smaller
+            shrink = 0.96 * size / (bw * k)
+            k *= shrink
+        small = _resize(part, (max(1, round(bw * k)), max(1, round(bh * k))))
+        left = math.floor(figure["x"] * size - small.size[0] / 2)  # as skeleton-cycle.ts places it
+        top = round(figure["ground"] * size) - small.size[1]
+        sq.paste(small, (left, top))
+    else:
+        w, h = rgb.size
+        s = size / max(w, h)
+        small = rgb.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
+        sq.paste(small, ((size - small.size[0]) // 2, (size - small.size[1]) // 2))
     out.parent.mkdir(parents=True, exist_ok=True)
     sq.save(out)
-    return ground
+    return ground, shrink
 
 
 def _figure_box(im, ground: tuple[int, int, int], lift: Path | None, scratch: Path):
@@ -348,6 +403,61 @@ def fit_side(picture: Path, guide: Path, size: int, out: Path, ground: tuple[int
     sq.paste(fig, (cx - w // 2, front[3] - h), fig)
     sq.save(out)
     return True
+
+
+# ------------------------------------------------------------------ the code-made cycles
+
+def cycle_maker(root: Path) -> tuple[Path, Path] | None:
+    """bun and desktop/frontend/scripts/skeleton-cycle.ts, when both are here (a checkout; the app ships neither)."""
+    bun = shutil.which("bun") or next((str(p) for p in [Path.home() / ".bun" / "bin" / "bun"] if p.is_file()), None)
+    for base in (root, HERE.parent):
+        script = base / CYCLE_MAKER
+        if bun and script.is_file():
+            return Path(bun), script
+    return None
+
+
+def stack_character(folder: Path) -> Path | None:
+    p = folder / "stack" / "character.json"
+    return p if p.is_file() else None
+
+
+def own_cycle(root: Path, folder: Path, cycle: str, facing: str, dest: Path, frames: int, size: int) -> Path | None:
+    """The cycle made for the asset's own sprite-stack character (skeleton-cycle.ts --pose-only), or None when it
+    has none or the maker is not here."""
+    char = stack_character(folder)
+    maker = cycle_maker(root)
+    if not char or not maker:
+        return None
+    dest.mkdir(parents=True, exist_ok=True)
+    bun, script = maker
+    r = subprocess.run([str(bun), str(script), "--character", str(char.parent), "--out", str(dest), "--cycle", cycle,
+                        "--facing", facing, "--frames", str(max(frames, 17)), "--size", str(size), "--pose-only"],
+                       cwd=str(script.parent.parent), stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    made = dest / f"{cycle}_{facing}.pose.json"
+    if r.returncode != 0 or not made.is_file():
+        raise AnimateError(f"skeleton-cycle.ts could not make the {cycle} for this character: "
+                           f"{(r.stderr or r.stdout).strip()[-300:]}")
+    return made
+
+
+def offered(root: Path, stem: str) -> dict:
+    """What Animate offers this asset: the code-made cycles (each facing), whether each is made for the asset's own
+    sprite-stack character or is the walker's, and the other skeletons Pipeline ships. GET /2d/animate/<stem>."""
+    root = Path(root).resolve()
+    folder = stem_dir(root, check_stem(stem))
+    own = bool(stack_character(folder)) and cycle_maker(root) is not None
+    cycles = []
+    for c in SK.CYCLES:
+        for f in SK.FACINGS:
+            meta = SK.info(SK.named(SK.shipped_cycle(c, f)))
+            cycles.append({"cycle": c, "facing": f, "action": c, "skeleton": SK.shipped_cycle(c, f),
+                           "made_for": "this character" if own else "the walker",
+                           "turn_frames": meta["turn_frames"], "cycle_frames": meta["cycle_frames"],
+                           "prompt": SK.cycle_prompt(c, f)})
+    taken = {x["skeleton"] for x in cycles}
+    front = next((n for n in FRONT_PICTURES if (folder / n).is_file()), None)
+    return {"cycles": cycles, "skeletons": [n for n in SK.shipped() if n not in taken], "front_picture": front}
 
 
 # ------------------------------------------------------------------ erasing invented kit (--remove)
@@ -617,13 +727,18 @@ def check_cutouts(frames: list[Path], cutouts: list[Path]) -> list[dict]:
     return rows
 
 
-def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4, dropped: set[int] = frozenset()):
-    """Every every'th cut-out after frame 0 (frame 0 is the guide picture, not a pose), all cropped to the one box
-    that holds the character in every one of them, so the strip's frames line up, then scaled to cell_h tall.
-    A frame in dropped (its cut-out lost the character, check_cutouts) is left out of the strip."""
+def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4, loop: tuple[int, int] | None = None,
+                dropped: set[int] = frozenset()):
+    """Every every'th cut-out after frame 0 (frame 0 is the guide picture, not a pose), or, given loop (start, length:
+    a code-made cycle's one loop after its turn), every every'th frame of that loop, so the strip plays round; all
+    cropped to the one box that holds the character in every one of them, so the strip's frames line up, then scaled
+    to cell_h tall. A frame in dropped (its cut-out lost the character, check_cutouts) is left out of the strip."""
     from PIL import Image
 
-    picks = [p for p in cutouts[1::every] if int(p.stem) not in dropped] or cutouts[:1]
+    picks = []
+    if loop:
+        picks = [p for p in cutouts[loop[0]:loop[0] + loop[1]:every] if int(p.stem) not in dropped]
+    picks = picks or [p for p in cutouts[1::every] if int(p.stem) not in dropped] or cutouts[:1]
     ims = [Image.open(p).convert("RGBA") for p in picks]
     box = None
     for im in ims:
@@ -679,22 +794,30 @@ def fit_control(root: Path, control: list[dict], work: Path) -> tuple[list[dict]
 
 # ------------------------------------------------------------------ the run
 
-def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", action: str = "walk",
+def animate(root: Path, stem: str, *, prompt: str = "", skeleton: str | None = None, action: str | None = None,
             picture: str | None = None, seed: int = 42, frames: int = 73, size: int = 704, every: int = 3,
             cell: int = 256, skeleton_fps: float = FPS, check: bool = True, save: bool = True,
-            side: str | None = None, side_frame: int | None = None, side_strength: float = 0.8,
-            remove: str | None = None, remove_at: str | None = None, keep: str | None = None) -> dict:
+            cycle: str | None = None, facing: str = "right", side: str | None = None, side_frame: int | None = None,
+            side_strength: float = 0.8, remove: str | None = None, remove_at: str | None = None,
+            keep: str | None = None) -> dict:
     from flat2d.atlas import action_name
 
     import flow
 
     root = Path(root).resolve()
     stem = check_stem(stem)
-    action = action_name(action)
+    if cycle:
+        if skeleton:
+            raise AnimateError("give a cycle or a skeleton, not both")
+        skeleton = SK.shipped_cycle(cycle, facing)  # checks both names
+    skeleton = skeleton or "walk_side"
+    action = action_name(action or cycle or "walk")
     folder = stem_dir(root, stem)
     if not folder.is_dir():
         raise AnimateError(f"no asset {stem!r}")
     prompt = " ".join(str(prompt or "").split())
+    if not prompt and cycle:
+        prompt = SK.cycle_prompt(cycle, facing)
     if not prompt:
         raise AnimateError("a prompt is needed, and it must say which way the character faces and moves")
     if frames < 9 or (frames - 1) % 8:
@@ -725,18 +848,18 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
             raise AnimateError("--remove needs the photo-edit model (Qwen-Image-Edit, mflux), which is not set up")
     paths = ltx_paths(root)
     check_ltx(paths)
-    pic = pick_picture(folder, picture)
+    control_src = SK.named(skeleton)
+    pic = pick_picture(folder, picture, front=bool(SK.info(control_src)["turn_frames"]))
     side_found = None
     if side == FIND_SIDE:
-        way = moving_way(skeleton, prompt)
+        way = moving_way(skeleton, prompt)  # a cycle's skeleton is named for its facing (walker_walk_right)
         if way is None:
             raise AnimateError("to use the asset's own side view, the prompt must say whether the character moves "
                                "left or right (\"walks to the right\")")
-        side_pic, facing = find_side(folder, way)
-        side_found = {"facing": facing, "moves": way, "mirrored": facing != way}
+        side_pic, side_facing = find_side(folder, way)
+        side_found = {"facing": side_facing, "moves": way, "mirrored": side_facing != way}
     else:
         side_pic = pick_picture(folder, side) if side else None
-    control_src = SK.named(skeleton)
 
     print("STAGES " + " ".join(REMOVE_STAGES if remove else STAGES), flush=True)
     t0 = time.time()
@@ -749,10 +872,16 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
         shutil.rmtree(work)
     work.mkdir(parents=True)
     try:
+        made_for = None
+        if cycle:
+            own = own_cycle(root, folder, cycle, facing, work / "cycle", frames, size)
+            made_for = "this character" if own else "the walker"
+            control_src = own or control_src
         doc = _run(root, stem, folder, work, paths, pic, control_src, side_pic=side_pic, side_found=side_found,
                    side_frame=side_frame, side_strength=side_strength, remove=remove, keep=keep, picks=picks,
                    prompt=prompt, action=action, seed=seed,
-                   frames=frames, size=size, every=every, cell=cell, skeleton_fps=skeleton_fps, check=check, t0=t0)
+                   frames=frames, size=size, every=every, cell=cell, skeleton_fps=skeleton_fps, check=check, t0=t0,
+                   cycle=cycle, facing=facing, made_for=made_for)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
         raise
@@ -766,12 +895,18 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
 def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path], pic: Path, control_src: Path, *,
          side_pic: Path | None, side_found: dict | None, side_frame: int, side_strength: float,
          remove: str | None, keep: str | None, picks: list[int], prompt: str, action: str, seed: int,
-         frames: int, size: int, every: int, cell: int, skeleton_fps: float, check: bool, t0: float) -> dict:
+         frames: int, size: int, every: int, cell: int, skeleton_fps: float, check: bool, t0: float,
+         cycle: str | None = None, facing: str | None = None, made_for: str | None = None) -> dict:
     from flat2d.atlas import save_cells
     from flat2d.store import write_center
 
+    meta = SK.info(control_src)
+    figure = meta["figure"]
     stage("guide", "Fit the picture")
-    ground = make_guide(pic, size, work / "guide.png")
+    # the picture fitted to the skeleton's standing figure: a character too wide for the frame at that height is made
+    # smaller, and the skeleton with it, about the figure's feet; then the skeleton is refitted to the picture's
+    # own body (fit_control) and drawn
+    ground, shrink = fit_guide(pic, size, work / "guide.png", figure)
     side_fitted = None
     if side_pic is not None:
         side_src = side_pic
@@ -788,7 +923,13 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
     stage("skeleton", "Fit and draw the skeleton video")
     control = SK.fit_frames(SK.retime(SK.load(control_src), skeleton_fps, FPS, frames)
                             if skeleton_fps != FPS else SK.load(control_src), frames)
-    control, fit = fit_control(root, control, work)
+    if shrink < 1.0:
+        control = SK.scale_about(control, figure["x"], figure["ground"], shrink)
+    if made_for == "this character":  # made from this character's own rig: its proportions are already the body's,
+        # and Vision's read of a drawn picture would only bend them (the walker: thighs x1.5, torso x0.64)
+        fit = {"fitted": False, "why": "the cycle is made for this character's own body"}
+    else:
+        control, fit = fit_control(root, control, work)
     (work / "control.json").write_text(json.dumps({"fps": FPS, "fit": fit,
                                                    "frames": [{"joints2d": j} for j in control]}) + "\n")
     SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
@@ -849,7 +990,10 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         print(f"animate: frame {row['frame']} cut-out lost the character ({row['why']}): {row['fix']}", flush=True)
 
     stage("strip", "Pack the sprite strip")
-    cells, picked, box = strip_cells(cut_files, every, cell,
+    loop = None
+    if meta["turn_frames"] and meta["cycle_frames"] and skeleton_fps == FPS:
+        loop = (meta["turn_frames"], meta["cycle_frames"])
+    cells, picked, box = strip_cells(cut_files, every, cell, loop=loop,
                                      dropped={r["frame"] for r in lost if r["fix"] == "dropped"})
     strip_fps = max(1, round(FPS / every))
 
@@ -870,13 +1014,17 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         "machine_generated": True,
         "disclosure": DISCLOSURE,
         "picture": pic.relative_to(folder).as_posix(),
+        "skeleton": control_src.stem if control_src.parent == SK.SKELETONS else
+        f"{cycle}_{facing} (made for this character)" if made_for == "this character" else str(control_src),
+        "cycle": {"name": cycle, "facing": facing, "made_for": made_for, "turn_frames": meta["turn_frames"],
+                  "cycle_frames": meta["cycle_frames"]} if cycle else None,
+        "fitted_to_figure": {**figure, "shrink": round(shrink, 4)} if figure else None,
         "side": {"picture": side_pic.relative_to(folder).as_posix(), "frame": side_frame,
                  "strength": side_strength, "fitted_to_figure": side_fitted,
                  **({"found": True, **side_found} if side_found else {})} if side_pic else None,
         "remove": {"what": remove, "keep": keep, "frames": picks, "strength": KEY_STRENGTH,
                    "edit_model": "Qwen-Image-Edit-2511", "prompt": erase_prompt(remove, keep), "seconds": erase_s,
                    "keys": key_notes} if remove else None,
-        "skeleton": control_src.stem if control_src.parent == SK.SKELETONS else str(control_src),
         "skeleton_fit": fit,
         "prompt": prompt,
         "seed": seed,
@@ -886,6 +1034,7 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         "cutouts": how,
         "lost_cutouts": lost,
         "strip": {"file": f"sheets/{action}.png", "every": every, "from_frames": picked, "box": box,
+                  "loop": list(loop) if loop else None,
                   "cell": {"w": cells[0].size[0], "h": cells[0].size[1]}, "fps": strip_fps},
         "pose_check": {k: v for k, v in pose.items() if k != "per_frame_pct"} if pose else None,
         "ltx_seconds": ltx_s,
@@ -908,10 +1057,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--root", default=str(HERE.parent))
     ap.add_argument("--stem", required=True)
-    ap.add_argument("--prompt", required=True, help="what happens, and which way the character faces")
-    ap.add_argument("--skeleton", default="walk_side", help=f"one of {', '.join(SK.shipped())}, or a .json path")
+    ap.add_argument("--prompt", default="", help="what happens, and which way the character faces (needed unless "
+                    "--cycle, which has its own)")
+    ap.add_argument("--cycle", choices=SK.CYCLES, default=None, help="a code-made cycle (pipeline#14)")
+    ap.add_argument("--facing", choices=SK.FACINGS, default="right", help="which way the --cycle turns to face")
+    ap.add_argument("--skeleton", default=None, help=f"one of {', '.join(SK.shipped())}, or a .json path "
+                    "(default walk_side)")
     ap.add_argument("--skeleton-fps", type=float, default=FPS)
-    ap.add_argument("--action", default="walk")
+    ap.add_argument("--action", default=None, help="the strip's name (default the cycle's, else walk)")
     ap.add_argument("--picture", default=None, help="a picture under out/<stem>/ (default: the concept still)")
     ap.add_argument("--side", nargs="?", const=FIND_SIDE, default=None,
                     help="a side view under out/<stem>/, facing the way the character moves: a second guide. "
@@ -936,7 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         animate(Path(a.root), a.stem, prompt=a.prompt, skeleton=a.skeleton, action=a.action, picture=a.picture,
                 seed=a.seed, frames=a.frames, size=a.size, every=a.every, cell=a.cell, skeleton_fps=a.skeleton_fps,
-                check=not a.no_check, side=a.side, side_frame=a.side_frame, side_strength=a.side_strength,
+                check=not a.no_check, cycle=a.cycle, facing=a.facing,
+                side=a.side, side_frame=a.side_frame, side_strength=a.side_strength,
                 remove=a.remove, remove_at=a.remove_frames, keep=a.keep)
     except (AnimateError, SK.SkeletonError, ValueError) as e:
         print(f"animate: {e}", file=sys.stderr, flush=True)

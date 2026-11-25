@@ -23,6 +23,7 @@ POST /generate
 POST /2d/draw            a 2D still (or Ideas) as a job: /status, /cancel
 POST /2d/building        a building's walls drawn, then built as a sprite stack (scripts/stack_building.py), as a job
 POST /2d/animate/<stem>  a character picture plus a skeleton clip animated by LTX-2.3 (scripts/animate.py), as a job
+GET  /2d/animate/<stem>  what Animate offers the asset: the code-made walk, run and attack, each facing right or left
 GET  /2d/skeletons       the skeleton clips Pipeline ships, for Animate's picker: {name, label, action}
 POST /2d/join            buildings already made joined into a row or a corner (scripts/stack_join.py), no model
 POST /2d/tower           a building already made stepped up into a tower (scripts/stack_tower.py), no model
@@ -424,13 +425,16 @@ def render_argv(python: Path | str, root: Path, stem: str, job: Any) -> list[str
 
 def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]) -> list[str]:
     """scripts/animate.py's command line from a POST /2d/animate/<stem> body, checked: {"prompt" (required: what
-    happens and which way the character faces), "skeleton"?: a skeleton Pipeline ships (scripts/skeletons/,
-    default walk_side), "action"?: the strip's name (default walk), "picture"?: a picture under out/<stem>/ (default
-    the concept still), "seed"?, "frames"?: 8k+1 (default 73), "size"?: 256 to 1024 in 32s (default 704),
-    "every"?: every n'th frame goes in the strip (default 3), "side"?: a side view under out/<stem>/ as a second
-    guide (true: the asset's own side view, turned to face the way the prompt says), "side_frame"?: the frame it
-    guides (default 24), "remove"?: kit the model invents, erased from a first pass's frames that then guide a
-    second (like "backpack"), "keep"?: with remove, kit that must stay}."""
+    happens and which way the character faces; may be left out with a cycle), "cycle"?: walk, run or attack, a
+    code-made cycle (made for the asset's own sprite-stack character when it can be, else the walker's), "facing"?:
+    right or left (with cycle, default right), or "skeleton"?: a skeleton Pipeline ships (scripts/skeletons/,
+    default walk_side), "action"?: the strip's name (default the cycle's, else walk), "picture"?: a picture under
+    out/<stem>/ (default the concept still; with a cycle the front view), "seed"?, "frames"?: 8k+1 (default 73),
+    "size"?: 256 to 1024 in 32s (default 704), "every"?: every n'th frame goes in the strip (default 3), "side"?: a
+    side view under out/<stem>/ as a second guide (true: the asset's own side view, turned to face the way the
+    character moves), "side_frame"?: the frame it guides (default 24), "remove"?: kit the model invents, erased
+    from a first pass's frames that then guide a second (like "backpack"), "keep"?: with remove, kit that must
+    stay}."""
     import skeleton as SK
     from flat2d.atlas import action_name
     from flat2d.store import FlatError
@@ -438,6 +442,16 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     if not isinstance(body, dict):
         raise ValueError("body must be a JSON object")
     prompt = " ".join(str(body.get("prompt") or "").split())
+    cycle = body.get("cycle")
+    if cycle not in (None, ""):
+        if body.get("skeleton") not in (None, ""):
+            raise ValueError("give a cycle or a skeleton, not both")
+        facing = body.get("facing") or "right"
+        if cycle not in SK.CYCLES:
+            raise ValueError(f"cycle must be one of {', '.join(SK.CYCLES)}")
+        if facing not in SK.FACINGS:
+            raise ValueError(f"facing must be one of {', '.join(SK.FACINGS)}")
+        prompt = prompt or SK.cycle_prompt(cycle, facing)
     if not prompt:
         raise ValueError("prompt is required, and must say which way the character faces and moves")
     if len(prompt) > 2000:
@@ -446,11 +460,13 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     if name not in SK.shipped():
         raise ValueError(f"skeleton must be one of {', '.join(SK.shipped())}")
     try:
-        action = action_name(str(body.get("action") or "walk"))
+        action = action_name(str(body.get("action") or cycle or "walk"))
     except FlatError as e:
         raise ValueError(str(e)) from None
     argv = [str(python), str(root / "scripts" / "animate.py"), "--root", str(root), "--stem", stem,
-            "--prompt", prompt, "--skeleton", name, "--action", action]
+            "--prompt", prompt]
+    argv += ["--cycle", cycle, "--facing", facing] if cycle not in (None, "") else ["--skeleton", name]
+    argv += ["--action", action]
     picture = body.get("picture")
     if picture not in (None, ""):
         rel = str(picture)
@@ -1884,6 +1900,16 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             return _json_bytes({"ok": False, "error": str(e)}, 400)
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+    if method == "GET" and len(parts) == 3 and parts[0] == "2d" and parts[1] == "animate":
+        import animate
+
+        try:
+            stem = check_stem(parts[2])
+            if not stem_dir(factory.root, stem).is_dir():
+                return _json_bytes({"ok": False, "error": f"no asset {stem!r}"}, 404)
+            return _json_bytes({"ok": True, **animate.offered(factory.root, stem)})
+        except ValueError as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
     if method == "GET" and path == "/2d/skeletons":  # before GET /2d/<stem>, which would take it for an asset
         import skeleton as SK
 
@@ -2016,6 +2042,7 @@ def _dispatch(
                     "POST /2d/draw",
                     "POST /2d/building",
                     "POST /2d/animate/<stem>",
+                    "GET /2d/animate/<stem>",
                     "GET /2d/skeletons",
                     "POST /2d/join",
                     "POST /2d/tower",

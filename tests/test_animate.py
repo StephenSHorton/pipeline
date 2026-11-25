@@ -21,7 +21,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -34,6 +34,13 @@ import skeleton as SK  # noqa: E402
 from test_factory_http import http_json  # noqa: E402
 
 FFMPEG = shutil.which("ffmpeg")
+CYCLE_MAKER = A.cycle_maker(ROOT)
+# the walker's rig (out/walker/stack/character.json, pipeline#6) without its parts: what skeleton-cycle.ts reads
+WALKER = {"format": "pipeline-sprite-character", "version": 1, "stem": "walker", "height": 64, "parts": [],
+          "rig": {"thigh": 9, "shin": 9, "ankle": 4, "hipHalf": 4.5, "hipFwd": -2.0, "kneeHint": 1, "standHip": 21.28,
+                  "stride": 28.6, "duty": 0.6, "lift": 3.06, "bob": 0.55, "twist": 0.14, "spine": 26, "neck": 28,
+                  "arms": True, "shoulderHalf": 9.5, "shoulderFwd": -3.0, "upperArm": 12, "foreArm": 13,
+                  "armSwing": 0.45}}
 
 FAKE_CLI = '''
 import json, os, subprocess, sys
@@ -112,6 +119,18 @@ def make_root(base: Path, stem: str = "op") -> Path:
     return root
 
 
+def add_front_view(root: Path, stem: str = "op") -> Path:
+    """A drawn front view, a cut-out (transparent ground): a figure 40 wide and 100 tall at (30..70, 10..110)."""
+    im = Image.new("RGBA", (100, 120), (0, 0, 0, 0))
+    for y in range(10, 110):
+        for x in range(30, 70):
+            im.putpixel((x, y), (180, 40, 40, 255))
+    p = root / "out" / stem / "flat" / "views" / "front.png"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    im.save(p)
+    return p
+
+
 def man_files(root: Path, take_id: str) -> list[str]:
     man = json.loads((root / "out" / "op" / "flow.json").read_text())
     return next(t for t in man["stages"]["flat"]["takes"] if t["id"] == take_id)["files"]
@@ -124,6 +143,26 @@ class SkeletonTests(unittest.TestCase):
         self.assertEqual(len(frames), 73)
         for name in ("head_joint", "left_foot_joint", "right_hand_joint"):
             self.assertIn(name, frames[0])
+
+    def test_code_cycles_ship_with_their_figure(self):
+        for cycle, loop in (("walk", 28), ("run", 18), ("attack", 24)):
+            for facing in SK.FACINGS:
+                name = SK.shipped_cycle(cycle, facing)
+                self.assertIn(name, SK.shipped())
+                meta = SK.info(SK.named(name))
+                self.assertEqual((meta["frames"], meta["turn_frames"], meta["cycle_frames"]), (73, 16, loop))
+                self.assertEqual(meta["figure"], {"top": 0.0909, "ground": 0.9091, "x": 0.5})
+        self.assertIsNone(SK.info(SK.named("walk_side"))["figure"])
+        with self.assertRaises(SK.SkeletonError):
+            SK.shipped_cycle("dance", "right")
+        with self.assertRaises(SK.SkeletonError):
+            SK.shipped_cycle("walk", "up")
+        self.assertIn("turns to face left", SK.cycle_prompt("run", "left"))
+
+    def test_scale_about_keeps_the_feet(self):
+        got = SK.scale_about([{"a": [0.5, 0.9, 1], "b": [0.7, 0.1, 0.8]}], 0.5, 0.9, 0.5)
+        self.assertEqual(got[0]["a"], [0.5, 0.9, 1])
+        self.assertEqual([round(v, 4) for v in got[0]["b"]], [0.6, 0.5, 0.8])
 
     def test_unknown_skeleton_is_refused(self):
         with self.assertRaises(SK.SkeletonError):
@@ -648,6 +687,85 @@ class AnimateTests(unittest.TestCase):
         with Image.open(g) as im:
             self.assertEqual(im.getpixel((5, 128)), (255, 255, 255))
 
+    def test_guide_fitted_to_the_figure(self):
+        """A code cycle's figure box: the character's own box scaled to it, feet on its ground, centred on it."""
+        fig = {"top": 0.0909, "ground": 0.9091, "x": 0.5}
+        g = self.root / "g.png"
+        ground, shrink = A.fit_guide(add_front_view(self.root), 704, g, fig)
+        self.assertEqual((ground, shrink), ((255, 255, 255), 1.0))
+        with Image.open(g) as im:
+            box = ImageChops.invert(im.convert("L")).point(lambda v: 255 if v > 40 else 0).getbbox()
+        self.assertEqual(box[1], 64)  # top: 0.0909 of 704
+        self.assertEqual(box[3], 640)  # ground: 0.9091 of 704 (exclusive)
+        self.assertAlmostEqual((box[0] + box[2]) / 2, 352, delta=1)
+        self.assertAlmostEqual(box[2] - box[0], 40 * 576 / 100, delta=2)  # the same shape, scaled
+        # A character too wide for the frame at that height is made smaller, and says how much.
+        wide = Image.new("RGBA", (400, 100), (10, 10, 10, 255))
+        wide.save(self.root / "wide.png")
+        _, shrink = A.fit_guide(self.root / "wide.png", 704, g, fig)
+        self.assertAlmostEqual(shrink, 0.96 * 704 / (400 * 5.76), places=3)
+        # The light-grey operator picture (no transparency): its ground is kept, the figure still fitted.
+        self.assertEqual(A.fit_guide(self.root / "out" / "op" / "input.png", 704, g, fig)[0], (222, 224, 221))
+        with Image.open(g) as im:
+            self.assertEqual(im.getpixel((352, 300)), (60, 80, 50))
+            self.assertEqual(im.getpixel((352, 50)), (222, 224, 221))
+
+    def test_a_code_cycle(self):
+        add_front_view(self.root)
+        # no sprite-stack character here anyway; the refit to the picture's body (fit_control) is left out so the
+        # cycle that went in can be compared with the shipped one
+        with mock.patch.object(A, "cycle_maker", return_value=None), \
+                mock.patch.object(A, "fit_control", side_effect=lambda root, c, work: (c, {"fitted": False})):
+            doc = self.run_it(prompt="", cycle="run", facing="left")
+        self.assertEqual(doc["skeleton"], "walker_run_left")
+        self.assertEqual(doc["cycle"], {"name": "run", "facing": "left", "made_for": "the walker", "turn_frames": 16,
+                                        "cycle_frames": 18})
+        self.assertEqual(doc["picture"], "flat/views/front.png")  # it starts facing the camera
+        self.assertIn("turns to face left", doc["prompt"])
+        self.assertEqual(doc["fitted_to_figure"]["shrink"], 1.0)
+        # The strip is the loop after the turn (frames 16 on), not the turn: 25 frames hold 16, 19 and 22 of it.
+        self.assertEqual(doc["strip"]["loop"], [16, 18])
+        self.assertEqual(doc["strip"]["from_frames"], [16, 19, 22])
+        anim = self.root / "out" / "op" / "flat" / "anim" / "run"
+        self.assertTrue((anim / "anim.json").is_file())
+        control = json.loads((anim / "control.json").read_text())["frames"]
+        shipped = SK.load(SK.named("walker_run_left"))
+        self.assertEqual(len(control), 25)
+        self.assertEqual(control[20]["joints2d"]["left_foot_joint"], shipped[20]["left_foot_joint"])
+        with self.assertRaises(A.AnimateError):
+            self.run_it(cycle="run", skeleton="walk_side")
+        with self.assertRaises(SK.SkeletonError):
+            self.run_it(cycle="dance")
+
+    @unittest.skipUnless(CYCLE_MAKER, "needs bun and desktop/frontend/scripts/skeleton-cycle.ts")
+    def test_a_sprite_stack_character_gets_its_own_cycle(self):
+        add_front_view(self.root)
+        (self.root / "out" / "op" / "stack").mkdir()
+        (self.root / "out" / "op" / "stack" / "character.json").write_text(json.dumps(WALKER))
+        with mock.patch.object(A, "cycle_maker", return_value=CYCLE_MAKER):
+            self.assertEqual(A.offered(self.root, "op")["cycles"][0]["made_for"], "this character")
+            doc = self.run_it(prompt="", cycle="attack", size=704)  # the size the shipped ones are made at
+        self.assertEqual(doc["cycle"]["made_for"], "this character")
+        self.assertFalse(doc["skeleton_fit"]["fitted"])  # its own body already: not refitted to the picture
+        anim = self.root / "out" / "op" / "flat" / "anim" / "attack"
+        self.assertTrue((anim / "cycle" / "attack_right.pose.json").is_file())
+        # Made for the walker's own body, it is the walker's shipped attack, frame for frame.
+        control = json.loads((anim / "control.json").read_text())["frames"]
+        shipped = SK.load(SK.named("walker_attack_right"))
+        self.assertEqual([f["joints2d"] for f in control], shipped[:25])
+
+    def test_offered(self):
+        with mock.patch.object(A, "cycle_maker", return_value=None):
+            got = A.offered(self.root, "op")
+        self.assertEqual([(c["cycle"], c["facing"]) for c in got["cycles"]],
+                         [(c, f) for c in ("walk", "run", "attack") for f in ("right", "left")])
+        self.assertEqual({c["made_for"] for c in got["cycles"]}, {"the walker"})
+        self.assertIn("walk_side", got["skeletons"])
+        self.assertNotIn("walker_walk_right", got["skeletons"])
+        self.assertIsNone(got["front_picture"])
+        add_front_view(self.root)
+        self.assertEqual(A.offered(self.root, "op")["front_picture"], "flat/views/front.png")
+
     def test_refusals(self):
         with self.assertRaises(A.AnimateError):
             self.run_it(prompt="  ")
@@ -721,6 +839,25 @@ class RouteTests(unittest.TestCase):
             code, doc = self.post({"prompt": "walks right"})
         self.assertEqual(code, 400)
         self.assertIn("LoRA", doc["error"])
+        self.assertEqual(http_json(self.base_url + "/status")[1]["state"], "idle")
+
+    def test_offers_the_code_cycles(self):
+        code, doc = http_json(self.base_url + "/2d/animate/op")
+        self.assertEqual(code, 200, doc)
+        self.assertEqual(len(doc["cycles"]), 6)
+        self.assertEqual(doc["cycles"][0]["skeleton"], "walker_walk_right")
+        self.assertEqual(http_json(self.base_url + "/2d/animate/nobody")[0], 404)
+
+    def test_cycle_requests(self):
+        argv = factory_http.animate_argv("py", self.root, "op", {"cycle": "attack", "facing": "left"})
+        self.assertEqual(argv[argv.index("--cycle") + 1], "attack")
+        self.assertEqual(argv[argv.index("--facing") + 1], "left")
+        self.assertEqual(argv[argv.index("--action") + 1], "attack")
+        self.assertIn("turns to face left", argv[argv.index("--prompt") + 1])
+        self.assertNotIn("--skeleton", argv)
+        self.assertEqual(self.post({"cycle": "dance"})[0], 400)
+        self.assertEqual(self.post({"cycle": "walk", "facing": "up"})[0], 400)
+        self.assertEqual(self.post({"cycle": "walk", "skeleton": "walk_side"})[0], 400)
         self.assertEqual(http_json(self.base_url + "/status")[1]["state"], "idle")
 
     def test_skeleton_list(self):
