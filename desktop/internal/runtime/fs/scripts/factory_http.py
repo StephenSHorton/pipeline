@@ -250,6 +250,8 @@ STAGE_LABELS = {
     # scripts/animate.py
     "guide": "Fit the picture",
     "skeleton": "Fit and draw the skeleton video",
+    "first_pass": "First pass with LTX-2.3",
+    "erase": "Erase the invented kit",
     "ltx": "Animate with LTX-2.3",
     "frames": "Cut the frames",
     "cutouts": "Cut out the character",
@@ -430,7 +432,9 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     out/<stem>/ (default the concept still; with a cycle the front view), "seed"?, "frames"?: 8k+1 (default 73),
     "size"?: 256 to 1024 in 32s (default 704), "every"?: every n'th frame goes in the strip (default 3), "side"?: a
     side view under out/<stem>/ as a second guide (true: the asset's own side view, turned to face the way the
-    character moves), "side_frame"?: the frame it guides (default 24)}."""
+    character moves), "side_frame"?: the frame it guides (default 24), "remove"?: kit the model invents, erased
+    from a first pass's frames that then guide a second (like "backpack"), "keep"?: with remove, kit that must
+    stay}."""
     import skeleton as SK
     from flat2d.atlas import action_name
     from flat2d.store import FlatError
@@ -477,6 +481,15 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
         if rel.startswith("/") or ".." in Path(rel).parts:
             raise ValueError("side must be a path inside the asset")
         argv += ["--side", rel]
+    for key, most in (("remove", 120), ("keep", 200)):
+        text = " ".join(str(body.get(key) or "").split())
+        if not text:
+            continue
+        if len(text) > most:
+            raise ValueError(f"{key} is too long: a few words")
+        argv += [f"--{key}", text]
+    if "--keep" in argv and "--remove" not in argv:
+        raise ValueError("keep goes with remove")
     for key, lo, hi in (("seed", 0, 2**31 - 1), ("frames", 9, 257), ("size", 256, 1024), ("every", 1, 12),
                          ("side_frame", 1, 256)):
         if body.get(key) in (None, ""):

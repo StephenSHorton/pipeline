@@ -7,6 +7,8 @@ About 40 GB at its peak and a minute or two, so it only runs when asked, on a Ma
 scripts/bootstrap.sh animate:
 
     PIPELINE_LTX_TEST=1 .venv/bin/python -m pytest -q tests/test_animate_ltx.py -s
+
+PIPELINE_LTX_REMOVE=1 as well runs the walk with --remove backpack (two passes and Qwen-Image-Edit, about 8 min).
 """
 from __future__ import annotations
 
@@ -47,6 +49,16 @@ def ready() -> str | None:
 @unittest.skipIf(ready(), ready() or "")
 class WalkTheOperator(unittest.TestCase):
     def test_walk_follows_the_skeleton(self):
+        self.walk()
+
+    @unittest.skipIf(os.environ.get("PIPELINE_LTX_REMOVE") != "1", "set PIPELINE_LTX_REMOVE=1 too (about 8 min)")
+    def test_walk_with_the_backpack_erased(self):
+        # Two LTX passes and the photo-edit model between them: still within the limit, the kit named in anim.json.
+        doc = self.walk(remove="backpack", keep="chest rig, radio and pouches on his chest")
+        self.assertEqual(doc["remove"]["frames"], [24, 48, 72])
+        self.assertTrue(all(k["pose_pct"] is not None for k in doc["remove"]["keys"]))
+
+    def walk(self, **kw):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "scripts").symlink_to(ROOT / "scripts")
@@ -61,7 +73,7 @@ class WalkTheOperator(unittest.TestCase):
                 (root / "bin").mkdir()
                 (root / "bin" / "lift-subject").symlink_to(lift)
             with mock.patch.dict(os.environ, env):
-                doc = A.animate(root, "operator", prompt=PROMPT, skeleton="walk_side", action="walk", seed=42)
+                doc = A.animate(root, "operator", prompt=PROMPT, skeleton="walk_side", action="walk", seed=42, **kw)
             check = doc["pose_check"]
             print(json.dumps({"pose_check": check, "ltx_seconds": doc["ltx_seconds"], "seconds": doc["seconds"],
                               "cutouts": doc["cutouts"]}, indent=1))
@@ -71,6 +83,7 @@ class WalkTheOperator(unittest.TestCase):
             work = root / "out" / "operator" / "flat"
             self.assertEqual(len(list((work / "anim" / "walk" / "cutouts").glob("*.png"))), 73)
             self.assertTrue((work / "sheets" / "walk.png").is_file())
+            return doc
 
 
 if __name__ == "__main__":
