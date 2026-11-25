@@ -174,6 +174,83 @@ class LtxRunTests(unittest.TestCase):
         self.assertEqual(out.reshape(1, -1, 4)[0, -1, 0], tokens[0, 17, 0])
 
 
+class LostCutoutTests(unittest.TestCase):
+    """A cut-out that lost the character's legs (Apple Vision drops motion-blurred ones) is found by its size
+    against the frames around it, redone against the ground behind it, or else left out of the strip."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        (self.base / "frames").mkdir()
+        (self.base / "cutouts").mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def make(self, n=15, cut_legs=(), no_legs=()):
+        """A dark figure on a light ground that shades left to right (as a studio floor does, so one ground colour
+        cannot key it): a body and a leg that swings. Cut-outs are the figure, minus the legs in cut_legs; a frame
+        in no_legs has no legs in the picture either."""
+        from PIL import ImageDraw
+
+        frames, cuts = [], []
+        for i in range(n):
+            im = Image.new("RGB", (96, 96))
+            px = im.load()
+            for x in range(96):
+                for y in range(96):
+                    px[x, y] = (230 - x, 230 - x, 228 - x)
+            cut = Image.new("RGBA", (96, 96), (0, 0, 0, 0))
+            leg_x = 30 + (i * 7) % 30
+            for d in (ImageDraw.Draw(im), ImageDraw.Draw(cut)):
+                d.rectangle((38, 10, 56, 50), fill=(40, 60, 40, 255))
+            if i not in no_legs:
+                ImageDraw.Draw(im).rectangle((leg_x, 51, leg_x + 8, 88), fill=(30, 40, 30))
+                if i not in cut_legs:
+                    ImageDraw.Draw(cut).rectangle((leg_x, 51, leg_x + 8, 88), fill=(30, 40, 30, 255))
+            f, c = self.base / "frames" / f"{i:04d}.png", self.base / "cutouts" / f"{i:04d}.png"
+            im.save(f)
+            cut.save(c)
+            frames.append(f)
+            cuts.append(c)
+        return frames, cuts
+
+    def test_whole_cutouts_are_left_alone(self):
+        frames, cuts = self.make()
+        before = [c.read_bytes() for c in cuts]
+        self.assertEqual(A.check_cutouts(frames, cuts), [])
+        self.assertEqual([c.read_bytes() for c in cuts], before)
+
+    def test_lost_legs_are_found_by_size_and_feet(self):
+        shapes = [(1000, 10, 90)] * 9
+        shapes[2] = (600, 10, 90)  # much of the character gone
+        shapes[4] = (950, 10, 60)  # the feet gone: shorter, its lowest point well above the others'
+        lost = A.lost_frames(shapes, 100)
+        self.assertEqual(sorted(lost), [2, 4])
+        self.assertIn("area", lost[2])
+
+    def test_lost_legs_are_put_back_from_the_ground_behind(self):
+        frames, cuts = self.make(cut_legs=(7,))
+        rows = A.check_cutouts(frames, cuts)
+        self.assertEqual([(r["frame"], r["fix"]) for r in rows], [(7, "repaired")])
+        with Image.open(cuts[7]) as im:
+            alpha = im.getchannel("A")
+            leg_x = 30 + (7 * 7) % 30
+            self.assertGreater(alpha.getpixel((leg_x + 4, 80)), 200)  # the leg is back
+            self.assertEqual(alpha.getpixel((5, 80)), 0)  # the shaded ground is not
+            self.assertGreater(alpha.getpixel((45, 30)), 200)  # the body stays
+        self.assertFalse(list((self.base / "cutouts").glob("*.redo.png")))
+
+    def test_a_cutout_that_cannot_be_put_back_is_left_out_of_the_strip(self):
+        frames, cuts = self.make(n=22, no_legs=(7,))
+        rows = A.check_cutouts(frames, cuts)
+        self.assertEqual([(r["frame"], r["fix"]) for r in rows], [(7, "dropped")])
+        cells, picked, _ = A.strip_cells(cuts, 3, 64, dropped={7})
+        self.assertNotIn(7, picked)
+        self.assertEqual(picked, [1, 4, 10, 13, 16, 19])
+        self.assertEqual(len(cells), 6)
+
+
 @unittest.skipUnless(FFMPEG, "needs ffmpeg")
 class AnimateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -226,6 +303,7 @@ class AnimateTests(unittest.TestCase):
         self.assertIn("LTX-2 Community License", doc["licence"])
         self.assertEqual(doc["skeleton"], "walk_side")
         self.assertEqual(doc["frames"], 25)
+        self.assertIsInstance(doc["lost_cutouts"], list)
 
         # A new 2D Version holds all of it.
         man = json.loads((self.root / "out" / "op" / "flow.json").read_text())

@@ -73,6 +73,14 @@ short (moving joints 16.6%, 18.7% in the cycle). **Three of the 24 strip cells a
 the motion blur on the legs makes Vision's cut-out drop the legs, so the cell is a floating torso. The strip needs
 those cells dropped or the cut-out redone before use.
 
+**Since pipeline#25** Animate catches these itself: a cut-out much smaller than the frames around it (area under
+80% of theirs, height under 90%, or its lowest point more than 5% of the frame above theirs) is redone against the
+ground those frames show behind it (the camera is still, so their median, where they have no character, is a
+picture of the bare ground), and the strip leaves out any it cannot redo. One ground colour cannot key this clip:
+the studio floor shades from about 130 to 235 grey across a row. A re-run of run left (seed 42, same skeleton,
+the clip differs from the one above) lost the legs or feet in frames 28, 38, 48, 52 and 64; all five were redone
+and the strip's 24 cells all have legs. Faint floor shadow can stay at the boots of a redone cell.
+
 ![run left](animate-operator-cycles/run_left.jpg)
 
 ### Attack right: 10.20%
