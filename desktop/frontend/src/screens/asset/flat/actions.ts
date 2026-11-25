@@ -2,9 +2,11 @@
 // index.html 4093-4211). Side effects only through startJob, askConfirm and /2d/steps, so the tests mock those.
 import { displayStem, startJob, useJobs } from "@/lib/jobs";
 import { askConfirm } from "@/lib/ui";
-import type { FlatMode } from "@/lib/flow";
+import { enc } from "@/lib/api";
 import { clipFields, postSteps } from "./api";
 import {
+  animateBlock,
+  animateBody,
   applyAudio,
   applySteps,
   audioBody,
@@ -15,6 +17,8 @@ import {
   STEP_RUNNING,
   type AudioRow,
   type SheetState,
+  type Skeleton,
+  type StepMode,
 } from "./flat";
 
 /** Redraw specs started here: their finish toasts here ("Redrawn: <name>"), not on Home. */
@@ -43,13 +47,30 @@ export async function redraw(stem: string, prompt: string): Promise<{ status: st
   return { status: "", started: true };
 }
 
+/** Animate specs started here: their end is said on the 2D status line. */
+export const animateSpecs = new WeakSet<object>();
+
+/**
+ * Animate mode: a job (POST /2d/animate/<stem>) in the slot, followed in the stage's own progress card (watch false:
+ * no Home job card). Returns the status line when it cannot start, else started.
+ */
+export function animate(stem: string, prompt: string, skeleton: string, list: Skeleton[]): { status: string; started: boolean } {
+  const block = animateBlock(prompt, skeleton, anyRunning() || useJobs.getState().busy);
+  if (block) return { status: block, started: false };
+  // stem rides along so a refused start still names the asset on the chip; the route reads only its own keys.
+  const spec = { stem, ...animateBody(prompt, skeleton, list) };
+  animateSpecs.add(spec);
+  void startJob(spec, { path: `/2d/animate/${enc(stem)}`, kind: "animate", title: `Animating ${displayStem(stem)}`, watch: false });
+  return { status: "", started: true };
+}
+
 export type StepResult = (SheetState & { hear: string; status: string; ok: true }) | { ok: false; status: string };
 
 /** Motion / Pieces / Say / Sound: one step at once on the selected part (or the asset row). `onRunning` gets the
  * running text before the POST. */
 export async function reviseStep(
   stem: string,
-  mode: Exclude<FlatMode, "picture">,
+  mode: StepMode,
   prompt: string,
   sheet: SheetState,
   audioAsset: AudioRow | null,

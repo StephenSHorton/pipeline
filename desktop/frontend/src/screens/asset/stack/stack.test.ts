@@ -2,6 +2,7 @@
 // stack-lab.js. Mirrors tests/test_stack_looks.py (voxel default, "Parked", Main's title, round 0.45, full orbit)
 // and the stack half of tests/test_pixel_look.py (the step-bar Pixel's title).
 import { describe, expect, it } from "vitest";
+import { CYCLES } from "./character/skeleton";
 import {
   buildingStack,
   CUBBY_DEFAULT,
@@ -13,6 +14,9 @@ import {
   hexToRgb,
   LOOK_BUTTONS,
   lookLabel,
+  MOTION_BUTTONS,
+  MOTION_DEFAULT,
+  motionFromSearch,
   openCubby,
   ORBIT,
   PAINT_COPY,
@@ -49,6 +53,7 @@ describe("copy", () => {
       generating: "Generating…",
       noStack: "No sprite stack",
       lookBlurb: "Voxel cubes are what the game uses. Sprite draws each layer as a flat pixel picture, outlined. Plane and Contour are older experiments.",
+      motion: "Motion",
       paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
       paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
     });
@@ -97,7 +102,7 @@ describe("copy", () => {
   });
 
   it("the cubbies: Look open by default, one open at a time", () => {
-    expect(CUBBY_LABELS).toEqual({ "stack-look": "Look", "stack-sliders": "Shape", "stack-palette": "Colors", paint: "Paint" });
+    expect(CUBBY_LABELS).toEqual({ "stack-look": "Look", "stack-sliders": "Shape", "stack-palette": "Colors", paint: "Paint", tower: "Tower" });
     expect(CUBBY_DEFAULT).toBe("stack-look");
     expect(openCubby("stack-look", "stack-palette")).toBe("stack-palette");
     expect(openCubby("stack-look", "stack-look")).toBeNull();
@@ -308,5 +313,18 @@ describe("the camera and the build state", () => {
     expect(buildingStack(j("", "running", "cow"), "hen")).toBe(false);
     for (const k of ["flat2d", "ideas", "rig", "render"]) expect(buildingStack(j(k), "hen")).toBe(false);
     expect(buildingStack(null, "hen")).toBe(false);
+  });
+});
+
+describe("a walking character's motion (pipeline#15)", () => {
+  it("offers the rig's walk first, then every skeleton cycle", () => {
+    expect(MOTION_DEFAULT).toBe("rig");
+    expect(MOTION_BUTTONS.map((b) => b.motion)).toEqual(["rig", ...CYCLES]);
+    expect(MOTION_BUTTONS.map((b) => b.label)).toEqual(["Rig walk", "Walk", "Run", "Attack"]);
+  });
+  it("opens on ?motion=, else the rig's walk", () => {
+    expect(motionFromSearch("?motion=run")).toBe("run");
+    expect(motionFromSearch("?motion=dance")).toBe("rig");
+    expect(motionFromSearch("")).toBe("rig");
   });
 });

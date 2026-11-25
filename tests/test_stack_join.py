@@ -72,6 +72,54 @@ class JoinTests(unittest.TestCase):
         main_right = SJ.read_part(self.root, "a")["wall"][3]
         self.assertTrue(solid[aw[0], : L // 3, main_right + 2 :].any())
 
+    def test_a_corner_has_one_roof_with_no_parapet_where_its_parts_meet(self) -> None:
+        out = SJ.write_joined(self.root, "corner1", [("a", 0), ("wing", 0)], "corner", line=lambda t: None)
+        roof = out["roof"]
+        self.assertTrue(roof["one"])
+        meta = json.loads((self.root / "out" / "corner1" / "stack" / "stack.json").read_text())
+        self.assertTrue(meta["joined"]["roof"]["one"])
+        slices = np.stack(SB.read_sheet_slices(self.root / "out" / "corner1" / "stack"))
+        solid = slices[..., 3] > 127
+        D, P = roof["deck"], roof["parapet"]
+        main = out["parts"][0]
+        (my, mx), (_, ml, mw) = main["at"], main["size"]
+        ma = SJ.read_part(self.root, "a")
+        my0, _, mx0, mx1 = ma["wall"]
+        # Where the parts meet: the main building's back wall, under the wing. Find it in the joined slices.
+        ys, xs = np.nonzero(solid.any(axis=0))
+        oy, ox = int(ys.min()), int(xs.min())
+        seam_y = oy + my + my0
+        wing_x = slice(ox + mx + mx1 - 2 * roof["rim"] - 2, ox + mx + mx1 - 2 * roof["rim"])  # inside the wing's span
+        # No parapet over the seam: open sky over the deck there, and deck colour at the deck layer.
+        self.assertFalse(solid[D + 1 : D + P + 1, seam_y - 1 : seam_y + 2, wing_x].any())
+        self.assertTrue(solid[D, seam_y - 1 : seam_y + 2, wing_x].all())
+        deck_rgb = slices[D, seam_y, wing_x.start, :3]
+        centre = slices[D, oy + my + (my0 + ma["wall"][1]) // 2, ox + mx + (mx0 + mx1) // 2, :3]
+        np.testing.assert_array_equal(deck_rgb, centre)
+        # The parapet still runs round the outside: the main building's front edge.
+        front_y = oy + my + ma["wall"][1]
+        self.assertTrue(solid[D + P, front_y - roof["rim"] + 1 : front_y + 1, ox + mx + (mx0 + mx1) // 2].any())
+        # The deck is one region: every deck cell open to the sky is joined to every other.
+        from scipy import ndimage
+        open_deck = solid[D] & ~solid[D + 1 :].any(axis=0)
+        self.assertEqual(ndimage.label(open_deck)[1], 1)
+
+    def test_a_row_keeps_each_buildings_parapet(self) -> None:
+        out = SJ.write_joined(self.root, "row1", [("a", 0), ("a", 0)], "row", line=lambda t: None)
+        self.assertIsNone(out["roof"])
+        slices = np.stack(SB.read_sheet_slices(self.root / "out" / "row1" / "stack"))
+        solid = slices[..., 3] > 127
+        ra = SJ.roof_of(SJ.read_part(self.root, "a"))
+        open_deck = solid[ra["deck"]] & ~solid[ra["deck"] + 1 :].any(axis=0)
+        from scipy import ndimage
+        self.assertEqual(ndimage.label(open_deck)[1], 2)  # two decks, a parapet between them
+
+    def test_a_gable_part_keeps_the_parts_roofs(self) -> None:
+        out = SJ.write_joined(self.root, "corner2", [("b", 0), ("wing", 0)], "corner", line=lambda t: None)
+        self.assertFalse(out["roof"]["one"])
+        self.assertIsNone(SJ.roof_of(SJ.read_part(self.root, "b")))
+        self.assertIsNotNone(SJ.roof_of(SJ.read_part(self.root, "a")))
+
     def test_turns_and_bad_joins(self) -> None:
         p0, p1 = SJ.read_part(self.root, "a"), SJ.read_part(self.root, "a", 1)
         self.assertEqual(p0["solid"].shape[1:], p1["solid"].shape[2:0:-1])

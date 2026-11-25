@@ -7,7 +7,7 @@ import { enc, factoryJson, onFlowDirty, type AssetOutput } from "./api";
 export const STAGES = ["ideas", "concept", "flat", "mesh", "rig", "stack", "export"] as const;
 export type Stage = (typeof STAGES)[number];
 export type Workflow = "2d" | "3d";
-export type FlatMode = "picture" | "motion" | "pieces" | "say" | "sound";
+export type FlatMode = "picture" | "motion" | "pieces" | "say" | "sound" | "animate";
 
 export const STAGE_LABEL: Record<Stage, string> = {
   ideas: "Ideas",

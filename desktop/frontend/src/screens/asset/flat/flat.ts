@@ -9,6 +9,7 @@ export const FLAT_MODES: Record<FlatMode, string> = {
   pieces: "Name the pieces…",
   say: "What it says…",
   sound: "The sound it makes…",
+  animate: "What happens, and which way it faces…",
 };
 
 export const MODE_LABEL: Record<FlatMode, string> = {
@@ -17,9 +18,13 @@ export const MODE_LABEL: Record<FlatMode, string> = {
   pieces: "Pieces",
   say: "Say",
   sound: "Sound",
+  animate: "Animate",
 };
 
-export const FLAT_MODE_LIST: FlatMode[] = ["picture", "motion", "pieces", "say", "sound"];
+export const FLAT_MODE_LIST: FlatMode[] = ["picture", "motion", "pieces", "say", "sound", "animate"];
+
+/** The modes that run one /2d/steps step at once (Picture and Animate start jobs instead). */
+export type StepMode = Exclude<FlatMode, "picture" | "animate">;
 
 /** The status line while a step runs (legacy STEP_RUNNING). */
 export const STEP_RUNNING: Partial<Record<FlatMode, string>> = {
@@ -306,7 +311,7 @@ export type ClipFields = { video: string } | { frames: string[] };
 /** The revise form in Motion / Pieces / Say / Sound: one step on the selected part (or the asset row). */
 export function reviseBody(
   stem: string,
-  mode: Exclude<FlatMode, "picture">,
+  mode: StepMode,
   prompt: string,
   part: { id?: string; speaker?: string } | null,
   clip?: ClipFields | null,
@@ -344,6 +349,40 @@ export function pictureBlock(prompt: string, anyJobRunning: boolean): string {
 
 export const REDRAW_ASK = "Draw a new picture from this prompt? It replaces the current one.";
 
+/* ---------------------------------------------------------------- Animate (POST /2d/animate/<stem>) */
+
+/** A skeleton clip Pipeline ships (GET /2d/skeletons): its name, plain words, and the strip it makes. */
+export interface Skeleton {
+  name: string;
+  label: string;
+  action: string;
+}
+
+export const ANIMATE_TITLE =
+  "Animate the concept picture with a skeleton clip (LTX-2.3): the skeleton gives the motion, the words say what " +
+  "happens and which way the character faces. Makes a sprite strip and a new 2D version.";
+
+/** Why Animate cannot start, or "" when it can. */
+export function animateBlock(prompt: string, skeleton: string, anyJobRunning: boolean): string {
+  if (!skeleton) return "No skeletons to animate with.";
+  if (!prompt) return "Say what happens and which way the character faces, for example: walks to the right, facing right.";
+  if (anyJobRunning) return "The factory is busy with another job.";
+  return "";
+}
+
+/** POST /2d/animate/<stem>'s body: the strip is named after the skeleton, so a run never replaces the walk. */
+export function animateBody(prompt: string, skeleton: string, list: Skeleton[]): { prompt: string; skeleton: string; action?: string } {
+  const action = list.find((s) => s.name === skeleton)?.action;
+  return action ? { prompt, skeleton, action } : { prompt, skeleton };
+}
+
+/** The 2D status line when an Animate job ends here (`action`: the strip it was making). */
+export function animateEndLine(state: string, error: string | undefined, action: string): string {
+  if (state === "ok") return `Animated: the ${action || "new"} strip, saved as a new 2D version.`;
+  if (state === "cancelled") return "Animate cancelled. The 2D files are as they were.";
+  return error || "Animate failed.";
+}
+
 /* ---------------------------------------------------------------- a /2d/steps answer */
 
 export interface StepsAnswer {
@@ -365,7 +404,7 @@ export interface SheetState {
  */
 export function applySteps(
   prev: SheetState,
-  mode: Exclude<FlatMode, "picture">,
+  mode: StepMode,
   prompt: string,
   targetId: string,
   data: StepsAnswer,

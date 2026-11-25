@@ -4,6 +4,7 @@ import { flowFiles, listAssets, readIntent as readIntentJson, readOutJson, type 
 import { degradedLine, displayStem, isStackDraw, onJobFinished, startJob, useJobs, type Job, type JobOpts } from "@/lib/jobs";
 import { toast } from "@/lib/ui";
 import { jobStage, openAsset } from "@/app/open";
+import { buildingReadyText } from "./building";
 import { buildFromDrawingBody, isThreeD, kindDef, NO_PICTURE, recoverDrawIntent, type NestedIntent } from "./make";
 
 /** Specs Home posted (the store keeps the same object on the job, and Try again reuses it). */
@@ -67,8 +68,12 @@ async function finish(job: Job) {
   if (isStackDraw(job)) {
     const size = job.result?.stack?.size;
     text = `Sprite stack ready: ${name}${size ? ` · ${size.length} cells long, ${size.height} layers` : ""}`;
+  } else if (job.kind === "building") {
+    text = buildingReadyText(name, job.result);
   } else if (job.kind === "flat2d") {
     text = `${job.revise ? "Redrawn" : "Sprite ready"}: ${name}`;
+  } else if (job.kind === "animate") {
+    text = `Animated: ${name}`;
   } else if (job.kind === "ideas") {
     return; // screens/asset/ideas/more.ts owns every ideas finish (legacy finishIdeasJob)
   } else if (job.kind === "rig" || job.kind === "render") {

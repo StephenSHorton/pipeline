@@ -8,7 +8,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { useJobs } from "@/lib/jobs";
+import { jobStageText, useJobs } from "@/lib/jobs";
+import { onJobChip } from "@/app/open";
 import { cn } from "@/lib/utils";
 import { writePixelLook } from "@/viewer/pixelLook";
 import { ACTION, COMMIT, PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
@@ -24,6 +25,8 @@ import {
   defaultsFromSearch,
   GAME_TOGGLE,
   LOOK_BUTTONS,
+  MOTION_BUTTONS,
+  motionFromSearch,
   openCubby,
   PAINT_COPY,
   PALETTE_COPY,
@@ -49,11 +52,16 @@ import {
   type StackMeta,
   type StackPhase,
   type StackState,
+  type WalkMotion,
 } from "./stack";
 import { createStackView, loadImage, type PaintMode, type StackView } from "./view";
+import { TowerPanel } from "./TowerPanel";
+import { towerable } from "@/screens/home/building";
 
 const CUBBIES: StackCubby[] = ["stack-look", "stack-sliders", "stack-palette", "paint"];
 const cubbyId = (stem: string, c: StackCubby) => `stack-${c === "stack-look" ? "look" : c.replace("stack-", "")}-${stem}`;
+/** A building drawn from walls also gets Tower: it can be stepped up into a tower (pipeline#20). */
+const cubbiesFor = (meta: StackMeta | null): StackCubby[] => (towerable(meta) ? [...CUBBIES, "tower"] : CUBBIES);
 const PAINT0: PaintMode = { on: false, drop: false, erase: false, color: PAINT_COPY.color.value, radius: PAINT_COPY.radius.value };
 const PBR0: Record<PbrKey, number> = { metal: 0, rough: 0.7, emit: 0 };
 /** A flow re-read this soon after our own Save is the one it queued (factoryJson's /paint/ hook, ~300 ms later):
@@ -94,9 +102,14 @@ function StackBody({ stem, flowVersion }: StageProps) {
   const [palCount, setPalCount] = useState<number>(PALETTE_COPY.count.value);
   const [pbr, setPbr] = useState(PBR0);
   const [saving, setSaving] = useState(false);
+  /** The asset's Version is a walking character (pipeline#2), which offers a choice of motion. */
+  const [walking, setWalking] = useState(false);
+  const [motion, setMotion] = useState<WalkMotion>(() => motionFromSearch(location.search));
   const ownSave = useRef(0);
   const toggles = useRef<Partial<Record<StackCubby, HTMLButtonElement | null>>>({});
   const building = useJobs((s) => buildingStack(s.job, stem));
+  // A building being made here (Make's Building): its stage under Generating, and the way to its job card.
+  const makingStage = useJobs((s) => (building && s.job?.kind === "building" ? jobStageText(s.job.progress) : ""));
 
   // One canvas per mount; dispose frees its WebGL context (legacy never did, so every remount would leak one).
   useEffect(() => {
@@ -104,6 +117,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
       onSample: (rgb) => setPaint((p) => ({ ...p, color: rgbToHex(rgb[0], rgb[1], rgb[2]), drop: false })),
     });
     view.current = v;
+    v.setMotion(motionFromSearch(location.search));
     return () => {
       v.dispose();
       view.current = null;
@@ -150,6 +164,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
       setState(next);
       setDefaults(d);
       setMeta(m);
+      setWalking(!!walker);
       if (walker) v.loadCharacter(m, next, walker.doc, walker.strips);
       else v.load(m, img, next);
       setPhase("ready");
@@ -167,6 +182,11 @@ function StackBody({ stem, flowVersion }: StageProps) {
     setState(next);
     view.current?.set(patch);
   }, []);
+
+  const pickMotion = (m: WalkMotion) => {
+    setMotion(m);
+    view.current?.setMotion(m);
+  };
 
   const toggleGame = () => {
     const next = { ...game, on: !game.on };
@@ -234,6 +254,14 @@ function StackBody({ stem, flowVersion }: StageProps) {
           <div className="absolute inset-0 flex items-center justify-center p-6">
             <Card size="hud" role="status" aria-live="polite" className={cn(PANEL, "max-w-sm px-4 py-2.5 text-center text-ink-3")}>
               {empty}
+              {makingStage && phase === "generating" ? (
+                <>
+                  <span className="mt-1 block text-[0.8rem] text-ink-2">{makingStage}</span>
+                  <Button type="button" variant="outline" size="sm" onClick={onJobChip} className="pointer-events-auto mt-2">
+                    Show the stages
+                  </Button>
+                </>
+              ) : null}
             </Card>
           </div>
         ) : null}
@@ -243,7 +271,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
         <div className="absolute top-3 right-3 flex max-h-[calc(100%-24px)] max-w-[calc(100%-24px)] flex-col items-end gap-2 max-md:top-auto max-md:bottom-3 max-md:max-h-[60%]">
           <Card size="hud" role="group" aria-label="Dock" className={cn(PANEL, "w-max max-w-full flex-row flex-wrap items-center justify-end gap-1 p-1")}>
             {ready
-              ? CUBBIES.map((c) => (
+              ? cubbiesFor(meta).map((c) => (
                   <Button
                     key={c}
                     ref={(el) => {
@@ -278,6 +306,15 @@ function StackBody({ stem, flowVersion }: StageProps) {
                     </Button>
                   ))}
                 </div>
+                {walking ? (
+                  <div role="group" aria-label={STACK_COPY.motion} className={cn(TRAY, "w-fit")}>
+                    {MOTION_BUTTONS.map((b) => (
+                      <Button key={b.motion} type="button" variant="hud-ghost" aria-pressed={motion === b.motion} title={b.title} onClick={() => motion !== b.motion && pickMotion(b.motion)} className={TRAY_ITEM}>
+                        {b.label}
+                      </Button>
+                    ))}
+                  </div>
+                ) : null}
                 <Group label="Stack">
                   {togglesFor(state).map((b) => (
                     <Toggle key={b.key} on={state[b.key]} title={b.title} onClick={() => update({ [b.key]: !state[b.key] })}>
@@ -399,6 +436,12 @@ function StackBody({ stem, flowVersion }: StageProps) {
                   }}
                 />
               </Cubby>
+
+              {towerable(meta) ? (
+                <Cubby id={cubbyId(stem, "tower")} cubby="tower" open={open === "tower"} onClose={() => closeCubby("tower")}>
+                  <TowerPanel stem={stem} meta={meta} />
+                </Cubby>
+              ) : null}
             </div>
           ) : null}
         </div>

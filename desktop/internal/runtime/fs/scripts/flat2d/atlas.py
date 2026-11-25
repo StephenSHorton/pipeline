@@ -59,7 +59,14 @@ def unmix(im: Image.Image, key: tuple[int, int, int] | None = None) -> Image.Ima
 def pack_frames(frames: list[Image.Image], action: str) -> tuple[Image.Image, dict]:
     if not frames:
         raise FlatError("no frames")
-    cells = [unmix(frame) for frame in frames]
+    return pack_cells([unmix(frame) for frame in frames], action)
+
+
+def pack_cells(cells: list[Image.Image], action: str) -> tuple[Image.Image, dict]:
+    """Transparent frames (already cut out) side by side, left to right."""
+    if not cells:
+        raise FlatError("no frames")
+    cells = [im.convert("RGBA") for im in cells]
     cell_w = max(im.size[0] for im in cells)
     cell_h = max(im.size[1] for im in cells)
     sheet = Image.new("RGBA", (cell_w * len(cells), cell_h), (0, 0, 0, 0))
@@ -143,6 +150,19 @@ def pack_request(root: Path, stem: str, payload: dict) -> dict:
 def save_action(root: Path, stem: str, action: str, frames: list[Image.Image], fps: int) -> dict:
     action = action_name(action)
     image, row = pack_frames(frames, action)
+    return _save_strip(root, stem, action, image, row, fps)
+
+
+def save_cells(root: Path, stem: str, action: str, cells: list[Image.Image], fps: int, **extra) -> dict:
+    """Like save_action, for frames that are already transparent cut-outs (the Animate stage's): no keying.
+    extra is kept on the action's manifest row (what made it)."""
+    action = action_name(action)
+    image, row = pack_cells(cells, action)
+    row.update(extra)
+    return _save_strip(root, stem, action, image, row, fps)
+
+
+def _save_strip(root: Path, stem: str, action: str, image: Image.Image, row: dict, fps: int) -> dict:
     row["fps"] = max(1, min(int(fps or 10), 30))
     dest = flat_dir(root, stem) / "sheets" / f"{action}.png"
     dest.parent.mkdir(parents=True, exist_ok=True)

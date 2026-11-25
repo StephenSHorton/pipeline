@@ -45,6 +45,10 @@ export interface StackMeta {
   look?: "cubes" | "slices";
   /** A character's body: carved from the drawn views, or sliced from a 3D model of them. */
   body?: "carved" | "mesh";
+  /** A building's (maker "walls"): "code" drawn from walls, "tower" stepped up from one; absent for a joined one. */
+  shape?: string;
+  /** A building drawn from walls: its window bays as made (stack_building.set_bays). */
+  bays?: { wide?: number; deep?: number; drawn?: number } | null;
 }
 
 /** The look a Version asks for in stack.json, if any. */
@@ -221,17 +225,21 @@ export const STACK_COPY = {
   /** #stack-stats when the stack would not load. */
   noStack: "No sprite stack",
   lookBlurb: "Voxel cubes are what the game uses. Sprite draws each layer as a flat pixel picture, outlined. Plane and Contour are older experiments.",
+  /** The walking character's motion choice (MOTION_BUTTONS). */
+  motion: "Motion",
   paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
   paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
 } as const;
 
 /** The three cubbies (legacy CUBBY_LABELS): the dock's bar labels. */
-export type StackCubby = "stack-look" | "stack-sliders" | "stack-palette" | "paint";
+/** "tower": a building drawn from walls stepped up into a tower (pipeline#20); only on such a building. */
+export type StackCubby = "stack-look" | "stack-sliders" | "stack-palette" | "paint" | "tower";
 export const CUBBY_LABELS: Record<StackCubby, string> = {
   "stack-look": "Look",
   "stack-sliders": "Shape",
   "stack-palette": "Colors",
   paint: "Paint",
+  tower: "Tower",
 };
 /** Sprite stack is the one open by default (index.html 2172). */
 export const CUBBY_DEFAULT: StackCubby = "stack-look";
@@ -249,7 +257,23 @@ export const LOOK_BUTTONS: { look: StackLook; label: string; title: string }[] =
   },
 ];
 
-export type StackToggle = "pixel" | "main" | "outline" | "auto" | "shade" | "lit";
+/** A walking character's motion (pipeline#15): the rig's own walk (pipeline#2), or a skeleton cycle from code
+ * (pipeline#14) played round the same lap. */
+export type WalkMotion = "rig" | "walk" | "run" | "attack";
+export const MOTION_DEFAULT: WalkMotion = "rig";
+/** ?motion=walk|run|attack opens on that motion, as ?look= opens on a look. */
+export function motionFromSearch(search = ""): WalkMotion {
+  const m = new URLSearchParams(search).get("motion");
+  return MOTION_BUTTONS.some((b) => b.motion === m) ? (m as WalkMotion) : MOTION_DEFAULT;
+}
+export const MOTION_BUTTONS: { motion: WalkMotion; label: string; title: string }[] = [
+  { motion: "rig", label: "Rig walk", title: "The rig's own walk: planted feet that stay on their square." },
+  { motion: "walk", label: "Walk", title: "The skeleton's walk, made in code (the same frames as the walk video)." },
+  { motion: "run", label: "Run", title: "The skeleton's run, made in code." },
+  { motion: "attack", label: "Attack", title: "The skeleton's punch, made in code. It stays on the spot." },
+];
+
+export type StackToggle ="pixel" | "main" | "outline" | "auto" | "shade" | "lit";
 /** #stack-sliders, in legacy order; Reset sits after them, on its own row (TOGGLE_RESET). */
 export const TOGGLE_BUTTONS: { key: StackToggle; label: string; title: string }[] = [
   {

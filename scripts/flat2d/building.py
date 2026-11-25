@@ -26,7 +26,10 @@ TAIL = ("Strictly orthographic, no perspective. One object, centred, with a wide
         "No shadows, no ground, no floor, no text, no labels, no borders. Plain flat uniform magenta #FF00FF "
         "background.")
 WALL_LEAD = "Flat elevation of one plain wall of a building, seen exactly straight on, level: "
-PLAIN = (" A plain wall: no shop front, no door, no awning, no signs. Nothing stands on the roof. The side walls are not "
+# The ground floor sentence: from the app's first real runs (2026-11-24) the model drew a full-width shop front on a
+# three-storey town building's plain wall three times out of three despite "no shop front".
+PLAIN = (" A plain wall: no shop front, no door, no awning, no signs. The ground floor is the same plain wall as the "
+         "floors above, with the same windows in the same places. Nothing stands on the roof. The side walls are not "
          "visible and the top surface of the roof is not visible. ")
 KEEP = (" Keep everything else exactly as it is: the upper floors and their windows, the cornice, the corner trim, "
         "the wall's material, the width and height, the outline and drawing style, and the plain flat magenta "
@@ -192,14 +195,20 @@ def _plain_wall(hook: BuildHook, SB, ask: str, seeds: dict[str, int], work: Path
         dest = work / ("base.png" if n == 0 else f"base-{n + 1}.png")
         _draw(hook, WALL, "load", lambda: optional.still_image(ask, seed=seed), dest)
         check = SB.plain_wall_door(dest)
-        tried.append((check["hits"], seed, dest))
+        # The least door: no shop front first, then the fewest door rows.
+        tried.append(((int(check["shop_front"]), check["hits"]), seed, dest))
+        # Said on every try, so the log shows the check ran (and what it saw) even when the first wall passes.
+        hook.line(f"Door check, plain wall {n + 1}: {check['hits']} of {len(check['runs'])} bottom rows have a "
+                  f"ground-level opening ({SB.DOOR_HITS} or more is a door); the ground floor matches the floors "
+                  f"above {check['ground']:.2f} (under {SB.GROUND_MATCH} is a shop front): "
+                  f"{'a shop front' if check['shop_front'] else 'a door' if check['door'] else 'no door'}.")
         if not check["door"]:
             break
         if n + 1 < WALL_TRIES:
-            hook.line(f"The plain wall has a door on it, which would show on every side. Drawing it again "
+            hook.line(f"The plain wall has a door on it (or a shop front), which would show on every side. Drawing it again "
                       f"({n + 2} of {WALL_TRIES}).")
-    hits, seed, best = min(tried, key=lambda t: t[0])
-    if hits >= SB.DOOR_HITS:
+    (shop, hits), seed, best = min(tried, key=lambda t: t[0])
+    if shop or hits >= SB.DOOR_HITS:
         hook.line("Every plain wall had a door on it; keeping the one with the least. It will show on every side.")
     seeds["base"] = seed
     if best != work / "base.png":
