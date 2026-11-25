@@ -5,7 +5,7 @@ frames, transparent cut-outs and a sprite strip, saved as a new 2D Version of th
 
     python scripts/animate.py --root R --stem S --prompt "The soldier faces right and walks to the right ..." \\
         [--skeleton walk_side] [--action walk] [--picture flat/source.png] [--seed 42] [--frames 73] [--size 704]
-        [--side flat/views/side.png [--side-frame 24] [--side-strength 0.8]]
+        [--side [flat/views/side.png] [--side-frame 24] [--side-strength 0.8]]
         [--remove "backpack" [--keep "chest rig, radio and pouches"] [--remove-frames 24,48,72]]
 
 What it writes, under out/<stem>/:
@@ -42,16 +42,23 @@ face the way the prompt says the character moves. Its character is cut out, scal
 character's height and stood on the same spot, on the same ground (flat/anim/<action>/side.png). It costs some
 skeleton accuracy: the character holds the side view's pose around that frame.
 
+--side with no picture uses the asset's own side view, the one the 2D stage drew (find_side): the turnaround's
+flat/views/right.png or left.png (head right, head left), else the pixel sheet's flat/views/side.png or the sprite
+stack's character/views/side.png (both drawn front to the LEFT). The way the character moves comes from the
+skeleton's name (walker_walk_left, ..._right), else from the prompt ("walks to the right", "faces left"); a side
+view facing the other way is mirrored first (anim.json's side says which file, which way it faced, and whether it
+was mirrored). A side view given by path is used as it is.
+
 --remove "backpack" stops invented kit without that cost. Animate runs LTX twice: a first pass from the front
 picture alone (which follows the skeleton, and invents the kit), then Qwen-Image-Edit erases the named kit from that
 pass's own frames at --remove-frames (default every second from frame 24, and the last frame), keeping the pose LTX
 drew under the skeleton; those frames are the second pass's keyframe guides (strength 0.8). --keep names the kit
 that must stay (asked only to remove the backpack, the model took the operator's chest rig too, and the guide carried
-that through the whole clip). An erased frame whose skeleton (Apple Vision) is more than 2.5% off the control's (or 1% further than
-the first pass's own frame, when that is already off) is erased again with the next seed, up to three tries, keeping
-the closest. About three times as long as one pass. On the
-operator's walk: 1.87% (front picture alone 1.68%, side view 5.1%), no backpack, chest rig kept. The edit model is freed before
-the second pass.
+that through the whole clip). An erased frame whose skeleton (Apple Vision) is more than 2.5% off the
+control's (or 1% further than the first pass's own frame, when that is already off) is erased again with the next
+seed, up to three tries, keeping the closest. About three times as long as one pass. On the operator's walk: 1.87%
+(front picture alone 1.68%, side view 5.1%), no backpack, chest rig kept. The edit model is freed before the second
+pass.
 
 LTX runs as its own process, the LTX venv's python under -I, from the ltx-2-mlx clone's source folders
 (scripts/ltx_run.py), with local paths only and HF_HUB_OFFLINE=1, so it never downloads. Where it looks (each
@@ -111,6 +118,15 @@ PICTURES = ("lifted.png", "flat/source.png", "input.png", "input.jpg", "input.jp
 
 class AnimateError(RuntimeError):
     pass
+
+
+FIND_SIDE = "auto"  # --side with no picture: the asset's own side view (find_side)
+# The 2D stage's side views and the way each faces (the side of the picture the head or front points to):
+# the turnaround's two profiles (flat2d/pose.py's panel prompts, mirrored by flat2d/views.py when a creature's head
+# pointed left), then the pixel sheet's side view (pose.PIXEL_VIEWS: the front pointing LEFT) and the sprite
+# stack's cleaned copy of it (stack_character.py, not mirrored).
+SIDE_VIEWS = (("flat/views/right.png", "right"), ("flat/views/left.png", "left"),
+              ("flat/views/side.png", "left"), ("character/views/side.png", "left"))
 
 
 def stage(name: str, label: str) -> None:
@@ -196,6 +212,40 @@ def pick_picture(folder: Path, rel: str | None) -> Path:
         if (folder / name).is_file():
             return folder / name
     raise AnimateError("this asset has no character picture yet (draw or add one first)")
+
+
+def moving_way(skeleton: str, prompt: str) -> str | None:
+    """Which way the character moves across the picture, 'left' or 'right': the skeleton's name says it
+    (walker_walk_left), else the prompt ("walks to the right", "facing left", "rightward"). None when neither says,
+    or the prompt says both."""
+    import re
+
+    stem = Path(skeleton).stem.lower()
+    for way in ("left", "right"):
+        if stem.endswith("_" + way):
+            return way
+    text = prompt.lower()
+    said = {way for way in ("left", "right")
+            if re.search(rf"\b(?:to|toward|towards|facing|faces|face|faced|moves|moving|walks|walking|runs|running|"
+                         rf"heads|heading|goes|going|turned|turns)\s+(?:to\s+)?(?:the\s+)?{way}\b", text)
+            or re.search(rf"\b{way}wards?\b", text)}
+    return said.pop() if len(said) == 1 else None
+
+
+def find_side(folder: Path, way: str | None) -> tuple[Path, str]:
+    """The asset's own side view and the way it faces: of SIDE_VIEWS that are there, one already facing way when
+    there is one, else the first."""
+    try:
+        flaws = json.loads((folder / "flat" / "views.json").read_text(encoding="utf-8")).get("flaws") or []
+    except (OSError, ValueError, AttributeError):
+        flaws = []
+    # The turnaround's 'side' flaw is a left panel drawn head-on (flat2d/optional.py): not a profile to use.
+    skip = {"flat/views/left.png"} if "side" in flaws else set()
+    have = [(folder / rel, facing) for rel, facing in SIDE_VIEWS if rel not in skip and (folder / rel).is_file()]
+    if not have:
+        raise AnimateError("this asset has no side view of its own (draw its turnaround or pixel sheet in the 2D "
+                           "stage), so give --side a picture")
+    return next((h for h in have if h[1] == way), have[0])
 
 
 def make_guide(picture: Path, size: int, out: Path, onto: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
@@ -676,7 +726,16 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
     paths = ltx_paths(root)
     check_ltx(paths)
     pic = pick_picture(folder, picture)
-    side_pic = pick_picture(folder, side) if side else None
+    side_found = None
+    if side == FIND_SIDE:
+        way = moving_way(skeleton, prompt)
+        if way is None:
+            raise AnimateError("to use the asset's own side view, the prompt must say whether the character moves "
+                               "left or right (\"walks to the right\")")
+        side_pic, facing = find_side(folder, way)
+        side_found = {"facing": facing, "moves": way, "mirrored": facing != way}
+    else:
+        side_pic = pick_picture(folder, side) if side else None
     control_src = SK.named(skeleton)
 
     print("STAGES " + " ".join(REMOVE_STAGES if remove else STAGES), flush=True)
@@ -690,9 +749,9 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
         shutil.rmtree(work)
     work.mkdir(parents=True)
     try:
-        doc = _run(root, stem, folder, work, paths, pic, control_src, side_pic=side_pic, side_frame=side_frame,
-                   side_strength=side_strength, remove=remove, keep=keep, picks=picks, prompt=prompt, action=action,
-                   seed=seed,
+        doc = _run(root, stem, folder, work, paths, pic, control_src, side_pic=side_pic, side_found=side_found,
+                   side_frame=side_frame, side_strength=side_strength, remove=remove, keep=keep, picks=picks,
+                   prompt=prompt, action=action, seed=seed,
                    frames=frames, size=size, every=every, cell=cell, skeleton_fps=skeleton_fps, check=check, t0=t0)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
@@ -705,9 +764,8 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
 
 
 def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path], pic: Path, control_src: Path, *,
-         side_pic: Path | None, side_frame: int, side_strength: float, remove: str | None, keep: str | None,
-         picks: list[int],
-         prompt: str, action: str, seed: int,
+         side_pic: Path | None, side_found: dict | None, side_frame: int, side_strength: float,
+         remove: str | None, keep: str | None, picks: list[int], prompt: str, action: str, seed: int,
          frames: int, size: int, every: int, cell: int, skeleton_fps: float, check: bool, t0: float) -> dict:
     from flat2d.atlas import save_cells
     from flat2d.store import write_center
@@ -716,7 +774,16 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
     ground = make_guide(pic, size, work / "guide.png")
     side_fitted = None
     if side_pic is not None:
-        side_fitted = fit_side(side_pic, work / "guide.png", size, work / "side.png", tuple(ground), lift_tool(root))
+        side_src = side_pic
+        if side_found and side_found["mirrored"]:  # turned to face the way the character moves
+            from PIL import Image, ImageOps
+
+            side_src = work / "side-mirrored.png"
+            with Image.open(side_pic) as im:
+                ImageOps.mirror(im).save(side_src)
+        side_fitted = fit_side(side_src, work / "guide.png", size, work / "side.png", tuple(ground), lift_tool(root))
+        if side_src != side_pic:
+            side_src.unlink(missing_ok=True)
 
     stage("skeleton", "Fit and draw the skeleton video")
     control = SK.fit_frames(SK.retime(SK.load(control_src), skeleton_fps, FPS, frames)
@@ -804,7 +871,8 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         "disclosure": DISCLOSURE,
         "picture": pic.relative_to(folder).as_posix(),
         "side": {"picture": side_pic.relative_to(folder).as_posix(), "frame": side_frame,
-                 "strength": side_strength, "fitted_to_figure": side_fitted} if side_pic else None,
+                 "strength": side_strength, "fitted_to_figure": side_fitted,
+                 **({"found": True, **side_found} if side_found else {})} if side_pic else None,
         "remove": {"what": remove, "keep": keep, "frames": picks, "strength": KEY_STRENGTH,
                    "edit_model": "Qwen-Image-Edit-2511", "prompt": erase_prompt(remove, keep), "seconds": erase_s,
                    "keys": key_notes} if remove else None,
@@ -845,8 +913,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skeleton-fps", type=float, default=FPS)
     ap.add_argument("--action", default="walk")
     ap.add_argument("--picture", default=None, help="a picture under out/<stem>/ (default: the concept still)")
-    ap.add_argument("--side", default=None,
-                    help="a side view under out/<stem>/, facing the way the character moves: a second guide")
+    ap.add_argument("--side", nargs="?", const=FIND_SIDE, default=None,
+                    help="a side view under out/<stem>/, facing the way the character moves: a second guide. "
+                         "With no picture, the asset's own side view (flat/views/, character/views/), mirrored "
+                         "when it faces the other way")
     ap.add_argument("--side-frame", type=int, default=None, help=f"the frame the side view guides (default {FPS})")
     ap.add_argument("--side-strength", type=float, default=0.8, help="how hard the side view pulls, 0 to 1")
     ap.add_argument("--remove", default=None,
