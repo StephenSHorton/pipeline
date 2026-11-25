@@ -152,6 +152,28 @@ class SkeletonTests(unittest.TestCase):
         self.assertIn((255, 0, 0), colours)  # neck to right shoulder, OpenPose's first limb
 
 
+class LtxRunTests(unittest.TestCase):
+    def test_appended_keyframe_tokens_are_dropped_before_unpatchify(self):
+        import numpy as np
+
+        class VideoLatentPatchifier:
+            def unpatchify(self, tokens, spatial_dims):
+                f, h, w = spatial_dims
+                return tokens.reshape(tokens.shape[0], f, h, w, tokens.shape[2])
+
+        mod = type(sys)("ltx_core_mlx.components.patchifiers")
+        mod.VideoLatentPatchifier = VideoLatentPatchifier
+        names = ("ltx_core_mlx", "ltx_core_mlx.components", "ltx_core_mlx.components.patchifiers")
+        with mock.patch.dict(sys.modules, {n: type(sys)(n) for n in names[:2]} | {names[2]: mod}):
+            import ltx_run
+
+            ltx_run.strip_appended()
+        tokens = np.arange(1 * (2 * 3 * 3 + 9) * 4).reshape(1, 2 * 3 * 3 + 9, 4)  # 9 keyframe tokens appended
+        out = VideoLatentPatchifier().unpatchify(tokens, (2, 3, 3))
+        self.assertEqual(out.shape, (1, 2, 3, 3, 4))
+        self.assertEqual(out.reshape(1, -1, 4)[0, -1, 0], tokens[0, 17, 0])
+
+
 @unittest.skipUnless(FFMPEG, "needs ffmpeg")
 class AnimateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -229,6 +251,56 @@ class AnimateTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("-f") + 1], "25")
         self.assertEqual(argv[argv.index("--frame-rate") + 1], "24")
         self.assertIn("faces right", argv[argv.index("--prompt") + 1])
+
+    def test_side_view_is_a_second_guide(self):
+        # A side view on white (a different ground from the first picture's light grey), as a cut-out would be.
+        side = Image.new("RGBA", (300, 500), (0, 0, 0, 0))
+        for y in range(80, 460):
+            for x in range(130, 170):
+                side.putpixel((x, y), (60, 80, 50, 255))
+        (self.root / "out" / "op" / "flat").mkdir(parents=True, exist_ok=True)
+        side.save(self.root / "out" / "op" / "flat" / "side.png")
+        doc = self.run_it(side="flat/side.png", side_frame=16, side_strength=0.7)
+        argv = json.loads((self.base / "ltx-call.json").read_text())["argv"]
+        at = [i for i, a in enumerate(argv) if a == "--image"]
+        self.assertEqual(len(at), 2)
+        self.assertTrue(argv[at[0] + 1].endswith("/guide.png"))
+        self.assertEqual(argv[at[0] + 2:at[0] + 4], ["0", "1.0"])
+        self.assertTrue(argv[at[1] + 1].endswith("/.animate/walk/side.png"))
+        self.assertEqual(argv[at[1] + 2:at[1] + 4], ["16", "0.7"])
+        self.assertEqual(doc["side"], {"picture": "flat/side.png", "frame": 16, "strength": 0.7,
+                                       "fitted_to_figure": True})
+        work = self.root / "out" / "op" / "flat" / "anim" / "walk"
+
+        def figure(path):
+            with Image.open(path) as im:
+                rgb = im.convert("RGB")
+                self.assertEqual(rgb.size, (256, 256))
+                self.assertEqual(rgb.getpixel((3, 3)), (222, 224, 221))  # on the first picture's ground
+                return rgb.point(lambda v: 255 if v < 150 else 0).convert("L").getbbox()
+
+        front, side_box = figure(work / "guide.png"), figure(work / "side.png")
+        # The side view's character stands where the first picture's does, as tall, on the same foot line.
+        self.assertLessEqual(abs((side_box[3] - side_box[1]) - (front[3] - front[1])), 2)
+        self.assertLessEqual(abs(side_box[3] - front[3]), 2)
+        self.assertLessEqual(abs((side_box[0] + side_box[2]) - (front[0] + front[2])), 4)
+        self.assertEqual(json.loads((work / "anim.json").read_text())["side"]["frame"], 16)
+
+    def test_without_a_side_view_there_is_one_guide(self):
+        doc = self.run_it()
+        argv = json.loads((self.base / "ltx-call.json").read_text())["argv"]
+        self.assertEqual(argv.count("--image"), 1)
+        self.assertIsNone(doc["side"])
+
+    def test_side_view_refusals(self):
+        with self.assertRaises(A.AnimateError):
+            self.run_it(side="../../etc/hosts")
+        with self.assertRaisesRegex(A.AnimateError, "side-frame"):
+            self.run_it(side="input.png", side_frame=25)
+        with self.assertRaisesRegex(A.AnimateError, "side-frame"):
+            self.run_it(side="input.png", side_frame=0)
+        with self.assertRaisesRegex(A.AnimateError, "side-strength"):
+            self.run_it(side="input.png", side_strength=0)
 
     def test_skeleton_check(self):
         doc = self.run_it()
@@ -316,6 +388,8 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.post({"prompt": "walks right", "skeleton": "moonwalk"})[0], 400)
         self.assertEqual(self.post({"prompt": "walks right", "frames": 24})[0], 400)
         self.assertEqual(self.post({"prompt": "walks right", "picture": "/etc/hosts"})[0], 400)
+        self.assertEqual(self.post({"prompt": "walks right", "side": "../x.png"})[0], 400)
+        self.assertEqual(self.post({"prompt": "walks right", "side_frame": 0})[0], 400)
         self.assertEqual(self.post({"prompt": "walks right"}, stem="nobody")[0], 404)
         with mock.patch.dict(os.environ, {"PIPELINE_LTX_LORA": str(self.base / "nowhere")}):
             code, doc = self.post({"prompt": "walks right"})
@@ -339,6 +413,12 @@ class RouteTests(unittest.TestCase):
         state = flow.state(self.root, "op")
         flat = next(s for s in state["stages"] if s["stage"] == "flat")
         self.assertTrue(flat["live"])
+
+    def test_side_view_reaches_the_command_line(self):
+        argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "walks right", "side": "flat/side.png",
+                                                                 "side_frame": 30})
+        self.assertEqual(argv[argv.index("--side") + 1], "flat/side.png")
+        self.assertEqual(argv[argv.index("--side-frame") + 1], "30")
 
     def test_failed_job_says_why(self):
         with mock.patch.dict(os.environ, {"FAKE_LTX_FAIL": "1"}):
