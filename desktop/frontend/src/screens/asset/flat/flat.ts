@@ -351,29 +351,101 @@ export const REDRAW_ASK = "Draw a new picture from this prompt? It replaces the 
 
 /* ---------------------------------------------------------------- Animate (POST /2d/animate/<stem>) */
 
-/** A skeleton clip Pipeline ships (GET /2d/skeletons): its name, plain words, and the strip it makes. */
+/** A code-made cycle for one facing (GET /2d/animate/<stem>): the strip it makes, whose body it was made for, and
+ * the prompt the factory uses when none is given. */
+export interface AnimateCycle {
+  cycle: string;
+  facing: string;
+  action: string;
+  skeleton: string;
+  made_for?: string;
+  prompt: string;
+}
+
+/** Another skeleton clip Pipeline ships (GET /2d/animate/<stem>): its name, plain words, and the strip it makes. */
 export interface Skeleton {
   name: string;
   label: string;
   action: string;
 }
 
-export const ANIMATE_TITLE =
-  "Animate the concept picture with a skeleton clip (LTX-2.3): the skeleton gives the motion, the words say what " +
-  "happens and which way the character faces. Makes a sprite strip and a new 2D version.";
+/** What Animate offers an asset (GET /2d/animate/<stem>). */
+export interface AnimateOffer {
+  cycles: AnimateCycle[];
+  skeletons: Skeleton[];
+}
 
-/** Why Animate cannot start, or "" when it can. */
-export function animateBlock(prompt: string, skeleton: string, anyJobRunning: boolean): string {
-  if (!skeleton) return "No skeletons to animate with.";
-  if (!prompt) return "Say what happens and which way the character faces, for example: walks to the right, facing right.";
+export const NO_OFFER: AnimateOffer = { cycles: [], skeletons: [] };
+
+/** One entry of Animate's picker: its value, its words, and the cycle or skeleton it stands for. */
+export interface AnimatePick {
+  value: string;
+  label: string;
+  group: "cycle" | "skeleton";
+  cycle?: AnimateCycle;
+  skeleton?: Skeleton;
+}
+
+const word = (s: string) => s.slice(0, 1).toUpperCase() + s.slice(1);
+
+/** Animate's picker: every cycle with its facing ("Walk, facing right"; "· made for this character" when it is),
+ * then the other skeletons. */
+export function animatePicks(offer: AnimateOffer): AnimatePick[] {
+  return [
+    ...offer.cycles.map((c) => ({
+      value: `cycle:${c.cycle}:${c.facing}`,
+      label: `${word(c.cycle)}, facing ${c.facing}${c.made_for === "this character" ? " · made for this character" : ""}`,
+      group: "cycle" as const,
+      cycle: c,
+    })),
+    ...offer.skeletons.map((k) => ({ value: `skeleton:${k.name}`, label: k.label || k.name, group: "skeleton" as const, skeleton: k })),
+  ];
+}
+
+/** The pick to keep when the offer is (re)read: the one already picked if it is still offered, else the first. */
+export function keepPick(picks: AnimatePick[], cur: string): string {
+  return picks.some((p) => p.value === cur) ? cur : picks[0]?.value || "";
+}
+
+/** The revise field's text after Animate's pick changes: a cycle's ready prompt replaces an empty field or another
+ * pick's ready prompt; anything typed is kept. A skeleton has no ready prompt, so a ready prompt left there goes. */
+export function promptForPick(current: string, pick: AnimatePick | undefined, offer: AnimateOffer): string {
+  const ready = new Set(offer.cycles.map((c) => c.prompt));
+  const typed = current.trim() && !ready.has(current.trim());
+  if (typed) return current;
+  return pick?.cycle?.prompt || "";
+}
+
+export const ANIMATE_TITLE =
+  "Animate a character picture with a skeleton (LTX-2.3): a code-made walk, run or attack turns from the camera to " +
+  "face the way picked, and its prompt is filled in; another skeleton needs words that say what happens and which " +
+  "way the character faces. Makes a sprite strip and a new 2D version.";
+
+/** Why Animate cannot start, or "" when it can. A cycle's prompt may be empty: the factory makes one. */
+export function animateBlock(prompt: string, pick: AnimatePick | undefined, anyJobRunning: boolean): string {
+  if (!pick) return "No skeletons to animate with.";
+  if (!prompt && !pick.cycle) return "Say what happens and which way the character faces, for example: walks to the right, facing right.";
   if (anyJobRunning) return "The factory is busy with another job.";
   return "";
 }
 
-/** POST /2d/animate/<stem>'s body: the strip is named after the skeleton, so a run never replaces the walk. */
-export function animateBody(prompt: string, skeleton: string, list: Skeleton[]): { prompt: string; skeleton: string; action?: string } {
-  const action = list.find((s) => s.name === skeleton)?.action;
-  return action ? { prompt, skeleton, action } : { prompt, skeleton };
+export type AnimateBody = { cycle: string; facing: string; prompt?: string } | { prompt: string; skeleton: string; action?: string };
+
+/** POST /2d/animate/<stem>'s body. A cycle goes as {cycle, facing}, with the prompt only when it is not the ready
+ * one; the factory names its strip after the cycle and facing (run-left), so no cycle overwrites another. Another
+ * skeleton goes with its prompt and its own strip name. */
+export function animateBody(prompt: string, pick: AnimatePick): AnimateBody {
+  const c = pick.cycle;
+  if (c) return prompt && prompt !== c.prompt ? { cycle: c.cycle, facing: c.facing, prompt } : { cycle: c.cycle, facing: c.facing };
+  const k = pick.skeleton!;
+  return k.action ? { prompt, skeleton: k.name, action: k.action } : { prompt, skeleton: k.name };
+}
+
+/** The strip an Animate job's body makes, for its end line. */
+export function animateAction(body: unknown, offer: AnimateOffer): string {
+  const b = (body || {}) as { action?: string; cycle?: string; facing?: string };
+  if (b.action) return b.action;
+  return offer.cycles.find((c) => c.cycle === b.cycle && c.facing === b.facing)?.action || (b.cycle ? `${b.cycle}-${b.facing || "right"}` : "");
 }
 
 /** The 2D status line when an Animate job ends here (`action`: the strip it was making). */

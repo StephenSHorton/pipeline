@@ -18,12 +18,14 @@ import { cn } from "@/lib/utils";
 import { useStage } from "../stage";
 import type { StageProps } from "../types";
 import { animate, flatSpecs, panelAudio, redraw, reviseStep } from "./actions";
-import { getFlatFlags, getSheet, getSkeletons } from "./api";
+import { getAnimateOffer, getFlatFlags, getSheet } from "./api";
 import { PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import { AudioPanel, type Bound } from "./AudioPanel";
 import {
   ANIMATE_TITLE,
+  animateAction,
   animateEndLine,
+  animatePicks,
   audioFields,
   audioPlayers,
   audioWho,
@@ -44,8 +46,11 @@ import {
   type AudioFields,
   type AudioRow,
   type FlatFlags,
+  keepPick,
+  NO_OFFER,
+  promptForPick,
+  type AnimateOffer,
   type SheetState,
-  type Skeleton,
 } from "./flat";
 
 const NONE: Bound = { rel: "", t: 0 };
@@ -72,20 +77,30 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
   const [clip, setClip] = useState<File[]>([]);
   const [drawing, setDrawing] = useState(false);
   const [generating, setGenerating] = useState(false);
-  // Animate's skeleton picker (GET /2d/skeletons), read once; the pick starts on the factory's default.
-  const [skeletons, setSkeletons] = useState<Skeleton[]>([]);
-  const [skeleton, setSkeleton] = useState("");
+  // Animate's picker (GET /2d/animate/<stem>): the code-made cycles, each facing, then the other skeletons. Read
+  // for each asset; the pick is kept while it is still offered, else it starts on the first cycle.
+  const [offer, setOffer] = useState<AnimateOffer>(NO_OFFER);
+  const [pickValue, setPickValue] = useState("");
+  const picks = animatePicks(offer);
+  const pick = picks.find((p) => p.value === pickValue);
+  const offerRef = useRef(offer);
+  offerRef.current = offer;
   useEffect(() => {
     let live = true;
-    void getSkeletons().then(({ list, pick }) => {
+    void getAnimateOffer(stem).then((o) => {
       if (!live) return;
-      setSkeletons(list);
-      setSkeleton((cur) => cur || (list.some((k) => k.name === pick) ? pick : list[0]?.name || ""));
+      setOffer(o);
+      setPickValue((cur) => keepPick(animatePicks(o), cur));
     });
     return () => {
       live = false;
     };
-  }, []);
+  }, [stem]);
+  // In Animate, a cycle's ready prompt is shown in the field (and follows the pick) until something else is typed.
+  useEffect(() => {
+    if (flatMode !== "animate") return;
+    setPrompt((cur) => promptForPick(cur, animatePicks(offer).find((p) => p.value === pickValue), offer));
+  }, [flatMode, pickValue, offer]);
 
   const subject = sheet.index >= 0 ? sheet.parts[sheet.index] ?? null : null;
 
@@ -153,7 +168,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
     () =>
       onJobEnded((j) => {
         if (j.kind !== "animate" || j.stem !== stem) return;
-        const action = String((j.spec as { action?: string } | undefined)?.action || "");
+        const action = animateAction(j.spec, offerRef.current);
         setStatus(animateEndLine(j.state, j.error, action));
         if (j.state !== "ok") return;
         // You are on the asset already: no "<name> is ready · Open" chip.
@@ -214,7 +229,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
     e.preventDefault();
     const text = prompt.trim();
     if (flatMode === "animate") {
-      const r = animate(stem, text, skeleton, skeletons);
+      const r = animate(stem, text, pick);
       setStatus(r.status);
       return;
     }
@@ -359,23 +374,30 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
             />
             {flatMode === "animate" ? (
               <label
-                title="The skeleton clip the motion follows."
+                title="The motion: a code-made walk, run or attack and the way it ends up facing, or another skeleton clip."
                 className="hit-44 inline-flex h-9 max-w-[14rem] shrink-0 items-center gap-1.5 rounded-[10px] border border-input bg-white pl-3 text-[0.85rem] font-medium text-ink-2 focus-within:ring-3 focus-within:ring-ring/50"
               >
                 <Bone size={15} strokeWidth={2.1} aria-hidden="true" className="shrink-0" />
                 <span className="sr-only">Skeleton</span>
                 <select
-                  value={skeleton}
-                  onChange={(e) => setSkeleton(e.target.value)}
-                  disabled={!skeletons.length}
+                  value={pickValue}
+                  onChange={(e) => setPickValue(e.target.value)}
+                  disabled={!picks.length}
                   className="h-full min-w-0 flex-1 cursor-pointer truncate rounded-[10px] bg-transparent pr-2 outline-none"
                 >
-                  {skeletons.length ? null : <option value="">No skeletons</option>}
-                  {skeletons.map((k) => (
-                    <option key={k.name} value={k.name}>
-                      {k.label}
-                    </option>
-                  ))}
+                  {picks.length ? null : <option value="">No skeletons</option>}
+                  {(["cycle", "skeleton"] as const).map((g) => {
+                    const list = picks.filter((p) => p.group === g);
+                    return list.length ? (
+                      <optgroup key={g} label={g === "cycle" ? "Cycles" : "Other skeletons"}>
+                        {list.map((p) => (
+                          <option key={p.value} value={p.value}>
+                            {p.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null;
+                  })}
                 </select>
               </label>
             ) : null}

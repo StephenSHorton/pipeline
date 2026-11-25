@@ -12,7 +12,7 @@ frames, transparent cut-outs and a sprite strip, saved as a new 2D Version of th
 to face --facing over the first 16 frames, then walks, runs or punches on the spot. An asset with a sprite-stack
 character (stack/character.json) gets the cycle made for its own body by desktop/frontend/scripts/skeleton-cycle.ts
 when that script and bun are here; otherwise (and in the app, which ships neither) the walker's from
-scripts/skeletons/ (walker_<cycle>_<facing>.json). The action defaults to the cycle's name, the picture to the
+scripts/skeletons/ (walker_<cycle>_<facing>.json). The action (the strip's name) defaults to the cycle and facing (run-left), the picture to the
 character's front view, and the prompt to one that says the turn and the facing.
 
 A skeleton that says where its standing figure is (the code-made cycles' "figure": top, ground line, middle) gets the
@@ -422,13 +422,15 @@ def offered(root: Path, stem: str) -> dict:
     for c in SK.CYCLES:
         for f in SK.FACINGS:
             meta = SK.info(SK.named(SK.shipped_cycle(c, f)))
-            cycles.append({"cycle": c, "facing": f, "action": c, "skeleton": SK.shipped_cycle(c, f),
+            name = SK.shipped_cycle(c, f)
+            cycles.append({"cycle": c, "facing": f, "action": SK.action_of(name), "skeleton": name,
                            "made_for": "this character" if own else "the walker",
                            "turn_frames": meta["turn_frames"], "cycle_frames": meta["cycle_frames"],
                            "prompt": SK.cycle_prompt(c, f)})
     taken = {x["skeleton"] for x in cycles}
     front = next((n for n in FRONT_PICTURES if (folder / n).is_file()), None)
-    return {"cycles": cycles, "skeletons": [n for n in SK.shipped() if n not in taken], "front_picture": front}
+    others = [{"name": n, "label": SK.label_of(n), "action": SK.action_of(n)} for n in SK.shipped() if n not in taken]
+    return {"cycles": cycles, "skeletons": others, "default": "walk_side", "front_picture": front}
 
 
 # ------------------------------------------------------------------ after LTX
@@ -705,7 +707,7 @@ def animate(root: Path, stem: str, *, prompt: str = "", skeleton: str | None = N
             raise AnimateError("give a cycle or a skeleton, not both")
         skeleton = SK.shipped_cycle(cycle, facing)  # checks both names
     skeleton = skeleton or "walk_side"
-    action = action_name(action or cycle or "walk")
+    action = action_name(action or SK.action_of(skeleton))  # one strip per skeleton: walker_run_left -> run-left
     folder = stem_dir(root, stem)
     if not folder.is_dir():
         raise AnimateError(f"no asset {stem!r}")
@@ -906,7 +908,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skeleton", default=None, help=f"one of {', '.join(SK.shipped())}, or a .json path "
                     "(default walk_side)")
     ap.add_argument("--skeleton-fps", type=float, default=FPS)
-    ap.add_argument("--action", default=None, help="the strip's name (default the cycle's, else walk)")
+    ap.add_argument("--action", default=None, help="the strip's name (default one per skeleton: walker_run_left makes run-left, walk_side walk)")
     ap.add_argument("--picture", default=None, help="a picture under out/<stem>/ (default: the concept still)")
     ap.add_argument("--side", nargs="?", const=FIND_SIDE, default=None,
                     help="a side view under out/<stem>/, facing the way the character moves: a second guide. "

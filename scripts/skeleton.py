@@ -144,11 +144,6 @@ def label_of(name: str) -> str:
     return head[:1].upper() + head[1:] + tail
 
 
-def catalogue() -> list[dict[str, str]]:
-    """Every shipped skeleton for the app's picker: {name, label, action}."""
-    return [{"name": n, "label": label_of(n), "action": action_of(n)} for n in shipped()]
-
-
 def load(path: str | Path) -> list[dict[str, list[float]]]:
     """The clip's joints per frame. A frame where no skeleton was found keeps the last frame's joints."""
     try:
