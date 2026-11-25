@@ -54,10 +54,19 @@ def main():
     return 0
 '''
 
+# What Apple Vision reads from the operator picture (video-trials clips/operator-704.png): a realistic body, built
+# unlike the walker skeletons (hips at 0.479 against their 0.637, shoulders 0.15 wide against 0.24).
+OPERATOR = json.loads('''{"head_joint": [0.489, 0.13, 0.869], "left_ear_joint": [0.535, 0.129, 0.912], "left_eye_joint": [0.504, 0.114, 0.942], "left_foot_joint": [0.593, 0.851, 0.676], "left_forearm_joint": [0.645, 0.349, 0.8], "left_hand_joint": [0.677, 0.456, 0.794], "left_leg_joint": [0.563, 0.681, 0.644], "left_shoulder_1_joint": [0.582, 0.226, 0.817], "left_upLeg_joint": [0.548, 0.477, 0.546], "neck_1_joint": [0.506, 0.232, 0.803], "right_ear_joint": [0.459, 0.128, 0.529], "right_eye_joint": [0.474, 0.114, 0.927], "right_foot_joint": [0.459, 0.848, 0.773], "right_forearm_joint": [0.395, 0.363, 0.75], "right_hand_joint": [0.335, 0.457, 0.856], "right_leg_joint": [0.449, 0.662, 0.741], "right_shoulder_1_joint": [0.43, 0.239, 0.79], "right_upLeg_joint": [0.452, 0.481, 0.591], "root": [0.5, 0.479, 0.569]}''')
+
 FAKE_BODYPOSE = '''#!{python}
-# Stands in for bin/bodypose: the control skeleton back, every joint moved 1% of the width to the right.
+# Stands in for bin/bodypose: the control skeleton back, every joint moved 1% of the width to the right; the
+# guide picture alone (animate.py's start/ folder) reads as the operator, or as nothing with FAKE_BODYPOSE_NONE.
 import json, os, sys
 frames = sorted(f for f in os.listdir(sys.argv[1]) if f.endswith(".png"))
+if os.path.basename(sys.argv[1].rstrip("/")) == "start":
+    j = {{}} if os.environ.get("FAKE_BODYPOSE_NONE") else {operator}
+    json.dump({{"frames": [{{"file": frames[0], "joints2d": j}}]}}, open(sys.argv[2], "w"))
+    sys.exit(0)
 control = json.load(open(os.path.join(os.path.dirname(sys.argv[1].rstrip("/")), "control.json")))["frames"]
 out = []
 for i, f in enumerate(frames):
@@ -83,7 +92,7 @@ def fake_ltx(base: Path) -> dict[str, str]:
     gemma = base / "weights" / "gemma"
     gemma.mkdir()
     bodypose = base / "bodypose"
-    bodypose.write_text(FAKE_BODYPOSE.format(python=sys.executable))
+    bodypose.write_text(FAKE_BODYPOSE.format(python=sys.executable, operator=json.dumps(OPERATOR)))
     bodypose.chmod(0o755)
     return {"PIPELINE_LTX_DIR": str(clone), "PIPELINE_LTX_PYTHON": sys.executable, "PIPELINE_LTX_MODEL": str(model),
             "PIPELINE_LTX_LORA": str(lora), "PIPELINE_LTX_GEMMA": str(gemma), "PIPELINE_BODYPOSE": str(bodypose),
@@ -150,6 +159,79 @@ class SkeletonTests(unittest.TestCase):
         colours = {c for _, c in im.getcolors(256 * 256)}
         self.assertIn((0, 0, 0), colours)
         self.assertIn((255, 0, 0), colours)  # neck to right shoulder, OpenPose's first limb
+
+
+class RefitTests(unittest.TestCase):
+    """skeleton.refit: a shipped skeleton refitted to a picture's own body (the operator's, as Vision reads it)."""
+
+    @staticmethod
+    def length(j, a, b):
+        return ((j[a][0] - j[b][0]) ** 2 + (j[a][1] - j[b][1]) ** 2) ** 0.5
+
+    def test_first_frame_takes_the_pictures_proportions(self):
+        walker = SK.load(SK.named("walker_walk_right"))
+        fitted, info = SK.refit(walker, OPERATOR)
+        self.assertEqual(len(fitted), len(walker))
+        self.assertEqual(set(info["fitted_parts"]), set(SK.PARTS))
+        f0 = fitted[0]
+        # The hips where the operator's are (not the walker's 0.637), the lower foot on the operator's ground.
+        self.assertAlmostEqual(f0["root"][0], OPERATOR["root"][0], places=3)
+        self.assertLess(abs(f0["root"][1] - OPERATOR["root"][1]), 0.01)
+        self.assertAlmostEqual(max(f0[f][1] for f in SK.FEET), max(OPERATOR[f][1] for f in SK.FEET), places=3)
+        # Shoulder and hip widths, and each limb, at the operator's length (left and right averaged).
+        for a, b in (("left_shoulder_1_joint", "right_shoulder_1_joint"), ("left_upLeg_joint", "right_upLeg_joint")):
+            self.assertAlmostEqual(self.length(f0, a, b), self.length(OPERATOR, a, b), delta=0.005)
+        for side in ("left", "right"):
+            for a, b in ((f"{side}_upLeg_joint", f"{side}_leg_joint"), (f"{side}_leg_joint", f"{side}_foot_joint"),
+                         (f"{side}_shoulder_1_joint", f"{side}_forearm_joint")):
+                mean = (self.length(OPERATOR, a.replace(side, "left"), b.replace(side, "left")) +
+                        self.length(OPERATOR, a.replace(side, "right"), b.replace(side, "right"))) / 2
+                self.assertAlmostEqual(self.length(f0, a, b), mean, delta=0.01, msg=(a, b))
+        # Much closer to the standing picture than moving and scaling alone (pipeline#18's x1.117 fit).
+        moved = [{n: [1.117 * (v[0] - 0.5) + 0.5, 1.117 * (v[1] - 0.858) + 0.850, v[2]] for n, v in j.items()}
+                 for j in walker]
+        before = SK.pose_error(moved[:9], [OPERATOR] * 9, skip=1)["mean_joint_error_pct"]
+        after = SK.pose_error(fitted[:9], [OPERATOR] * 9, skip=1)["mean_joint_error_pct"]
+        self.assertGreater(before, 6)
+        self.assertLess(after, before / 1.8)
+
+    def test_motion_is_kept(self):
+        walker = SK.load(SK.named("walker_walk_right"))
+        fitted, info = SK.refit(walker, OPERATOR)
+        r = info["ratios"]["thigh"]
+        for i in (8, 24, 40, 60):  # each thigh bone is the walker's, scaled: same direction, the operator's length
+            a, b = walker[i], fitted[i]
+            for side in ("left", "right"):
+                up, knee = f"{side}_upLeg_joint", f"{side}_leg_joint"
+                for c in (0, 1):
+                    self.assertAlmostEqual(b[knee][c] - b[up][c], (a[knee][c] - a[up][c]) * r, places=3)
+
+    def test_every_shipped_skeleton_stays_grounded_and_in_frame(self):
+        ground = max(OPERATOR[f][1] for f in SK.FEET)
+        for name in SK.shipped():
+            src = SK.load(SK.named(name))
+            fitted, info = SK.refit(src, OPERATOR)
+            g0 = max(src[0][f][1] for f in SK.FEET)
+            for i, (a, b) in enumerate(zip(src, fitted)):
+                lift = (max(a[f][1] for f in SK.FEET) - g0) * info["scale"]
+                self.assertAlmostEqual(max(b[f][1] for f in SK.FEET), ground + lift, places=3, msg=(name, i))
+                for joint, v in b.items():
+                    self.assertTrue(0 <= v[0] <= 1 and 0 <= v[1] <= 1, (name, i, joint, v))
+
+    def test_a_part_the_picture_lacks_takes_the_bodys_scale(self):
+        pic = {k: v for k, v in OPERATOR.items() if "hand" not in k}
+        _, info = SK.refit(SK.load(SK.named("walker_walk_right")), pic)
+        self.assertNotIn("forearm", info["fitted_parts"])
+        self.assertEqual(info["ratios"]["forearm"], info["scale"])
+        squashed = dict(OPERATOR, left_shoulder_1_joint=[0.505, 0.232, 0.9], right_shoulder_1_joint=[0.507, 0.232, 0.9])
+        _, info = SK.refit(SK.load(SK.named("walker_walk_right")), squashed)  # a side-on picture: no width to read
+        self.assertAlmostEqual(info["ratios"]["shoulders"], info["scale"] / SK.RATIO_BAND, places=3)
+
+    def test_no_body_to_fit_to_is_refused(self):
+        with self.assertRaises(SK.SkeletonError):
+            SK.refit(SK.load(SK.named("walk_side")), {})
+        with self.assertRaises(SK.SkeletonError):
+            SK.refit(SK.load(SK.named("walk_side")), {"head_joint": [0.5, 0.1, 0.9]})
 
 
 class LtxRunTests(unittest.TestCase):
@@ -307,6 +389,31 @@ class AnimateTests(unittest.TestCase):
         check = doc["pose_check"]
         self.assertEqual(check["frames_compared"], 24)  # frame 0 is the picture, not a pose
         self.assertAlmostEqual(check["mean_joint_error_pct"], 1.0, places=1)
+
+    def test_skeleton_is_fitted_to_the_picture(self):
+        doc = self.run_it(skeleton="walker_walk_right", action="walk-right")
+        work = self.root / "out" / "op" / "flat" / "anim" / "walk-right"
+        control = json.loads((work / "control.json").read_text())
+        self.assertTrue(control["fit"]["fitted"])
+        self.assertEqual(doc["skeleton_fit"], control["fit"])
+        self.assertGreater(control["fit"]["ratios"]["thigh"], 1.5)  # the operator's long legs
+        f0 = control["frames"][0]["joints2d"]
+        self.assertLess(abs(f0["root"][1] - OPERATOR["root"][1]), 0.01)
+        self.assertNotAlmostEqual(f0["root"][1], SK.load(SK.named("walker_walk_right"))[0]["root"][1], places=2)
+        self.assertFalse((work / "start").exists())
+        self.assertFalse((work / "start.json").exists())
+
+    def test_skeleton_is_used_as_shipped_when_vision_reads_no_body(self):
+        with mock.patch.dict(os.environ, {"FAKE_BODYPOSE_NONE": "1"}):
+            doc = self.run_it()
+        self.assertFalse(doc["skeleton_fit"]["fitted"])
+        control = json.loads((self.root / "out" / "op" / "flat" / "anim" / "walk" / "control.json").read_text())
+        self.assertEqual(control["frames"][0]["joints2d"]["root"], SK.load(SK.named("walk_side"))[0]["root"])
+
+    def test_skeleton_is_used_as_shipped_without_bodypose(self):
+        with mock.patch.dict(os.environ, {"PIPELINE_BODYPOSE": str(self.base / "missing")}):
+            doc = self.run_it(check=False)
+        self.assertEqual(doc["skeleton_fit"], {"fitted": False, "why": "no bin/bodypose"})
 
     def test_guide_keeps_a_light_ground_and_whitens_magenta(self):
         g = self.root / "g.png"

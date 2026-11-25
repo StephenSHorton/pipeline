@@ -245,8 +245,8 @@ STAGE_LABELS = {
     "check": "Check the rig",
     "fbx": "FBX for s&box",
     # scripts/animate.py
-    "skeleton": "Draw the skeleton video",
     "guide": "Fit the picture",
+    "skeleton": "Fit and draw the skeleton video",
     "ltx": "Animate with LTX-2.3",
     "frames": "Cut the frames",
     "cutouts": "Cut out the character",
