@@ -10,7 +10,8 @@ frames, transparent cut-outs and a sprite strip, saved as a new 2D Version of th
 What it writes, under out/<stem>/:
   flat/anim/<action>/guide.png      the picture LTX starts from: the character, square, on its ground
   flat/anim/<action>/side.png       with --side: the side view, fitted the same way, LTX's second guide
-  flat/anim/<action>/control.json   the skeleton per frame (24 fps), and skeleton.mp4 drawn from it
+  flat/anim/<action>/control.json   the skeleton per frame (24 fps), refitted to the guide picture's own body
+                                    (its "fit"), and skeleton.mp4 drawn from it
   flat/anim/<action>/clip.mp4       what LTX-2.3 made (frame 0 is the guide picture)
   flat/anim/<action>/frames/        every frame, NNNN.png
   flat/anim/<action>/cutouts/       every frame cut out (Apple Vision's foreground mask, bin/lift-subject; else
@@ -22,6 +23,12 @@ What it writes, under out/<stem>/:
 The 2D Version is saved before (what was there) and after (the result).
 
 The prompt must say which way the character faces and moves: a flat skeleton does not.
+
+The skeleton is refitted to the picture's own body before it is drawn (skeleton.refit): Apple Vision reads the
+guide picture's skeleton and each part of the shipped one (torso, shoulder and hip widths, upper arm, forearm,
+thigh, shin, head) takes the picture's length, the hips start where the picture's are and the feet stay on its
+ground line. Moving and scaling alone left a realistic operator ~6% off the cartoon-built walker while standing
+still (docs/animate-operator-cycles.md). Without bin/bodypose, or with no skeleton read, it is used as shipped.
 
 A front picture alone leaves the model to guess what the character looks like side-on, and it invents kit (a
 backpack, a pack where the chest rig was). --side gives it a side view too: a second --image guide (a keyframe,
@@ -39,7 +46,8 @@ overridable by environment):
   PIPELINE_LTX_LORA    <root>/weights/ic-lora-union/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors
   PIPELINE_LTX_GEMMA   <root>/weights/gemma-3-12b-it-4bit, else the Hugging Face cache's
                        mlx-community/gemma-3-12b-it-4bit snapshot
-  PIPELINE_BODYPOSE    <root>/bin/bodypose (scripts/bodypose.swift): reads the result's skeleton for the check
+  PIPELINE_BODYPOSE    <root>/bin/bodypose (scripts/bodypose.swift): reads the guide picture's skeleton, which
+                       the shipped skeleton is refitted to, and the result's skeleton for the check
 scripts/bootstrap.sh animate sets these up. About 40 GB at its peak and a minute or so a clip: one big model at a
 time on the Mac (the factory runs it in its one job slot, after freeing the draw model).
 """
@@ -67,7 +75,7 @@ MODEL_NOTE = "LTX-2.3 distilled 1.1 (q8, dgrauet/ltx-2-mlx) with the IC-LoRA Uni
 LICENCE = "LTX-2 Community License Agreement (Lightricks), see NOTICE"
 DISCLOSURE = ("Machine-generated: made with the LTX-2.3 video model. Under the LTX-2 Community License, content "
               "published from it must say plainly that it is machine-generated.")
-STAGES = ("skeleton", "guide", "ltx", "frames", "cutouts", "strip", "pose_check")
+STAGES = ("guide", "skeleton", "ltx", "frames", "cutouts", "strip", "pose_check")
 PICTURES = ("lifted.png", "flat/source.png", "input.png", "input.jpg", "input.jpeg", "input.webp")
 
 
@@ -352,6 +360,26 @@ def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> 
     return res
 
 
+def fit_control(root: Path, control: list[dict], work: Path) -> tuple[list[dict], dict]:
+    """The skeleton refitted to the guide picture's own body (skeleton.refit: its hips, shoulders, limb lengths
+    and feet, read by Apple Vision), so a character built unlike the skeleton's does not start off it. Without
+    bin/bodypose, or when Vision reads no neck, hips and feet in the picture, the skeleton is used as shipped and
+    the returned note says why."""
+    tool = bodypose_tool(root)
+    if not tool:
+        print("animate: no bin/bodypose; the skeleton is used as shipped, not fitted to the picture", flush=True)
+        return control, {"fitted": False, "why": "no bin/bodypose"}
+    target = SK.read_picture(tool, work / "guide.png", work)
+    try:
+        fitted, info = SK.refit(control, target)
+    except SK.SkeletonError as e:
+        print(f"animate: {e}; the skeleton is used as shipped", flush=True)
+        return control, {"fitted": False, "why": str(e)}
+    print(f"animate: skeleton fitted to the picture (x{info['scale']}; " +
+          ", ".join(f"{p} x{r}" for p, r in info["ratios"].items()) + ")", flush=True)
+    return fitted, {"fitted": True, **info}
+
+
 # ------------------------------------------------------------------ the run
 
 def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", action: str = "walk",
@@ -419,17 +447,19 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
     from flat2d.atlas import save_cells
     from flat2d.store import write_center
 
-    stage("skeleton", "Draw the skeleton video")
-    control = SK.fit_frames(SK.retime(SK.load(control_src), skeleton_fps, FPS, frames)
-                            if skeleton_fps != FPS else SK.load(control_src), frames)
-    (work / "control.json").write_text(json.dumps({"fps": FPS, "frames": [{"joints2d": j} for j in control]}) + "\n")
-    SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
-
     stage("guide", "Fit the picture")
     ground = make_guide(pic, size, work / "guide.png")
     side_fitted = None
     if side_pic is not None:
         side_fitted = fit_side(side_pic, work / "guide.png", size, work / "side.png", tuple(ground), lift_tool(root))
+
+    stage("skeleton", "Fit and draw the skeleton video")
+    control = SK.fit_frames(SK.retime(SK.load(control_src), skeleton_fps, FPS, frames)
+                            if skeleton_fps != FPS else SK.load(control_src), frames)
+    control, fit = fit_control(root, control, work)
+    (work / "control.json").write_text(json.dumps({"fps": FPS, "fit": fit,
+                                                   "frames": [{"joints2d": j} for j in control]}) + "\n")
+    SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
 
     stage("ltx", "Animate with LTX-2.3")
     clip = work / "clip.mp4"
@@ -473,6 +503,7 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         "side": {"picture": side_pic.relative_to(folder).as_posix(), "frame": side_frame,
                  "strength": side_strength, "fitted_to_figure": side_fitted} if side_pic else None,
         "skeleton": control_src.stem if control_src.parent == SK.SKELETONS else str(control_src),
+        "skeleton_fit": fit,
         "prompt": prompt,
         "seed": seed,
         "frames": len(frame_files),
