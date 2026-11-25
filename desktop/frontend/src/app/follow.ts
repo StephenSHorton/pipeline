@@ -7,9 +7,10 @@
 //
 // A workbench `show` is Claude asking you to look (the asset on a stage, an earlier version beside it in Compare):
 // it opens even with Follow off, since it was asked for, but still waits on the same two things.
+import { openAsset } from "@/app/open";
 import { navigate, parseRoute } from "@/app/router";
 import { onActivity, splitOut, useActivity, type ActivityEntry } from "@/lib/activity";
-import { useFlow } from "@/lib/flow";
+import { useFlow, type Stage } from "@/lib/flow";
 import { reattachJob, useJobs } from "@/lib/jobs";
 import { useStage } from "@/screens/asset/stage";
 import { useCompare } from "@/screens/viewer/compare";
@@ -33,6 +34,8 @@ function currentStem(): string | null {
 
 export interface FollowStep {
   open?: string;
+  /** The stage to open it on: a building job writes its stack, so Stack (else the asset's own default). */
+  stage?: Stage;
   model?: { stem: string; file: string };
   refresh?: boolean;
   adopt?: boolean;
@@ -58,6 +61,7 @@ export function followStep(
   // The feed sends an entry's latest copy only, so a quick action can arrive already done: new is enough.
   const started = !prev || (e.state === "running" && prev.state !== "running");
   if (started && e.stem) out.open = e.stem;
+  if (out.open && e.kind === "building") out.stage = "stack";
   if (started && e.state === "running" && e.source === "job") out.adopt = true;
   if (e.glb && e.glb !== prev?.glb) {
     const m = splitOut(e.glb);
@@ -120,7 +124,10 @@ export function startFollow(): () => void {
     }
     if (step.adopt && !useJobs.getState().job) void reattachJob();
     if (!useActivity.getState().follow) return;
-    if (step.open && currentStem() !== step.open && !busyHere()) navigate({ name: "asset", stem: step.open });
+    if (step.open && currentStem() !== step.open && !busyHere()) {
+      if (step.stage) openAsset(step.open, step.stage);
+      else navigate({ name: "asset", stem: step.open });
+    }
     if (step.model) void showModel(step.model.stem, step.model.file, !!step.refresh);
   });
 }

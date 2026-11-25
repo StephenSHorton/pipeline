@@ -6,9 +6,10 @@ import { defineConfig } from "vite";
 const here = import.meta.dirname;
 const dist = path.resolve(here, "dist");
 
+// PIPELINE_DEV_HOST points it elsewhere (a factory run on its own port, to try the page without the app).
 // Every path the Go host answers itself or proxies to the factory (desktop/main.go assetHandler,
 // sidecar.IsFactoryAPI). The page uses relative URLs, so in `vite` dev these go to the running app on :8777.
-const HOST = "http://127.0.0.1:8777";
+const HOST = process.env.PIPELINE_DEV_HOST || "http://127.0.0.1:8777";
 // Matched as whole path segments, so a public file like /stack-preview.js is not mistaken for /stack/.
 const PROXIED = [
   "health", "assets", "status", "generate", "upload", "clean", "2d", "inspect", "glb", "stack",

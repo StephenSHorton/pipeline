@@ -23,6 +23,8 @@ POST /generate
 POST /2d/draw            a 2D still (or Ideas) as a job: /status, /cancel
 POST /2d/building        a building's walls drawn, then built as a sprite stack (scripts/stack_building.py), as a job
 POST /2d/animate/<stem>  a character picture plus a skeleton clip animated by LTX-2.3 (scripts/animate.py), as a job
+GET  /2d/skeletons       the skeleton clips Pipeline ships, for Animate's picker: {name, label, action}
+POST /2d/join            buildings already made joined into a row or a corner (scripts/stack_join.py), no model
 GET  /2d/<stem>/drawing  the picture filling in while it draws
 """
 from __future__ import annotations
@@ -567,6 +569,19 @@ FACING_SOURCES = ("drawn", "detected", "user", "cues")
 KEPT_INTENT = ("rig", "facing_source", "subject", "kind")
 
 
+# A building made from drawn walls, or joined from buildings: a sprite stack (the Library's kind, the Stack stage).
+BUILDING_INTENT = {"output": "stack", "subject": "building"}
+
+
+def _stack_maker(folder: Path) -> str:
+    """stack/stack.json's maker ("walls" for a building, "views", ...), "" when unreadable."""
+    try:
+        doc = json.loads((folder / "stack" / "stack.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(doc.get("maker") or "") if isinstance(doc, dict) else ""
+
+
 def write_intent(root: Path, stem: str, intent: dict[str, Any]) -> None:
     path = stem_dir(root, stem) / "intent.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -603,6 +618,7 @@ class Factory:
         self._checking: set[str] = set()  # stems whose rig is being checked again (POST /rig/<stem>/inspect)
         self._runner = generate_runner or self._run_generate_sh
         self._sync_draws = 0  # plain POST /2d/generate or /2d/idea drawing right now (they share the model's hook)
+        self._joining: set[str] = set()  # POST /2d/join writing these stems right now
         # What Claude (the workbench posts its tool calls) and the jobs are doing, for the app (GET /activity).
         self.activity = Activity(self.root / "out" / "_logs" / "activity.jsonl")
         self.job_watch = JobWatch(self.activity, self.status, self.root)
@@ -695,6 +711,10 @@ class Factory:
         except (projects.ProjectError, OSError) as e:
             print(f"assets: could not read projects: {e}", file=sys.stderr)
             owner = {}
+        job = self._snapshot()
+        # The running job's asset is listed before it has written anything (a building's stack comes at its end),
+        # so the app can open it while it is made.
+        making = job.get("stem") if job and job.get("state") == "running" else None
         if out.is_dir():
             for d in sorted(out.iterdir()):
                 if not d.is_dir() or d.name.startswith("."):
@@ -705,6 +725,9 @@ class Factory:
                     continue
                 has_mesh = pick_glb(self.root, d.name) is not None
                 has_stack = (d / "stack" / "stack.json").is_file()
+                intent = read_intent(d) or {}
+                # A building: drawn from walls or joined (maker walls), or a stack made for a building another way.
+                building = has_stack and (_stack_maker(d) == "walls" or intent.get("subject") == "building")
                 has_lods = (d / "lods.json").is_file()
                 has_flat = (
                     (d / "flat" / "source.png").is_file()
@@ -712,11 +735,13 @@ class Factory:
                     or (d / "flat" / "sheets" / "manifest.json").is_file()
                 )
                 has_ideas = (d / "ideas" / "ideas.json").is_file()
-                if not (has_mesh or has_stack or has_lods or has_flat or has_ideas):
+                if not (has_mesh or has_stack or has_lods or has_flat or has_ideas or d.name == making):
                     continue
                 preview = _asset_shot(
                     d,
-                    (
+                    # A building's drawn walls are on magenta: its stack's preview is what it looks like.
+                    (("stack/preview.png",) if building else ())
+                    + (
                         "preview.png",
                         "input.png",
                         "input.jpg",
@@ -731,10 +756,11 @@ class Factory:
                         "title": d.name.replace("-", " "),
                         "has_mesh": has_mesh,
                         "has_stack": has_stack,
+                        "building": building,
                         "has_flat": has_flat,
                         "has_ideas": has_ideas,
                         "has_psx": (d / "psx.glb").is_file(),
-                        "output": (read_intent(d) or {}).get("output"),
+                        "output": intent.get("output"),
                         "input": _asset_shot(d, ("input.png", "input.jpg")),
                         "preview": preview,
                         "project": owner.get(d.name),
@@ -742,7 +768,6 @@ class Factory:
                     }
                 )
         assets.sort(key=lambda a: a.get("mtime") or 0, reverse=True)
-        job = self._snapshot()
         return {
             "ok": True,
             "root": str(out),
@@ -1335,10 +1360,47 @@ class Factory:
                 raise RuntimeError("the factory is busy with another job")
             drawjob.fresh_log(Path(spec["log"]))
             self._job = dict(spec)
+        write_intent(self.root, stem, BUILDING_INTENT)  # a building is a sprite stack: the Library and Stack say so
         threading.Thread(target=building.run, args=(self, spec, payload), daemon=False).start()
         projects.file_made(self.root, stem, body)
         return {"ok": True, "accepted": True, "job_id": job_id, "state": "running", "stem": stem, "kind": "building",
                 "status_url": f"/status/{job_id}"}
+
+    def join_buildings(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /2d/join: buildings already made (their current stacks) joined into one stack, a row or a corner
+        (scripts/stack_join.py). No model and quick, so not a job; it waits while a job runs (that job may be
+        writing one of the parts). Body {stem, layout: row|corner, parts: [stem | {stem, turn}], project?}."""
+        import stack_join
+
+        if not isinstance(body, dict):
+            raise ValueError("body must be a JSON object")
+        stem = check_stem(str(body.get("stem") or ""))
+        layout = str(body.get("layout") or "row").strip().lower()
+        raw = body.get("parts")
+        if not isinstance(raw, list):
+            raise ValueError("parts: list the buildings to join")
+        specs: list[tuple[str, int]] = []
+        for part in raw:
+            name, turn = (part.get("stem"), part.get("turn") or 0) if isinstance(part, dict) else (part, 0)
+            if not isinstance(name, str) or isinstance(turn, bool) or not isinstance(turn, int):
+                raise ValueError("each part is a building's name, with an optional whole number of quarter turns")
+            specs.append((check_stem(name), turn))
+        with self._lock:
+            if (self._job and self._job.get("state") == "running") or self._sync_draws:
+                raise RuntimeError("the factory is busy with another job")
+            if stem in self._joining:
+                raise RuntimeError(f"{stem} is already being joined")
+            self._joining.add(stem)
+        try:
+            lines: list[str] = []
+            out = stack_join.write_joined(self.root, stem, specs, layout, line=lines.append)
+            write_intent(self.root, stem, BUILDING_INTENT)
+            projects.file_made(self.root, stem, body)
+        finally:
+            with self._lock:
+                self._joining.discard(stem)
+        return {"ok": True, "stem": stem, "layout": layout, "size": out["size"], "layers": out["layers"],
+                "colors": out["colors"], "parts": out["parts"], "line": " ".join(lines)}
 
     def sync_draw(self, on: bool) -> None:
         """A plain POST /2d/generate or /2d/idea began (True) or ended (False). Raises when a job runs."""
@@ -1779,6 +1841,23 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             return _json_bytes({"ok": False, "error": str(e)}, 400)
         except RuntimeError as e:
             return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
+    if method == "GET" and path == "/2d/skeletons":  # before GET /2d/<stem>, which would take it for an asset
+        import skeleton as SK
+
+        return _json_bytes({"ok": True, "skeletons": SK.catalogue(), "default": "walk_side"})
+    if method == "POST" and path == "/2d/join":
+        import stack_join
+        from stack_building import WallsError
+
+        try:
+            raw = json.loads(body.decode("utf-8") or "{}") if body else {}
+            return _json_bytes(factory.join_buildings(raw if isinstance(raw, dict) else {}))
+        except json.JSONDecodeError as e:
+            return _json_bytes({"ok": False, "error": f"invalid JSON: {e}"}, 400)
+        except (ValueError, stack_join.JoinError, WallsError) as e:
+            return _json_bytes({"ok": False, "error": str(e)}, 400)
+        except RuntimeError as e:
+            return _json_bytes({"ok": False, "error": str(e), "busy": True}, 409)
     if method == "GET" and len(parts) == 3 and parts[0] == "2d" and parts[2] == "drawing":
         try:
             drawing = stem_dir(factory.root, check_stem(parts[1])) / "flat" / "drawing.jpg"
@@ -1882,6 +1961,8 @@ def _dispatch(
                     "POST /2d/draw",
                     "POST /2d/building",
                     "POST /2d/animate/<stem>",
+                    "GET /2d/skeletons",
+                    "POST /2d/join",
                     "GET /2d/<stem>/drawing",
                     "POST /2d/drop",
                     "POST /2d/split",

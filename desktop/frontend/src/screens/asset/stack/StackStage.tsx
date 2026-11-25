@@ -8,7 +8,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { useJobs } from "@/lib/jobs";
+import { jobStageText, useJobs } from "@/lib/jobs";
+import { onJobChip } from "@/app/open";
 import { cn } from "@/lib/utils";
 import { writePixelLook } from "@/viewer/pixelLook";
 import { ACTION, COMMIT, PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
@@ -103,6 +104,8 @@ function StackBody({ stem, flowVersion }: StageProps) {
   const ownSave = useRef(0);
   const toggles = useRef<Partial<Record<StackCubby, HTMLButtonElement | null>>>({});
   const building = useJobs((s) => buildingStack(s.job, stem));
+  // A building being made here (Make's Building): its stage under Generating, and the way to its job card.
+  const makingStage = useJobs((s) => (building && s.job?.kind === "building" ? jobStageText(s.job.progress) : ""));
 
   // One canvas per mount; dispose frees its WebGL context (legacy never did, so every remount would leak one).
   useEffect(() => {
@@ -247,6 +250,14 @@ function StackBody({ stem, flowVersion }: StageProps) {
           <div className="absolute inset-0 flex items-center justify-center p-6">
             <Card size="hud" role="status" aria-live="polite" className={cn(PANEL, "max-w-sm px-4 py-2.5 text-center text-ink-3")}>
               {empty}
+              {makingStage && phase === "generating" ? (
+                <>
+                  <span className="mt-1 block text-[0.8rem] text-ink-2">{makingStage}</span>
+                  <Button type="button" variant="outline" size="sm" onClick={onJobChip} className="pointer-events-auto mt-2">
+                    Show the stages
+                  </Button>
+                </>
+              ) : null}
             </Card>
           </div>
         ) : null}
