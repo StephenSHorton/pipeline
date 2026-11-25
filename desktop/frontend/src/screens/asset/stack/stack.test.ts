@@ -102,7 +102,7 @@ describe("copy", () => {
   });
 
   it("the cubbies: Look open by default, one open at a time", () => {
-    expect(CUBBY_LABELS).toEqual({ "stack-look": "Look", "stack-sliders": "Shape", "stack-palette": "Colors", paint: "Paint" });
+    expect(CUBBY_LABELS).toEqual({ "stack-look": "Look", "stack-sliders": "Shape", "stack-palette": "Colors", paint: "Paint", tower: "Tower" });
     expect(CUBBY_DEFAULT).toBe("stack-look");
     expect(openCubby("stack-look", "stack-palette")).toBe("stack-palette");
     expect(openCubby("stack-look", "stack-look")).toBeNull();

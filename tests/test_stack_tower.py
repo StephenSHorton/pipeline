@@ -148,5 +148,93 @@ class TowerTests(unittest.TestCase):
         self.assertEqual(out["tiers"][1]["roof"]["kind"], "gable")
 
 
+class RequestTests(unittest.TestCase):
+    """A tower asked for by the app: two numbers, tiers stepped in from the building's own bays."""
+
+    def test_stepped_tiers_step_one_bay_in_on_every_side(self) -> None:
+        self.assertEqual(ST.stepped_tiers(7, 5, 3, 4), [(4, 7, 5), (4, 5, 3), (4, 3, 1)])
+        self.assertEqual(ST.stepped_tiers(4, 4, 2, 6), [(6, 4, 4), (6, 2, 2)])
+        self.assertEqual(ST.stepped_tiers(1, 1, 1, 3), [(3, 1, 1)])
+
+    def test_when_the_bays_run_out_it_says_so(self) -> None:
+        with self.assertRaises(SB.WallsError) as e:
+            ST.stepped_tiers(7, 4, 3, 4)  # 4 along: 4, 2, then nothing
+        self.assertIn("room for 2 tiers, not 3", str(e.exception))
+        self.assertIn("7 window bays across and 4 along", str(e.exception))
+        with self.assertRaises(SB.WallsError):
+            ST.stepped_tiers(12, 12, ST.MAX_TIERS + 1, 3)
+        with self.assertRaises(SB.WallsError):
+            ST.stepped_tiers(5, 5, 2, 0)
+
+    def test_parse_request(self) -> None:
+        ok = ST.parse_request({"stem": "t", "from": "s", "tiers": 3, "floors": 4, "project": None})
+        self.assertEqual(ok, {"stem": "t", "from": "s", "tiers": 3, "floors": 4})
+        full = ST.parse_request({"stem": "t", "from": "s", "tiers": 2, "floors": 1, "roof": "Gable", "ridge": "along",
+                                 "roof_colour": "#8a4a34"})
+        self.assertEqual((full["roof"], full["ridge"], full["roof_colour"]), ("gable", "along", "#8a4a34"))
+        for bad in ([], {"from": "s", "tiers": 2, "floors": 3},  # no stem
+                    {"stem": "t", "tiers": 2, "floors": 3},  # no building
+                    {"stem": "s", "from": "s", "tiers": 2, "floors": 3},  # over itself
+                    {"stem": "t", "from": "s", "tiers": "2", "floors": 3},
+                    {"stem": "t", "from": "s", "tiers": True, "floors": 3},
+                    {"stem": "t", "from": "s", "tiers": 2.5, "floors": 3},
+                    {"stem": "t", "from": "s", "tiers": 0, "floors": 3},
+                    {"stem": "t", "from": "s", "tiers": ST.MAX_TIERS + 1, "floors": 3},
+                    {"stem": "t", "from": "s", "tiers": 2, "floors": SB.FLOOR_MAX + 1},
+                    {"stem": "t", "from": "s", "tiers": 2},
+                    {"stem": "t", "from": "s", "tiers": 2, "floors": 3, "roof": "dome"},
+                    {"stem": "t", "from": "s", "tiers": 2, "floors": 3, "ridge": "sideways"},
+                    {"stem": "t", "from": "s", "tiers": 2, "floors": 3, "roof_colour": "#zzzzzz"},
+                    {"stem": "../t", "from": "s", "tiers": 2, "floors": 3}):
+            with self.assertRaises(ValueError, msg=bad):
+                ST.parse_request(bad)
+
+    def test_a_requested_tower_steps_in_from_the_building_as_made(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "out").mkdir()
+            SB.build(root, "s", synthetic_walls(), size=SMALL, line=Q)  # drawn: four bays a face
+            self.assertEqual(ST.building_bays(root, "s"), (4, 4))
+            out = ST.write_requested(root, ST.parse_request({"stem": "t", "from": "s", "tiers": 2, "floors": 3}),
+                                     line=Q)
+            self.assertEqual([(t["floors"], t["wide"], t["deep"]) for t in out["tiers"]], [(3, 4, 4), (3, 2, 2)])
+            (b, u) = out["tiers"]
+            self.assertEqual(b["size"][2] - u["size"][2], b["size"][1] - u["size"][1])  # in by the same on each side
+            self.assertEqual(json.loads((root / "out" / "t" / "stack" / "stack.json").read_text())["shape"], "tower")
+            flow = json.loads((root / "out" / "t" / "flow.json").read_text())
+            self.assertTrue(flow)  # saved as a Stack version
+            # A third tier has no bays left: said plainly, nothing written.
+            with self.assertRaises(SB.WallsError) as e:
+                ST.write_requested(root, ST.parse_request({"stem": "t3", "from": "s", "tiers": 3, "floors": 3}), line=Q)
+            self.assertIn("room for 2 tiers, not 3", str(e.exception))
+            self.assertFalse((root / "out" / "t3").exists())
+            # A tower is not made from a tower: only a building with drawn walls.
+            with self.assertRaises(SB.WallsError):
+                ST.building_bays(root, "t")
+
+    def test_a_building_made_narrower_starts_from_its_own_bays_and_roof(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "out").mkdir()
+            SB.build(root, "s", synthetic_walls(), size=SMALL, line=Q, wide=6, deep=5, roof="gable", ridge="along",
+                     roof_colour="tile")
+            self.assertEqual(ST.building_bays(root, "s"), (6, 5))
+            self.assertEqual(ST.building_roof(root, "s")["roof"], "gable")
+            out = ST.write_requested(root, ST.parse_request({"stem": "t", "from": "s", "tiers": 2, "floors": 2}),
+                                     line=Q)
+            self.assertEqual([(t["wide"], t["deep"]) for t in out["tiers"]], [(6, 5), (4, 3)])
+            self.assertEqual([t["roof"]["kind"] for t in out["tiers"]], ["flat", "gable"])  # the building's roof on top
+            self.assertEqual(out["tiers"][1]["roof"]["ridge"], "along")
+            flat = ST.write_requested(root, ST.parse_request({"stem": "f", "from": "s", "tiers": 2, "floors": 2,
+                                                              "roof": "flat"}), line=Q)
+            self.assertEqual(flat["tiers"][1]["roof"]["kind"], "flat")
+            # Three tiers would leave one bay along the top, which this wall (two middle bays, no door) cannot cut:
+            # said plainly, with the tier, nothing written.
+            with self.assertRaises(SB.WallsError) as e:
+                ST.write_requested(root, ST.parse_request({"stem": "t3", "from": "s", "tiers": 3, "floors": 2}), line=Q)
+            self.assertIn("tier 3 (2 by 1 window bays) cannot be made", str(e.exception))
+            self.assertFalse((root / "out" / "t3").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

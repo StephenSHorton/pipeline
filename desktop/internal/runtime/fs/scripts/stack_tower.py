@@ -75,7 +75,10 @@ def tower_shape(drawn: dict[str, np.ndarray], tiers: list[tuple[int, int, int]],
     shapes = []
     for i, (f, w, d) in enumerate(tiers):
         top = i == len(tiers) - 1
-        shapes.append(tier_shape(drawn, f, w, d, i == 0, look, roof if top else "flat", ridge, roof_colour))
+        try:
+            shapes.append(tier_shape(drawn, f, w, d, i == 0, look, roof if top else "flat", ridge, roof_colour))
+        except SB.WallsError as e:  # which tier could not be cut from the drawn walls, and why
+            raise SB.WallsError(f"tier {i + 1} ({w} by {d} window bays) cannot be made: {e}") from None
     # Where each block goes: on the deck of the block under it, in its middle.
     places = []  # (layer, y, x) of the block's back left corner, and the eave its arrays carry round it
     for i, s in enumerate(shapes):
@@ -147,6 +150,125 @@ def write_tower(root: Path, stem: str, source: str, tiers: list[tuple[int, int, 
          f"{size['height']} layers.")
     return {"meta": meta, "size": size, "layers": result["layers"], "colors": result["colors"],
             "tiers": shape["tiers"]}
+
+
+# ------------------------------------------------------------------------------------- a tower asked for by the app
+
+
+def building_bays(root: Path, source: str) -> tuple[int, int]:
+    """The window bays across the front and along the side of a building made from drawn walls: as it was made
+    (its stack.json "bays", wide and deep), or the plain wall's drawn bays when its stack does not say."""
+    meta_path = Path(root) / "out" / source / "stack" / "stack.json"
+    meta: dict[str, Any] = {}
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+    if meta and (meta.get("maker") != "walls" or meta.get("shape") not in (None, "code")):
+        raise SB.WallsError(f"{source} is not a building made from drawn walls, so it cannot be made a tower")
+    bays = meta.get("bays") if isinstance(meta.get("bays"), dict) else {}
+    wide, deep = bays.get("wide"), bays.get("deep")
+    if isinstance(wide, int) and isinstance(deep, int) and wide > 0 and deep > 0:
+        return wide, deep
+    drawn = len(SB.find_bays(SB.read_pixel(root, source)["side"]))
+    if not drawn:
+        raise SB.WallsError(f"no window bays were found on {source}'s plain wall, so its tiers cannot step in")
+    return drawn, drawn
+
+
+def building_roof(root: Path, source: str) -> dict[str, Any]:
+    """The roof the building was made with: {roof, ridge, roof_colour}, flat when its stack does not say."""
+    try:
+        roof = json.loads((Path(root) / "out" / source / "stack" / "stack.json").read_text(encoding="utf-8")).get("roof")
+    except (OSError, ValueError, AttributeError):
+        roof = None
+    if not isinstance(roof, dict) or roof.get("kind") != "gable":
+        return {"roof": "flat", "ridge": "across", "roof_colour": None}
+    colour = roof.get("colour")
+    return {"roof": "gable", "ridge": roof.get("ridge") if roof.get("ridge") in SB.RIDGES else "across",
+            "roof_colour": colour if isinstance(colour, list) and len(colour) == 3 else None}
+
+
+def stepped_tiers(wide: int, deep: int, tiers: int, floors: int) -> list[tuple[int, int, int]]:
+    """Tiers bottom first as (floors, wide, deep): the bottom tier the building's own bays, each tier above one
+    window bay narrower on every side (2 fewer across, 2 fewer along), every tier `floors` floors. When the bays run
+    out before the tiers do, it says so: it never gives fewer tiers than asked."""
+    if not 1 <= tiers <= MAX_TIERS:
+        raise SB.WallsError(f"a tower is 1 to {MAX_TIERS} tiers")
+    if not 1 <= floors <= SB.FLOOR_MAX:
+        raise SB.WallsError(f"a tier is 1 to {SB.FLOOR_MAX} floors")
+    room = 1 + (min(wide, deep) - 1) // 2
+    if tiers > room:
+        raise SB.WallsError(
+            f"this building is {wide} window bay{'s' if wide != 1 else ''} across and {deep} along; each tier steps "
+            f"in one bay on every side, so it has room for {room} tier{'s' if room != 1 else ''}, not {tiers}")
+    return [(floors, wide - 2 * i, deep - 2 * i) for i in range(tiers)]
+
+
+def _whole(body: dict[str, Any], key: str, default: int | None = None) -> int:
+    v = body.get(key, default)
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"{key} must be a whole number")
+    return v
+
+
+def parse_request(body: Any) -> dict[str, Any]:
+    """A tower asked for by the app (POST /2d/tower), checked: {stem (the new tower), from (a building already
+    made), tiers (how many), floors (in each tier), roof?, ridge?, roof_colour? (the top tier's; left out: the
+    building's own), project?}. Raises ValueError with a plain line."""
+    from factory_env import check_stem
+
+    if not isinstance(body, dict):
+        raise ValueError("body must be a JSON object")
+    stem = check_stem(str(body.get("stem") or ""))
+    source = str(body.get("from") or "")
+    if not source:
+        raise ValueError("from: name the building the tower is made from")
+    source = check_stem(source)
+    if stem == source:
+        raise ValueError("a tower is written as a new building, not over the one it is made from")
+    out: dict[str, Any] = {"stem": stem, "from": source, "tiers": _whole(body, "tiers"),
+                           "floors": _whole(body, "floors")}
+    if not 1 <= out["tiers"] <= MAX_TIERS:
+        raise ValueError(f"tiers must be 1 to {MAX_TIERS}")
+    if not 1 <= out["floors"] <= SB.FLOOR_MAX:
+        raise ValueError(f"floors must be 1 to {SB.FLOOR_MAX}")
+    if body.get("roof") is not None:
+        roof = str(body["roof"]).strip().lower()
+        if roof not in SB.ROOFS:
+            raise ValueError(f"roof must be {' or '.join(SB.ROOFS)}")
+        out["roof"] = roof
+    if body.get("ridge") is not None:
+        ridge = str(body["ridge"]).strip().lower()
+        if ridge not in SB.RIDGES:
+            raise ValueError(f"ridge must be {' or '.join(SB.RIDGES)}")
+        out["ridge"] = ridge
+    if body.get("roof_colour") is not None:
+        try:
+            SB.roof_rgb(body["roof_colour"])
+        except SB.WallsError as e:
+            raise ValueError(str(e)) from None
+        out["roof_colour"] = body["roof_colour"]
+    project = body.get("project")
+    if project is not None and not isinstance(project, str):
+        raise ValueError("project must be a project's id or null")
+    return out
+
+
+def write_requested(root: Path, req: dict[str, Any], line=print) -> dict[str, Any]:
+    """The tower parse_request checked: tiers stepped in from the building's own bays, the top tier's roof the
+    building's unless asked, written by write_tower (a new Stack version)."""
+    wide, deep = building_bays(root, req["from"])
+    tiers = stepped_tiers(wide, deep, req["tiers"], req["floors"])
+    roof = building_roof(root, req["from"])
+    if "roof" in req:  # a roof asked for starts from the building's ridge and colour, not a flat one's
+        roof["roof"] = req["roof"]
+    for k in ("ridge", "roof_colour"):
+        if k in req:
+            roof[k] = req[k]
+    return write_tower(root, req["stem"], req["from"], tiers, roof["roof"], roof["ridge"], roof["roof_colour"],
+                       line=line)
 
 
 def main() -> int:

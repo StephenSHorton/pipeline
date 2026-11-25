@@ -13,6 +13,14 @@ import {
   joinBody,
   joinName,
   joinProblem,
+  MAX_TIERS,
+  sourceBays,
+  tiersText,
+  towerable,
+  towerBody,
+  towerName,
+  towerProblem,
+  towerTiers,
   type BuildingChoice,
 } from "./building";
 
@@ -99,5 +107,54 @@ describe("joining buildings (POST /2d/join)", () => {
     expect(joinName("", "corner", ["city_shop_wide", "city_townhouse"])).toBe("shop-wide-corner");
     expect(joinName("High Street", "row", ["a", "b"])).toBe("high-street");
     expect(joinBody("cafe-row", "row", ["city_cafe", "city_bakery"], null)).toEqual({ stem: "cafe-row", layout: "row", parts: ["city_cafe", "city_bakery"], project: null });
+  });
+});
+
+describe("a tower from a building (Stack stage, POST /2d/tower)", () => {
+  const drawn = { maker: "walls", shape: "code", bays: { drawn: 4, wide: 4, deep: 4 } };
+
+  it("is offered only on a building drawn from walls", () => {
+    expect(towerable(drawn)).toBe(true);
+    expect(towerable({ maker: "walls", shape: "tower" })).toBe(false); // a tower has no drawn walls of its own
+    expect(towerable({ maker: "walls" })).toBe(false); // nor has a joined building
+    expect(towerable({ maker: "views" })).toBe(false);
+    expect(towerable(null)).toBe(false);
+  });
+
+  it("starts from the building's own bays, as made", () => {
+    expect(sourceBays(drawn)).toEqual([4, 4]);
+    expect(sourceBays({ maker: "walls", shape: "code", bays: { drawn: 4, wide: 7, deep: 5 } })).toEqual([7, 5]);
+    expect(sourceBays({ maker: "walls", shape: "code", bays: { drawn: 3 } })).toEqual([3, 3]);
+    expect(sourceBays({ maker: "walls", shape: "code" })).toBeNull();
+  });
+
+  it("steps each tier one window bay in on every side", () => {
+    expect(towerTiers(7, 5, 3)).toEqual([
+      [7, 5],
+      [5, 3],
+      [3, 1],
+    ]);
+    expect(tiersText([4, 4], 2)).toBe("4 by 4 bays, then 2 by 2");
+  });
+
+  it("says plainly when the bays run out, never giving fewer tiers", () => {
+    expect(towerProblem([7, 5], 3, 4)).toBe("");
+    expect(towerProblem([4, 4], 3, 4)).toBe(
+      "This building is 4 window bays across and 4 along. Each tier steps in one bay on every side, so it has room for 2 tiers, not 3.",
+    );
+    expect(towerProblem([4, 4], MAX_TIERS + 1, 4)).toMatch(/1 to 5 tiers/);
+    expect(towerProblem([4, 4], 2, 0)).toMatch(/1 to 40 floors/);
+    expect(towerProblem(null, 2, 4)).toMatch(/does not say its window bays/);
+  });
+
+  it("sends two numbers and the building, under a new name", () => {
+    expect(towerName("city_bakery")).toBe("city-bakery-tower");
+    expect(towerBody("city-bakery-tower", "city_bakery", 3, 4, "city")).toEqual({
+      stem: "city-bakery-tower",
+      from: "city_bakery",
+      tiers: 3,
+      floors: 4,
+      project: "city",
+    });
   });
 });
