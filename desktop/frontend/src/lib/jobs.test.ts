@@ -2,7 +2,7 @@
 // test_shape_mv_tooltip_reads_the_probed_features), which run the legacy page's functions under node.
 import { describe, expect, it } from "vitest";
 import { jobStage } from "@/app/open";
-import { degradedLine, healthLabel, isStackDraw, jobDoing, overlayPct, overlayPctText, shapeMvNote } from "./jobs";
+import { degradedLine, healthLabel, isStackDraw, jobDoing, jobVerb, overlayPct, overlayPctText, shapeMvNote } from "./jobs";
 
 describe("degradedLine", () => {
   it("is one plain-English line, nothing when there is nothing", () => {
@@ -82,5 +82,14 @@ describe("a stack draw (Draw views & stack)", () => {
     expect([isStackDraw(mine), isStackDraw(back), isStackDraw(plain)]).toEqual([true, true, false]);
     expect(jobDoing(mine)).toBe("Stacking race_car");
     expect([jobStage(mine), jobStage(back), jobStage(plain)]).toEqual(["stack", "stack", "flat"]);
+  });
+});
+
+describe("an Animate job (POST /2d/animate/<stem>)", () => {
+  it("says what it does, and opens on 2D", () => {
+    const j = { stem: "red-soldier", kind: "animate" as const };
+    expect(jobDoing(j)).toBe("Animating red soldier");
+    expect(jobVerb(j)).toBe("animate");
+    expect(jobStage(j)).toBe("flat");
   });
 });

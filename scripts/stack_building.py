@@ -96,6 +96,12 @@ DOOR_EDGE = 0.12  # the corner trim each side, as a share of the width, is left 
 DOOR_COMMON = 0.2  # a colour seen in both this share of a probed row's left end and its right end is the wall's
 DOOR_RUN = 0.06  # a run of other colours this wide (share of the width) is an opening that reaches the ground ...
 DOOR_HITS = 3  # ... and one in at least this many probed rows is a door (the 2026-11-21 walls: plain walls 0 under 0.03, doors 6 of 6)
+# A shop front the full width of the ground floor is one colour at both ends, so the door probe takes it for the wall's
+# own (the first real run from the app, 2026-11-24: a green shop front and door drawn on the plain wall, 2 hits). Its
+# ground floor does not look like the floors above it: the colours of these shares of the height above the bottom ...
+GROUND_BAND = (0.05, 0.22)
+UPPER_BAND = (0.35, 0.65)  # ... against these (shares of the height down from the top), as histogram overlap
+GROUND_MATCH = 0.6  # less overlap than this is a shop front (plain walls 0.67 to 0.86; shop fronts 0.26 to 0.51)
 DECK_TOL = 30  # summed-RGB distance from the top view's centre colour that is still deck
 CRISP_DISTINCT = 64  # a face with at most this many colours takes its parapet colour by vote, else by median
 ROOFS = ("flat", "gable")
@@ -116,6 +122,10 @@ BAY_MIN = 0.05  # a window narrower than this share of the width is not one
 BAY_NARROW = 0.6  # ... and one narrower than this share of the typical window is trim (dark corner stones)
 BAY_DOOR = 0.25  # a door covering this share of a bay's columns is in it (its frame may reach the next bay)
 BAY_MAX = 12  # at most this many bays on a face
+FLOOR_GLASS = (0.25, 0.75)  # a row is a window row when glass covers this share of the bays' columns (more: a line)
+FLOOR_GAP = 0.04  # window rows this close (share of the height: sash bars, window heads) are one floor's windows
+FLOOR_MIN = 0.06  # a run of window rows shorter than this share of the height is not a floor's windows
+FLOOR_MAX = 40  # at most this many floors in one block
 
 
 class WallsError(RuntimeError):
@@ -216,14 +226,44 @@ def _longest(odd: np.ndarray) -> tuple[int, int]:
     return best
 
 
+def ground_match(pic) -> float:
+    """How much the wall's ground floor looks like the floors above it: the overlap (0 to 1) of their colour
+    histograms, inside the corner trim. A plain wall's ground floor is the same material with windows; a shop front
+    is not."""
+    rgb = _rgb(pic)
+    fg = _below_cornice(_mask(rgb))
+    rows = np.nonzero(fg.any(1))[0]
+    if len(rows) < 10:
+        raise WallsError("the plain wall is empty")
+    top = int(rows[0])
+    bottom = int(rows[-1]) - base_rows(fg)
+    h = bottom - top + 1
+    xs = np.nonzero(fg[bottom - h // 3])[0]
+    x0, x1 = int(xs[0]), int(xs[-1])
+    edge = int(DOOR_EDGE * (x1 - x0 + 1))
+
+    def hist(a: np.ndarray) -> np.ndarray:
+        q = a.reshape(-1, 3).astype(int) // 32
+        n = np.bincount(q[:, 0] * 64 + q[:, 1] * 8 + q[:, 2], minlength=512)
+        return n / max(1, n.sum())
+
+    cols = slice(x0 + edge, x1 - edge + 1)
+    upper = hist(rgb[top + int(UPPER_BAND[0] * h) : top + int(UPPER_BAND[1] * h), cols])
+    ground = hist(rgb[bottom - int(GROUND_BAND[1] * h) : bottom - int(GROUND_BAND[0] * h), cols])
+    return round(float(np.minimum(upper, ground).sum()), 3)
+
+
 def plain_wall_door(pic) -> dict[str, Any]:
     """Whether a plain wall picture has an opening that reaches the ground (a door, a shop front): a run of colours
-    that are not the wall's, the plinth's or the trim's, across the bottom rows of the wall. Windows stand on sills
-    above those rows. Returns {door, hits, runs}."""
+    that are not the wall's, the plinth's or the trim's, across the bottom rows of the wall (windows stand on sills
+    above those rows), or a ground floor that does not look like the floors above (a full-width shop front).
+    Returns {door, hits, runs, ground, shop_front}."""
     rows, _, w = _door_rows(pic)
     runs = [round((lambda r: r[1] - r[0])(_longest(odd)) / w, 3) for odd in rows]
     hits = sum(r >= DOOR_RUN for r in runs)
-    return {"door": hits >= DOOR_HITS, "hits": hits, "runs": runs}
+    ground = ground_match(pic)
+    shop = ground < GROUND_MATCH
+    return {"door": hits >= DOOR_HITS or shop, "hits": hits, "runs": runs, "ground": ground, "shop_front": shop}
 
 
 def door_columns(pic) -> np.ndarray:
@@ -581,6 +621,80 @@ def set_bays(view: dict[str, np.ndarray], wide: int | None = None, deep: int | N
         info[key], info[f"{key}_order"] = int(n), order
     info["view"] = out
     return info
+
+
+# ---------------------------------------------------------------------------------------------------- the floors
+
+
+def find_floors(wall: np.ndarray) -> list[tuple[int, int]]:
+    """The floors of a cleaned wall (RGBA, flat/pixel/), top to bottom, as picture rows [r0, r1): one per row of
+    windows, cut halfway between one floor's windows and the next (in the string course or the spandrel). The
+    first floor starts as far above its windows as the floors are apart, less the next floor's share; the last (the
+    ground floor) runs to the wall's bottom. Rows above the first floor are the cornice. Windows are the dark glass
+    in the window bays' columns (find_bays), as for the bays; [] when no bays or fewer than two floors are found."""
+    H = wall.shape[0]
+    bays = find_bays(wall)
+    if not bays:
+        return []
+    solid = wall[..., 3] > 127
+    lum = wall[..., :3].astype(np.float32) @ np.array([0.3, 0.59, 0.11], np.float32)
+    ref = float(np.median(lum[solid])) if solid.any() else 0.0
+    glass = (lum < BAY_DARK * ref) & solid
+    cols = np.zeros(wall.shape[1], bool)
+    for a, b in bays:
+        cols[a:b] = True
+    share = glass[:, cols].mean(axis=1)
+    lit = (share > FLOOR_GLASS[0]) & (share < FLOOR_GLASS[1])  # a row dark nearly across is a line (a course's outline)
+    runs: list[list[int]] = []
+    for r in np.flatnonzero(lit):
+        if runs and r - runs[-1][1] <= FLOOR_GAP * H:
+            runs[-1][1] = int(r) + 1
+        else:
+            runs.append([int(r), int(r) + 1])
+    runs = [r for r in runs if r[1] - r[0] >= FLOOR_MIN * H]
+    if len(runs) < 2:
+        return []
+    cuts = [(a[1] + b[0]) // 2 for a, b in zip(runs, runs[1:])]
+    half = int(round(float(np.mean([b[0] - a[1] for a, b in zip(runs, runs[1:])])) / 2))
+    rows = np.flatnonzero(solid.any(axis=1))
+    top, bottom = max(int(rows[0]), runs[0][0] - half), int(rows[-1]) + 1
+    edges = [top] + cuts + [bottom]
+    return list(zip(edges, edges[1:]))
+
+
+def floor_order(m: int, n: int, ground: bool = True) -> list[int]:
+    """Which drawn floors (0 the top, m-1 the ground floor) make a block of n floors, top to bottom. The top floor
+    (under the cornice) and, with ground, the ground floor and what it holds (a shop front, an awning, a door) are
+    kept once; the floors between are dropped from the top down, or a typical floor is repeated: the first one cut
+    from floors on both sides (the second from the top) when there is one. ground False: a block of upper floors
+    (over a setback), the top floor and then the typical floor repeated."""
+    if not 1 <= n <= FLOOR_MAX:
+        raise WallsError(f"a block is 1 to {FLOOR_MAX} floors")
+    if m < 2:
+        raise WallsError("the wall needs at least two floors to change how many it has")
+    typical = 1 if m >= 3 else 0
+    if not ground:
+        return [0] + [typical] * (n - 1)
+    if n == 1:
+        return [m - 1]
+    if n >= m:
+        return [0] + [typical] * (n - m) + list(range(1, m))
+    return [0] + list(range(m - n + 1, m))
+
+
+def set_floors(view: dict[str, np.ndarray], floors: int, ground: bool = True) -> dict[str, Any]:
+    """The cleaned views with the front, back and side cut or grown to `floors` floors (see floor_order). The
+    floors are read once, on the plain wall (the side), and used on all three, as the bays are. The cornice (the rows
+    above the top floor) stays on top. Returns {view, floors (the drawn bands), order, height}."""
+    bands = find_floors(view["side"])
+    if not bands:
+        raise WallsError("no floors were found on the plain wall, so its height cannot be changed")
+    order = floor_order(len(bands), int(floors), ground)
+    top = bands[0][0]
+    out = dict(view)
+    for f in ("front", "back", "side"):
+        out[f] = np.concatenate([view[f][:top]] + [view[f][bands[i][0] : bands[i][1]] for i in order], axis=0)
+    return {"view": out, "floors": [list(b) for b in bands], "order": order, "height": int(out["side"].shape[0])}
 
 
 # ----------------------------------------------------------------------------------------------------- the shape

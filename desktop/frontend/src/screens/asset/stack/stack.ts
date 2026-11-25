@@ -45,6 +45,10 @@ export interface StackMeta {
   look?: "cubes" | "slices";
   /** A character's body: carved from the drawn views, or sliced from a 3D model of them. */
   body?: "carved" | "mesh";
+  /** A building's (maker "walls"): "code" drawn from walls, "tower" stepped up from one; absent for a joined one. */
+  shape?: string;
+  /** A building drawn from walls: its window bays as made (stack_building.set_bays). */
+  bays?: { wide?: number; deep?: number; drawn?: number } | null;
 }
 
 /** The look a Version asks for in stack.json, if any. */
@@ -228,12 +232,14 @@ export const STACK_COPY = {
 } as const;
 
 /** The three cubbies (legacy CUBBY_LABELS): the dock's bar labels. */
-export type StackCubby = "stack-look" | "stack-sliders" | "stack-palette" | "paint";
+/** "tower": a building drawn from walls stepped up into a tower (pipeline#20); only on such a building. */
+export type StackCubby = "stack-look" | "stack-sliders" | "stack-palette" | "paint" | "tower";
 export const CUBBY_LABELS: Record<StackCubby, string> = {
   "stack-look": "Look",
   "stack-sliders": "Shape",
   "stack-palette": "Colors",
   paint: "Paint",
+  tower: "Tower",
 };
 /** Sprite stack is the one open by default (index.html 2172). */
 export const CUBBY_DEFAULT: StackCubby = "stack-look";

@@ -230,6 +230,8 @@ export function jobDoing(j: Pick<Job, "stem" | "kind" | "spec" | "opts" | "revis
   const spec = (j.spec || {}) as { revise?: boolean; source?: string };
   if (j.kind === "rig" || j.opts?.rig) return `Rigging ${name}`;
   if (j.kind === "ideas") return `Drawing ideas for ${name}`;
+  if (j.kind === "animate") return `Animating ${name}`;
+  if (j.kind === "building") return `Making the building ${name}`;
   if (j.kind === "flat2d") {
     if (isStackDraw(j)) return `Stacking ${name}`;
     if (j.revise || spec.revise) return `Redrawing ${name}`;
@@ -253,6 +255,7 @@ export function jobChipText(j: Job): string {
 export function jobVerb(j: Pick<Job, "kind" | "opts">): string {
   if (j.kind === "rig" || j.opts?.rig) return "rig";
   if (j.kind === "ideas") return "draw ideas for";
+  if (j.kind === "animate") return "animate";
   if (j.kind === "flat2d") return "draw";
   return "make";
 }
@@ -260,7 +263,7 @@ export function jobVerb(j: Pick<Job, "kind" | "opts">): string {
 /** A 2D draw (not a dropped picture): the overlay keeps a square for the picture as it draws. */
 export function jobDraws(j: Pick<Job, "kind" | "source" | "spec"> | null): boolean {
   if (!j) return false;
-  if (j.kind === "ideas") return true;
+  if (j.kind === "ideas" || j.kind === "building") return true;
   return j.kind === "flat2d" && (j.source || (j.spec as { source?: string } | undefined)?.source) !== "drop";
 }
 
