@@ -544,16 +544,17 @@ def build_qwen_edit():
 
 
 def _qwen_edit_cfg1(model, seed: int, prompt: str, reference: str, num_inference_steps: int, width: int,
-                    height: int, scheduler: str = "flat2d.turbo.Lightning"):
+                    height: int, scheduler: str = "flat2d.turbo.Lightning", more: tuple[str, ...] = ()):
     """mflux QwenImageEdit.generate_image at CFG 1 with ONE transformer pass a step (see _qwen_cfg1: at guidance
-    1 the negative pass changes nothing), and the negative prompt never encoded. Same conditioning as mflux."""
+    1 the negative pass changes nothing), and the negative prompt never encoded. Same conditioning as mflux.
+    more: further pictures after the reference (the prompt calls them Picture 2, 3, ...), as mflux takes them."""
     import mlx.core as mx
     from mflux.models.common.vae.vae_util import VAEUtil
     from mflux.models.qwen.latent_creator.qwen_latent_creator import QwenLatentCreator
     from mflux.models.qwen.variants.edit.qwen_edit_util import QwenEditUtil
     from mflux.utils.image_util import ImageUtil
 
-    paths = [str(reference)]
+    paths = [str(reference), *(str(p) for p in more)]
     config, vl_w, vl_h, vae_w, vae_h = model._compute_dimensions(
         width=width, height=height, guidance=1.0, scheduler=scheduler, image_path=None, image_paths=paths,
         num_inference_steps=num_inference_steps)
@@ -564,12 +565,13 @@ def _qwen_edit_cfg1(model, seed: int, prompt: str, reference: str, num_inference
     embeds, embeds_mask = hidden[0].astype(mx.float16), hidden[1].astype(mx.float16)
     static, image_ids, cond_h, cond_w, _n = QwenEditUtil.create_image_conditioning_latents(
         vae=model.vae, width=vae_w, height=vae_h, image_paths=paths, tiling_config=model.tiling_config)
+    grid_arg = [(1, cond_h, cond_w)] * _n if _n > 1 else (1, cond_h, cond_w)
     ctx = model.callbacks.start(seed=seed, prompt=prompt, config=config)
     ctx.before_loop(latents)
     for t in config.time_steps:
         noise = model.transformer(t=t, config=config, hidden_states=mx.concatenate([latents, static], axis=1),
                                   encoder_hidden_states=embeds, encoder_hidden_states_mask=embeds_mask,
-                                  qwen_image_ids=image_ids, cond_image_grid=(1, cond_h, cond_w))[:, : latents.shape[1]]
+                                  qwen_image_ids=image_ids, cond_image_grid=grid_arg)[:, : latents.shape[1]]
         latents = config.scheduler.step(noise=noise, timestep=t, latents=latents)
         ctx.in_loop(t, latents)
         mx.eval(latents)
@@ -582,9 +584,11 @@ def _qwen_edit_cfg1(model, seed: int, prompt: str, reference: str, num_inference
                               generation_time=config.time_steps.format_dict["elapsed"])
 
 
-def qwen_edit_still(prompt: str, reference: str, seed: int = 1, width: int = 1024, height: int = 1024):
-    """The photo draw: Qwen-Image-Edit-2511 + Lightning, sheet.QEDIT_STEPS steps, CFG 1, the picture as reference.
-    Never resident beside another draw model (one big model at a time): the text-to-image models go first."""
+def qwen_edit_still(prompt: str, reference: str, seed: int = 1, width: int = 1024, height: int = 1024,
+                    more: tuple[str, ...] = ()):
+    """The photo draw: Qwen-Image-Edit-2511 + Lightning, sheet.QEDIT_STEPS steps, CFG 1, the picture as reference
+    (and more pictures after it: Animate's skeleton pose). Never resident beside another draw model (one big model
+    at a time): the text-to-image models go first."""
     global _QEDIT, _QEDIT_RELAY, _Q2512, _Q2512_RELAY, _QWEN, _QWEN_RELAY, _ZIMAGE, _ZIMAGE_RELAY
     from flat2d.sheet import QEDIT_STEPS
 
@@ -602,7 +606,7 @@ def qwen_edit_still(prompt: str, reference: str, seed: int = 1, width: int = 102
     _cold(_QEDIT_RELAY)
     try:
         return _qwen_edit_cfg1(_QEDIT, seed=seed, prompt=prompt, reference=reference,
-                               num_inference_steps=QEDIT_STEPS, width=width, height=height)
+                               num_inference_steps=QEDIT_STEPS, width=width, height=height, more=tuple(more))
     except BaseException as e:
         traceback.clear_frames(e.__traceback__)
         raise
