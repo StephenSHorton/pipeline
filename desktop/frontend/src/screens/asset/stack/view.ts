@@ -81,7 +81,7 @@ import { createWalkView, type WalkView } from "./character/walkView";
 import { createGameLook, type GameLookState } from "./gameLook";
 import { injectGrade, injectPixelBlit, injectVoxelPbr } from "./shaders";
 import { createSpritePass } from "./spritePass";
-import { hexToRgb, isPixelArt, ORBIT, type PaletteEntry, type StackMeta, type StackState, worldPaintRadius } from "./stack";
+import { hexToRgb, isPixelArt, MOTION_DEFAULT, ORBIT, type PaletteEntry, type StackMeta, type StackState, type WalkMotion, worldPaintRadius } from "./stack";
 
 /** Room around the stack when the camera must back off to show all of it (1.1: a tenth of a margin each side). */
 const FRAME_PAD = 1.1;
@@ -108,6 +108,9 @@ export interface StackView {
   load(meta: StackMeta, sheet: CanvasImageSource, state: StackState): void;
   /** Play a walking character (pipeline#2): its parts walk a lap on a grid; the camera follows and turns as ever. */
   loadCharacter(meta: StackMeta, state: StackState, doc: CharacterDoc, strips: Map<string, ArrayLike<number>>): void;
+  /** The walking character's motion (pipeline#15): the rig's walk, or a skeleton cycle; it starts the lap again.
+   * Kept for the next character loaded. */
+  setMotion(m: WalkMotion): void;
   /** Empty the canvas (Slicing…, Generating…, or no stack). */
   clear(): void;
   set(patch: Partial<StackState>): void;
@@ -272,6 +275,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
   let walkGrid: GridHelper | null = null;
   /** The walking character on screen, to build it again in another look. */
   let walkSource: { doc: CharacterDoc; strips: Map<string, ArrayLike<number>> } | null = null;
+  let motion: WalkMotion = MOTION_DEFAULT;
   const follow = new Vector3();
   let paint: PaintMode = { on: false, drop: false, erase: false, color: "#2ecc71", radius: 0.04 };
 
@@ -754,6 +758,7 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       material: voxelMaterial(),
       color: (byte, layer) => chan(byte, state.shade ? 0.52 + 0.48 * (layer / H) : 1),
       look: state.look === "slices" ? "slices" : "cubes",
+      cycle: motion === "rig" ? undefined : motion,
     });
   }
 
@@ -975,6 +980,11 @@ export function createStackView(container: HTMLElement, initial: StackState, gam
       controls.update();
       blob.scale.setScalar(walk.height * 0.18);
       setEmpty(false);
+    },
+    setMotion(m) {
+      if (m === motion) return;
+      motion = m;
+      buildWalk();
     },
     clear() {
       clearStack();

@@ -221,6 +221,8 @@ export const STACK_COPY = {
   /** #stack-stats when the stack would not load. */
   noStack: "No sprite stack",
   lookBlurb: "Voxel cubes are what the game uses. Sprite draws each layer as a flat pixel picture, outlined. Plane and Contour are older experiments.",
+  /** The walking character's motion choice (MOTION_BUTTONS). */
+  motion: "Motion",
   paletteHint: "Reduce to N distinct hues. Rare lights are kept. Then pick a swatch for metal / roughness / glow.",
   paintHint: "Paint the stack and the model with one 3D brush. Save keeps it.",
 } as const;
@@ -249,7 +251,23 @@ export const LOOK_BUTTONS: { look: StackLook; label: string; title: string }[] =
   },
 ];
 
-export type StackToggle = "pixel" | "main" | "outline" | "auto" | "shade" | "lit";
+/** A walking character's motion (pipeline#15): the rig's own walk (pipeline#2), or a skeleton cycle from code
+ * (pipeline#14) played round the same lap. */
+export type WalkMotion = "rig" | "walk" | "run" | "attack";
+export const MOTION_DEFAULT: WalkMotion = "rig";
+/** ?motion=walk|run|attack opens on that motion, as ?look= opens on a look. */
+export function motionFromSearch(search = ""): WalkMotion {
+  const m = new URLSearchParams(search).get("motion");
+  return MOTION_BUTTONS.some((b) => b.motion === m) ? (m as WalkMotion) : MOTION_DEFAULT;
+}
+export const MOTION_BUTTONS: { motion: WalkMotion; label: string; title: string }[] = [
+  { motion: "rig", label: "Rig walk", title: "The rig's own walk: planted feet that stay on their square." },
+  { motion: "walk", label: "Walk", title: "The skeleton's walk, made in code (the same frames as the walk video)." },
+  { motion: "run", label: "Run", title: "The skeleton's run, made in code." },
+  { motion: "attack", label: "Attack", title: "The skeleton's punch, made in code. It stays on the spot." },
+];
+
+export type StackToggle ="pixel" | "main" | "outline" | "auto" | "shade" | "lit";
 /** #stack-sliders, in legacy order; Reset sits after them, on its own row (TOGGLE_RESET). */
 export const TOGGLE_BUTTONS: { key: StackToggle; label: string; title: string }[] = [
   {
