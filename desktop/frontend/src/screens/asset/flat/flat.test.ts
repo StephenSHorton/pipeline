@@ -26,9 +26,14 @@ import {
   SPEAKERS,
   stagePicture,
   STEP_RUNNING,
+  animateAction,
   animateBlock,
   animateBody,
   animateEndLine,
+  animatePicks,
+  keepPick,
+  promptForPick,
+  type AnimateOffer,
   FLAT_MODE_LIST,
 } from "./flat";
 
@@ -272,22 +277,55 @@ describe("finishFlat", () => {
 });
 
 describe("Animate", () => {
-  const list = [
-    { name: "walk_side", label: "Walk, side on", action: "walk" },
-    { name: "walker_run_left", label: "Run, facing left", action: "run-left" },
-  ];
+  const ready = (c: string, f: string) => `Side view. A game character turns to face ${f} and ${c}s.`;
+  // GET /2d/animate/<stem>, as pipeline#16 answers it (trimmed to two cycles).
+  const offer: AnimateOffer = {
+    cycles: [
+      { cycle: "walk", facing: "right", action: "walk-right", skeleton: "walker_walk_right", made_for: "the walker", prompt: ready("walk", "right") },
+      { cycle: "run", facing: "left", action: "run-left", skeleton: "walker_run_left", made_for: "this character", prompt: ready("run", "left") },
+    ],
+    skeletons: [{ name: "walk_side", label: "Walk, side on", action: "walk" }],
+  };
+  const picks = animatePicks(offer);
   it("is the last 2D mode", () => {
     expect(FLAT_MODE_LIST).toEqual(["picture", "motion", "pieces", "say", "sound", "animate"]);
   });
-  it("says why it cannot start", () => {
-    expect(animateBlock("walks right", "", false)).toBe("No skeletons to animate with.");
-    expect(animateBlock("", "walk_side", false)).toMatch(/^Say what happens and which way the character faces/);
-    expect(animateBlock("walks right", "walk_side", true)).toBe("The factory is busy with another job.");
-    expect(animateBlock("walks right", "walk_side", false)).toBe("");
+  it("lists every cycle with its facing, then the other skeletons", () => {
+    expect(picks.map((p) => [p.group, p.value, p.label])).toEqual([
+      ["cycle", "cycle:walk:right", "Walk, facing right"],
+      ["cycle", "cycle:run:left", "Run, facing left · made for this character"],
+      ["skeleton", "skeleton:walk_side", "Walk, side on"],
+    ]);
+    expect(keepPick(picks, "")).toBe("cycle:walk:right");
+    expect(keepPick(picks, "skeleton:walk_side")).toBe("skeleton:walk_side");
+    expect(keepPick(picks, "cycle:attack:left")).toBe("cycle:walk:right");
+    expect(keepPick([], "x")).toBe("");
   });
-  it("names the strip after the skeleton", () => {
-    expect(animateBody("runs left, facing left", "walker_run_left", list)).toEqual({ prompt: "runs left, facing left", skeleton: "walker_run_left", action: "run-left" });
-    expect(animateBody("walks", "other", list)).toEqual({ prompt: "walks", skeleton: "other" });
+  it("shows a cycle's ready prompt in the field, and keeps what was typed", () => {
+    expect(promptForPick("", picks[0], offer)).toBe(ready("walk", "right"));
+    expect(promptForPick(ready("walk", "right"), picks[1], offer)).toBe(ready("run", "left"));
+    expect(promptForPick(ready("run", "left"), picks[2], offer)).toBe("");
+    expect(promptForPick("a knight strides left", picks[1], offer)).toBe("a knight strides left");
+  });
+  it("says why it cannot start", () => {
+    expect(animateBlock("walks right", undefined, false)).toBe("No skeletons to animate with.");
+    expect(animateBlock("", picks[2], false)).toMatch(/^Say what happens and which way the character faces/);
+    expect(animateBlock("", picks[0], false)).toBe(""); // a cycle's prompt is the factory's when left empty
+    expect(animateBlock("walks right", picks[2], true)).toBe("The factory is busy with another job.");
+    expect(animateBlock("walks right", picks[2], false)).toBe("");
+  });
+  it("posts a cycle as {cycle, facing}, and another skeleton with its own strip", () => {
+    expect(animateBody(ready("run", "left"), picks[1])).toEqual({ cycle: "run", facing: "left" });
+    expect(animateBody("", picks[1])).toEqual({ cycle: "run", facing: "left" });
+    expect(animateBody("a knight runs left", picks[1])).toEqual({ cycle: "run", facing: "left", prompt: "a knight runs left" });
+    expect(animateBody("walks right", picks[2])).toEqual({ prompt: "walks right", skeleton: "walk_side", action: "walk" });
+  });
+  it("names the strip a job makes: one per cycle and facing", () => {
+    expect(animateAction({ stem: "op", cycle: "run", facing: "left" }, offer)).toBe("run-left");
+    expect(animateAction({ cycle: "attack", facing: "right" }, offer)).toBe("attack-right");
+    expect(animateAction({ prompt: "x", skeleton: "walk_side", action: "walk" }, offer)).toBe("walk");
+    const actions = offer.cycles.map((c) => c.action).concat(offer.skeletons.map((k) => k.action));
+    expect(new Set(actions).size).toBe(actions.length);
   });
   it("says how it ended", () => {
     expect(animateEndLine("ok", "", "run-left")).toBe("Animated: the run-left strip, saved as a new 2D version.");

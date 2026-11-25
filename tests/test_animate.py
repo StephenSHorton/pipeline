@@ -565,9 +565,9 @@ class AnimateTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         im.save(path)
 
-    def nose_side(self) -> str:
+    def nose_side(self, action: str = "walk") -> str:
         """Which side of the fitted side guide's body the nose is on."""
-        with Image.open(self.root / "out" / "op" / "flat" / "anim" / "walk" / "side.png") as im:
+        with Image.open(self.root / "out" / "op" / "flat" / "anim" / action / "side.png") as im:
             rgb = im.convert("RGB")
         dark = rgb.point(lambda v: 255 if v < 150 else 0).convert("L")
         body = dark.getbbox()
@@ -614,8 +614,8 @@ class AnimateTests(unittest.TestCase):
         doc = self.run_it(side=A.FIND_SIDE, skeleton="walker_walk_left", prompt="The soldier walks.")
         self.assertEqual(doc["side"]["picture"], "flat/views/right.png")
         self.assertTrue(doc["side"]["mirrored"])
-        self.assertEqual(self.nose_side(), "left")
-        self.assertFalse((self.root / "out" / "op" / "flat" / "anim" / "walk" / "side-mirrored.png").exists())
+        self.assertEqual(self.nose_side("walk-left"), "left")  # walker_walk_left makes its own strip, walk-left
+        self.assertFalse((self.root / "out" / "op" / "flat" / "anim" / "walk-left" / "side-mirrored.png").exists())
 
     def test_side_with_no_picture_refusals(self):
         with self.assertRaisesRegex(A.AnimateError, "no side view of its own"):
@@ -726,8 +726,9 @@ class AnimateTests(unittest.TestCase):
         # The strip is the loop after the turn (frames 16 on), not the turn: 25 frames hold 16, 19 and 22 of it.
         self.assertEqual(doc["strip"]["loop"], [16, 18])
         self.assertEqual(doc["strip"]["from_frames"], [16, 19, 22])
-        anim = self.root / "out" / "op" / "flat" / "anim" / "run"
+        anim = self.root / "out" / "op" / "flat" / "anim" / "run-left"  # one strip per cycle and facing
         self.assertTrue((anim / "anim.json").is_file())
+        self.assertEqual(doc["strip"]["file"], "sheets/run-left.png")
         control = json.loads((anim / "control.json").read_text())["frames"]
         shipped = SK.load(SK.named("walker_run_left"))
         self.assertEqual(len(control), 25)
@@ -747,7 +748,7 @@ class AnimateTests(unittest.TestCase):
             doc = self.run_it(prompt="", cycle="attack", size=704)  # the size the shipped ones are made at
         self.assertEqual(doc["cycle"]["made_for"], "this character")
         self.assertFalse(doc["skeleton_fit"]["fitted"])  # its own body already: not refitted to the picture
-        anim = self.root / "out" / "op" / "flat" / "anim" / "attack"
+        anim = self.root / "out" / "op" / "flat" / "anim" / "attack-right"
         self.assertTrue((anim / "cycle" / "attack_right.pose.json").is_file())
         # Made for the walker's own body, it is the walker's shipped attack, frame for frame.
         control = json.loads((anim / "control.json").read_text())["frames"]
@@ -760,8 +761,17 @@ class AnimateTests(unittest.TestCase):
         self.assertEqual([(c["cycle"], c["facing"]) for c in got["cycles"]],
                          [(c, f) for c in ("walk", "run", "attack") for f in ("right", "left")])
         self.assertEqual({c["made_for"] for c in got["cycles"]}, {"the walker"})
-        self.assertIn("walk_side", got["skeletons"])
-        self.assertNotIn("walker_walk_right", got["skeletons"])
+        # The other skeletons, each with its plain words and the strip it makes; the cycles' own are not repeated.
+        self.assertEqual(got["skeletons"], [{"name": "walk_side", "label": "Walk, side on", "action": "walk"}])
+        self.assertEqual(got["default"], "walk_side")
+        # One strip per cycle and facing, and none the same as another skeleton's: a run never overwrites the walk,
+        # nor a left walk the right one.
+        actions = [c["action"] for c in got["cycles"]] + [k["action"] for k in got["skeletons"]]
+        self.assertEqual([c["action"] for c in got["cycles"]],
+                         ["walk-right", "walk-left", "run-right", "run-left", "attack-right", "attack-left"])
+        self.assertEqual(len(set(actions)), len(actions))
+        for a in actions:  # every one is a strip name POST /2d/animate takes
+            self.assertEqual(factory_http.animate_argv("py", self.root, "op", {"prompt": "x", "action": a})[-1], a)
         self.assertIsNone(got["front_picture"])
         add_front_view(self.root)
         self.assertEqual(A.offered(self.root, "op")["front_picture"], "flat/views/front.png")
@@ -852,26 +862,28 @@ class RouteTests(unittest.TestCase):
         argv = factory_http.animate_argv("py", self.root, "op", {"cycle": "attack", "facing": "left"})
         self.assertEqual(argv[argv.index("--cycle") + 1], "attack")
         self.assertEqual(argv[argv.index("--facing") + 1], "left")
-        self.assertEqual(argv[argv.index("--action") + 1], "attack")
+        self.assertEqual(argv[argv.index("--action") + 1], "attack-left")  # one strip per cycle and facing
         self.assertIn("turns to face left", argv[argv.index("--prompt") + 1])
         self.assertNotIn("--skeleton", argv)
+        argv = factory_http.animate_argv("py", self.root, "op", {"cycle": "attack"})
+        self.assertEqual(argv[argv.index("--action") + 1], "attack-right")
+        argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "x", "skeleton": "walker_run_left"})
+        self.assertEqual(argv[argv.index("--action") + 1], "run-left")
+        argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "x"})
+        self.assertEqual(argv[argv.index("--action") + 1], "walk")
         self.assertEqual(self.post({"cycle": "dance"})[0], 400)
         self.assertEqual(self.post({"cycle": "walk", "facing": "up"})[0], 400)
         self.assertEqual(self.post({"cycle": "walk", "skeleton": "walk_side"})[0], 400)
         self.assertEqual(http_json(self.base_url + "/status")[1]["state"], "idle")
 
-    def test_skeleton_list(self):
-        code, doc = http_json(self.base_url + "/2d/skeletons")
+    def test_the_old_skeleton_list_is_gone(self):
+        # GET /2d/animate/<stem> is Animate's picker now; /2d/skeletons is read as an asset named "skeletons"
+        # (an empty 2D sheet), and lists no skeletons.
+        self.assertNotIn("skeletons", http_json(self.base_url + "/2d/skeletons")[1])
+        code, doc = http_json(self.base_url + "/2d/animate/op")
         self.assertEqual(code, 200)
-        self.assertEqual([s["name"] for s in doc["skeletons"]], SK.shipped())
-        self.assertEqual(doc["default"], "walk_side")
-        by = {s["name"]: s for s in doc["skeletons"]}
-        self.assertEqual(by["walk_side"], {"name": "walk_side", "label": "Walk, side on", "action": "walk"})
-        self.assertEqual(by["walker_run_left"]["label"], "Run, facing left")
-        actions = [s["action"] for s in doc["skeletons"]]
-        self.assertEqual(len(set(actions)), len(actions))  # one strip per skeleton: none overwrites another
-        for a in actions:  # every default strip name is one POST /2d/animate takes
-            self.assertEqual(factory_http.animate_argv("py", self.root, "op", {"prompt": "x", "action": a})[-1], a)
+        self.assertEqual(doc["skeletons"][0]["name"], "walk_side")
+        self.assertEqual(len(doc["cycles"]), 6)
 
     def test_animate_job(self):
         code, doc = self.post({"prompt": "The soldier faces right and walks to the right.", "frames": 17,

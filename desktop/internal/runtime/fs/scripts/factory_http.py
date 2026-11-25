@@ -23,8 +23,8 @@ POST /generate
 POST /2d/draw            a 2D still (or Ideas) as a job: /status, /cancel
 POST /2d/building        a building's walls drawn, then built as a sprite stack (scripts/stack_building.py), as a job
 POST /2d/animate/<stem>  a character picture plus a skeleton clip animated by LTX-2.3 (scripts/animate.py), as a job
-GET  /2d/animate/<stem>  what Animate offers the asset: the code-made walk, run and attack, each facing right or left
-GET  /2d/skeletons       the skeleton clips Pipeline ships, for Animate's picker: {name, label, action}
+GET  /2d/animate/<stem>  what Animate offers the asset (its picker): the code-made walk, run and attack, each facing right or left,
+                         and the other skeletons Pipeline ships: {name, label, action}
 POST /2d/join            buildings already made joined into a row or a corner (scripts/stack_join.py), no model
 POST /2d/tower           a building already made stepped up into a tower (scripts/stack_tower.py), no model
 GET  /2d/<stem>/drawing  the picture filling in while it draws
@@ -428,7 +428,7 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     happens and which way the character faces; may be left out with a cycle), "cycle"?: walk, run or attack, a
     code-made cycle (made for the asset's own sprite-stack character when it can be, else the walker's), "facing"?:
     right or left (with cycle, default right), or "skeleton"?: a skeleton Pipeline ships (scripts/skeletons/,
-    default walk_side), "action"?: the strip's name (default the cycle's, else walk), "picture"?: a picture under
+    default walk_side), "action"?: the strip's name (default one per skeleton: walker_run_left makes run-left, walk_side walk), "picture"?: a picture under
     out/<stem>/ (default the concept still; with a cycle the front view), "seed"?, "frames"?: 8k+1 (default 73),
     "size"?: 256 to 1024 in 32s (default 704), "every"?: every n'th frame goes in the strip (default 3), "side"?: a
     side view under out/<stem>/ as a second guide (true: the asset's own side view, turned to face the way the
@@ -460,7 +460,7 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     if name not in SK.shipped():
         raise ValueError(f"skeleton must be one of {', '.join(SK.shipped())}")
     try:
-        action = action_name(str(body.get("action") or cycle or "walk"))
+        action = action_name(str(body.get("action") or SK.action_of(SK.shipped_cycle(cycle, facing) if cycle else name)))
     except FlatError as e:
         raise ValueError(str(e)) from None
     argv = [str(python), str(root / "scripts" / "animate.py"), "--root", str(root), "--stem", stem,
@@ -1910,10 +1910,6 @@ def dispatch(factory: Factory, method: str, path: str, query: dict[str, list[str
             return _json_bytes({"ok": True, **animate.offered(factory.root, stem)})
         except ValueError as e:
             return _json_bytes({"ok": False, "error": str(e)}, 400)
-    if method == "GET" and path == "/2d/skeletons":  # before GET /2d/<stem>, which would take it for an asset
-        import skeleton as SK
-
-        return _json_bytes({"ok": True, "skeletons": SK.catalogue(), "default": "walk_side"})
     if method == "POST" and path == "/2d/join":
         import stack_join
         from stack_building import WallsError
@@ -2043,7 +2039,6 @@ def _dispatch(
                     "POST /2d/building",
                     "POST /2d/animate/<stem>",
                     "GET /2d/animate/<stem>",
-                    "GET /2d/skeletons",
                     "POST /2d/join",
                     "POST /2d/tower",
                     "GET /2d/<stem>/drawing",
