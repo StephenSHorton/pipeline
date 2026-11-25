@@ -15,7 +15,9 @@ What it writes, under out/<stem>/:
   flat/anim/<action>/clip.mp4       what LTX-2.3 made (frame 0 is the guide picture)
   flat/anim/<action>/frames/        every frame, NNNN.png
   flat/anim/<action>/cutouts/       every frame cut out (Apple Vision's foreground mask, bin/lift-subject; else
-                                    the ground keyed out)
+                                    the ground keyed out). A cut-out far smaller than the frames around it
+                                    (Vision drops motion-blurred legs) is redone against the ground those
+                                    frames show behind it, or, if that fails too, left out of the strip
   flat/anim/<action>/anim.json      what made it, the AI-disclosure note, and the skeleton check when it ran
                                     (all built in out/<stem>/.animate/ first and moved in only when the run worked)
   flat/sheets/<action>.png          the sprite strip: every --every'th cut-out after frame 0, cropped to one box,
@@ -60,6 +62,7 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -321,12 +324,151 @@ def cut_out(frames: list[Path], dest: Path, lift: Path | None) -> tuple[list[Pat
     return out, how
 
 
-def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4):
-    """Every every'th cut-out after frame 0 (frame 0 is the guide picture, not a pose), all cropped to the one box
-    that holds the character in every one of them, so the strip's frames line up, then scaled to cell_h tall."""
+# A cut-out has lost part of the character when, against the median of the frames around it (LOST_SPAN each side),
+# its area is below LOST_AREA of theirs, its height below LOST_HEIGHT of theirs, or its lowest point sits more than
+# LOST_FEET of the frame's height above theirs (the feet gone). Apple Vision drops motion-blurred legs this way.
+LOST_SPAN = 4
+LOST_AREA = 0.8
+LOST_HEIGHT = 0.9
+LOST_FEET = 0.05
+# The repair: the ground behind the character, as the median of the frames around it (PLATE_SPAN each side) where
+# their own cut-outs are not (grown by PLATE_GROW px), and whatever differs from it by more than PLATE_HOLD
+# (summed over RGB) is the character, fully so from PLATE_HOLD + PLATE_FEATHER.
+PLATE_SPAN = 8
+PLATE_GROW = 15
+PLATE_HOLD = 30
+PLATE_FEATHER = 45
+PLATE_LIMB = 0.03
+PLATE_EDGE = 3
+
+
+def _shape(path: Path):
+    """(area, top, bottom) of a cut-out's character, in pixels; area 0 when it is empty."""
+    import numpy as np
     from PIL import Image
 
-    picks = cutouts[1::every] or cutouts[:1]
+    with Image.open(path) as im:
+        a = np.asarray(im.convert("RGBA").getchannel("A")) > 24
+    rows = np.where(a.any(1))[0]
+    if not len(rows):
+        return 0, 0, 0
+    return int(a.sum()), int(rows.min()), int(rows.max()) + 1
+
+
+def lost_frames(shapes: list[tuple[int, int, int]], frame_h: int) -> dict[int, str]:
+    """The frames whose cut-out lost much of the character, by index, each with why, judged against the median of
+    the frames around it (see LOST_*). Needs at least three frames each side to judge."""
+    import statistics
+
+    lost = {}
+    for i, (area, top, bottom) in enumerate(shapes):
+        near = [shapes[j] for j in range(max(0, i - LOST_SPAN), min(len(shapes), i + LOST_SPAN + 1))
+                if j != i and shapes[j][0] > 0]
+        if len(near) < 3:
+            continue
+        m_area = statistics.median(s[0] for s in near)
+        m_h = statistics.median(s[2] - s[1] for s in near)
+        m_bottom = statistics.median(s[2] for s in near)
+        if area < LOST_AREA * m_area:
+            lost[i] = f"area {area / m_area:.0%} of its neighbours'"
+        elif bottom - top < LOST_HEIGHT * m_h:
+            lost[i] = f"height {(bottom - top) / m_h:.0%} of its neighbours'"
+        elif m_bottom - bottom > LOST_FEET * frame_h:
+            lost[i] = f"feet {(m_bottom - bottom) / frame_h:.0%} of the frame above its neighbours'"
+    return lost
+
+
+def repair_cutout(frames: list[Path], cutouts: list[Path], i: int, out: Path) -> None:
+    """Redo frame i's cut-out against the ground behind it: the camera is still, so the frames around it show the
+    ground where the character is not; the median of those is a picture of the ground alone, and what differs from
+    it is the character. The result keeps the first cut-out and adds what it lost, within the box the character
+    fills in the frames around it."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    near = [j for j in range(max(0, i - PLATE_SPAN), min(len(frames), i + PLATE_SPAN + 1)) if j != i]
+    with Image.open(cutouts[i]) as im:
+        first = np.asarray(im.convert("RGBA").getchannel("A"))
+    h, w = first.shape
+    box = [w, h, 0, 0]
+    masks = []
+    for j in near:
+        with Image.open(cutouts[j]) as im:
+            a = im.convert("RGBA").getchannel("A").point(lambda v: 255 if v > 24 else 0)
+        b = a.getbbox()
+        if b:
+            box = [min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3])]
+        masks.append(np.asarray(a.filter(ImageFilter.MaxFilter(PLATE_GROW))) > 0)
+    if box[2] <= box[0]:
+        return
+    pad = PLATE_GROW
+    x0, y0, x1, y1 = max(0, box[0] - pad), max(0, box[1] - pad), min(w, box[2] + pad), min(h, box[3] + pad)
+    stack = np.empty((len(near), y1 - y0, x1 - x0, 3), np.float32)
+    for k, j in enumerate(near):
+        with Image.open(frames[j]) as im:
+            stack[k] = np.asarray(im.convert("RGB"), np.float32)[y0:y1, x0:x1]
+        stack[k][masks[k][y0:y1, x0:x1]] = np.nan
+    with warnings.catch_warnings():  # a pixel the character covers in every frame around has no ground: NaN
+        warnings.simplefilter("ignore", RuntimeWarning)
+        plate = np.nanmedian(stack, 0)
+    with Image.open(frames[i]) as im:
+        rgb = np.asarray(im.convert("RGB"))
+    d = np.nan_to_num(np.abs(rgb[y0:y1, x0:x1].astype(np.float32) - plate).sum(2), nan=0.0)
+    add = np.zeros_like(first)
+    add[y0:y1, x0:x1] = (np.clip((d - PLATE_HOLD) / PLATE_FEATHER, 0, 1) * 255).astype(np.uint8)
+    alpha = np.maximum(first, add)
+    # What the ground plate adds and does not touch the first cut-out is floor (shadow, flecks), unless it is big
+    # enough to be a limb of its own (PLATE_LIMB of the first cut-out's area).
+    from scipy import ndimage
+
+    # Judged on the solid part (alpha over half), so a faint shadow does not join a fleck to a boot; the faint
+    # edge is kept only within PLATE_EDGE px of what is kept.
+    body = first > 24
+    lab, _ = ndimage.label(alpha > 127)
+    sizes = np.bincount(lab.ravel())
+    keep = (lab > 0) & (np.isin(lab, np.unique(lab[body])) | (sizes[lab] >= PLATE_LIMB * max(1, int(body.sum()))))
+    keep = ndimage.binary_dilation(keep, iterations=PLATE_EDGE) | body
+    alpha = np.where(keep, alpha, 0).astype(np.uint8)
+    Image.fromarray(np.dstack([rgb, alpha]), "RGBA").save(out)
+
+
+def check_cutouts(frames: list[Path], cutouts: list[Path]) -> list[dict]:
+    """Find the cut-outs that lost much of the character (lost_frames), redo each against the ground behind it
+    (repair_cutout) and keep the redo when it no longer looks lost; a frame still lost after that is marked dropped,
+    and the strip leaves it out. Returns one row per lost frame: its number, why, and repaired or dropped."""
+    from PIL import Image
+
+    if len(cutouts) < 7:
+        return []
+    with Image.open(cutouts[0]) as im:
+        frame_h = im.size[1]
+    shapes = [_shape(p) for p in cutouts]
+    lost = lost_frames(shapes, frame_h)
+    rows = []
+    for i, why in sorted(lost.items()):
+        redo = cutouts[i].with_suffix(".redo.png")
+        repair_cutout(frames, cutouts, i, redo)
+        fixed = False
+        if redo.is_file():
+            trial = list(shapes)
+            trial[i] = _shape(redo)
+            fixed = i not in lost_frames(trial, frame_h)
+            if fixed:
+                redo.replace(cutouts[i])
+                shapes[i] = trial[i]
+            else:
+                redo.unlink()
+        rows.append({"frame": int(cutouts[i].stem), "why": why, "fix": "repaired" if fixed else "dropped"})
+    return rows
+
+
+def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4, dropped: set[int] = frozenset()):
+    """Every every'th cut-out after frame 0 (frame 0 is the guide picture, not a pose), all cropped to the one box
+    that holds the character in every one of them, so the strip's frames line up, then scaled to cell_h tall.
+    A frame in dropped (its cut-out lost the character, check_cutouts) is left out of the strip."""
+    from PIL import Image
+
+    picks = [p for p in cutouts[1::every] if int(p.stem) not in dropped] or cutouts[:1]
     ims = [Image.open(p).convert("RGBA") for p in picks]
     box = None
     for im in ims:
@@ -478,9 +620,13 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
 
     stage("cutouts", "Cut out the character")
     cut_files, how = cut_out(frame_files, work / "cutouts", lift_tool(root))
+    lost = check_cutouts(frame_files, cut_files)
+    for row in lost:
+        print(f"animate: frame {row['frame']} cut-out lost the character ({row['why']}): {row['fix']}", flush=True)
 
     stage("strip", "Pack the sprite strip")
-    cells, picked, box = strip_cells(cut_files, every, cell)
+    cells, picked, box = strip_cells(cut_files, every, cell,
+                                     dropped={r["frame"] for r in lost if r["fix"] == "dropped"})
     strip_fps = max(1, round(FPS / every))
 
     stage("pose_check", "Check the skeleton")
@@ -510,6 +656,7 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         "fps": FPS,
         "size": size,
         "cutouts": how,
+        "lost_cutouts": lost,
         "strip": {"file": f"sheets/{action}.png", "every": every, "from_frames": picked, "box": box,
                   "cell": {"w": cells[0].size[0], "h": cells[0].size[1]}, "fps": strip_fps},
         "pose_check": {k: v for k, v in pose.items() if k != "per_frame_pct"} if pose else None,
