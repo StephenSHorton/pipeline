@@ -97,6 +97,25 @@ const turned = (origin: V3, a: number): Placement => ({
   z: [0, 0, 1],
 });
 
+/** Turned to a, and tilted forward by lean along heading h (the upper body of a run or a punch). */
+function leaning(origin: V3, a: number, h: number, lean: number): Placement {
+  if (!lean) return turned(origin, a);
+  // Rz(h) . Ry(lean) . Rz(a - h): turn within the body, tilt the body forward, face it along h
+  const r = a - h;
+  const cl = Math.cos(lean);
+  const sl = Math.sin(lean);
+  const ch = Math.cos(h);
+  const sh = Math.sin(h);
+  const tilt = (v: V3): V3 => [v[0] * cl + v[2] * sl, v[1], -v[0] * sl + v[2] * cl];
+  const face = (v: V3): V3 => [ch * v[0] - sh * v[1], sh * v[0] + ch * v[1], v[2]];
+  return {
+    origin,
+    x: face(tilt([Math.cos(r), Math.sin(r), 0])),
+    y: face(tilt([-Math.sin(r), Math.cos(r), 0])),
+    z: face(tilt([0, 0, 1])),
+  };
+}
+
 /** A limb from joint `from` down to joint `to`, drawn `bone` cells long: its up axis points from `to` back to
  * `from`, its forward axis as near `facing` as that allows. */
 export function limb(from: V3, to: V3, bone: number, facing: number): Placement {
@@ -128,13 +147,13 @@ export function placeParts(doc: CharacterDoc, P: Pose): Map<string, Placement | 
         const slices: Placement[] = [];
         for (let i = 0; i < part.n; i++) {
           const t = Math.max(0, Math.min(1, (part.z0 + i + 0.5 - part.joint_layer) / Math.max(1, c.spine)));
-          slices.push(turned(P.pelvis, P.hipsAngle + (P.shouldersAngle - P.hipsAngle) * t));
+          slices.push(leaning(P.pelvis, P.hipsAngle + (P.shouldersAngle - P.hipsAngle) * t, P.heading, P.lean ?? 0));
         }
         out.set(part.name, slices);
         break;
       }
       case "head":
-        out.set(part.name, turned(P.neck, P.shouldersAngle));
+        out.set(part.name, leaning(P.neck, P.shouldersAngle, P.heading, P.lean ?? 0));
         break;
       case "thigh":
         out.set(part.name, limb(leg.hip, leg.knee, c.thigh, P.hipsAngle));
