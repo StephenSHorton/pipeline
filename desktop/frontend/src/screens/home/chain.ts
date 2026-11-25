@@ -69,6 +69,8 @@ async function finish(job: Job) {
     text = `Sprite stack ready: ${name}${size ? ` · ${size.length} cells long, ${size.height} layers` : ""}`;
   } else if (job.kind === "flat2d") {
     text = `${job.revise ? "Redrawn" : "Sprite ready"}: ${name}`;
+  } else if (job.kind === "animate") {
+    text = `Animated: ${name}`;
   } else if (job.kind === "ideas") {
     return; // screens/asset/ideas/more.ts owns every ideas finish (legacy finishIdeasJob)
   } else if (job.kind === "rig" || job.kind === "render") {

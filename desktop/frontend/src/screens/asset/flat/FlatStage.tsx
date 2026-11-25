@@ -3,23 +3,27 @@
 // it; Pieces shows the parts strip; the bar at the bottom picks the mode (Picture / Motion / Pieces / Say / Sound),
 // opens the Audio panel, and holds the revise form. Concept shows the concept still; 2D shows the motion strip,
 // the source or the still (showStage).
-import { AudioLines, Film } from "lucide-react";
+import { AudioLines, Bone, Film } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
+import { Stepper, type StepperStep } from "@/components/ui/stepper";
 import { flatUrl, rootUrl } from "@/lib/api";
 import { conceptStill, type FlatMode } from "@/lib/flow";
-import { displayStem, onJobEnded, onJobFinished, useJobs } from "@/lib/jobs";
+import { cancelJob, displayStem, onJobEnded, onJobFinished, overlayPct, overlayPctText, stageSubText, useJobs, type Job } from "@/lib/jobs";
 import { toast } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 import { useStage } from "../stage";
 import type { StageProps } from "../types";
-import { flatSpecs, panelAudio, redraw, reviseStep } from "./actions";
-import { getFlatFlags, getSheet } from "./api";
+import { animate, flatSpecs, panelAudio, redraw, reviseStep } from "./actions";
+import { getFlatFlags, getSheet, getSkeletons } from "./api";
 import { PANEL, TOGGLE, TRAY, TRAY_ITEM } from "@/screens/viewer/classes";
 import { AudioPanel, type Bound } from "./AudioPanel";
 import {
+  ANIMATE_TITLE,
+  animateEndLine,
   audioFields,
   audioPlayers,
   audioWho,
@@ -41,6 +45,7 @@ import {
   type AudioRow,
   type FlatFlags,
   type SheetState,
+  type Skeleton,
 } from "./flat";
 
 const NONE: Bound = { rel: "", t: 0 };
@@ -67,6 +72,20 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
   const [clip, setClip] = useState<File[]>([]);
   const [drawing, setDrawing] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // Animate's skeleton picker (GET /2d/skeletons), read once; the pick starts on the factory's default.
+  const [skeletons, setSkeletons] = useState<Skeleton[]>([]);
+  const [skeleton, setSkeleton] = useState("");
+  useEffect(() => {
+    let live = true;
+    void getSkeletons().then(({ list, pick }) => {
+      if (!live) return;
+      setSkeletons(list);
+      setSkeleton((cur) => cur || (list.some((k) => k.name === pick) ? pick : list[0]?.name || ""));
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const subject = sheet.index >= 0 ? sheet.parts[sheet.index] ?? null : null;
 
@@ -128,6 +147,24 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
     });
   }, []);
 
+  // An Animate job on this asset ended: the status line says how; a finished one shows its strip on the 2D stage
+  // (the asset screen re-reads the flow, so the new 2D Version and the sheet's new center follow).
+  useEffect(
+    () =>
+      onJobEnded((j) => {
+        if (j.kind !== "animate" || j.stem !== stem) return;
+        const action = String((j.spec as { action?: string } | undefined)?.action || "");
+        setStatus(animateEndLine(j.state, j.error, action));
+        if (j.state !== "ok") return;
+        // You are on the asset already: no "<name> is ready · Open" chip.
+        useJobs.getState().dismiss();
+        if (stage !== "flat") enter("flat");
+        setFlatMode("animate");
+        toast(`Animated: ${displayStem(stem)}`, "Export →", () => enter("export"));
+      }),
+    [stem, stage, enter, setFlatMode],
+  );
+
   // The prompt that started this asset's job goes into an empty revise field (legacy copied the Home prompt).
   useEffect(() => {
     const j = useJobs.getState().job;
@@ -176,6 +213,11 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const text = prompt.trim();
+    if (flatMode === "animate") {
+      const r = animate(stem, text, skeleton, skeletons);
+      setStatus(r.status);
+      return;
+    }
     if (flatMode === "picture") {
       const r = await redraw(stem, text);
       if (r.status) setStatus(r.status);
@@ -222,7 +264,8 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
 
   // A redraw started here holds the button until its job ends (also after coming back to this stage).
   const redrawing = drawing || (job?.state === "running" && !!job.spec && flatSpecs.has(job.spec));
-  const busyLabel = redrawing ? "Drawing…" : generating ? "Generating…" : "";
+  const animating = job?.kind === "animate" && job.stem === stem && job.state === "running" ? job : null;
+  const busyLabel = redrawing ? "Drawing…" : animating ? "Animating…" : generating ? "Generating…" : "";
   const still = conceptStill(flow, stem);
   const pic = stagePicture(stage === "concept" ? "concept" : "flat", sheet.center, still);
   const t = `${flowVersion}-${nonce}`;
@@ -256,6 +299,7 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
           </p>
           <FlatHear stem={stem} bound={hear} />
         </div>
+        {animating ? <AnimateProgress job={animating} onError={setStatus} /> : null}
         {audioOpen ? (
           <AudioPanel
             id={panelId}
@@ -313,6 +357,28 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
               onChange={(e) => setPrompt(e.target.value)}
               className="hit-44 h-9 min-w-0 flex-1 rounded-[10px] border-input bg-white px-3 text-[0.9rem] md:text-[0.9rem]"
             />
+            {flatMode === "animate" ? (
+              <label
+                title="The skeleton clip the motion follows."
+                className="hit-44 inline-flex h-9 max-w-[14rem] shrink-0 items-center gap-1.5 rounded-[10px] border border-input bg-white pl-3 text-[0.85rem] font-medium text-ink-2 focus-within:ring-3 focus-within:ring-ring/50"
+              >
+                <Bone size={15} strokeWidth={2.1} aria-hidden="true" className="shrink-0" />
+                <span className="sr-only">Skeleton</span>
+                <select
+                  value={skeleton}
+                  onChange={(e) => setSkeleton(e.target.value)}
+                  disabled={!skeletons.length}
+                  className="h-full min-w-0 flex-1 cursor-pointer truncate rounded-[10px] bg-transparent pr-2 outline-none"
+                >
+                  {skeletons.length ? null : <option value="">No skeletons</option>}
+                  {skeletons.map((k) => (
+                    <option key={k.name} value={k.name}>
+                      {k.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {flatMode === "motion" ? (
               <label
                 title="A video or frames the motion follows."
@@ -329,13 +395,55 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
                 />
               </label>
             ) : null}
-            <Button type="submit" disabled={!!busyLabel} className="hit-44 h-9 shrink-0 rounded-[10px] px-4 font-semibold">
-              {busyLabel || "Generate"}
+            <Button
+              type="submit"
+              disabled={!!busyLabel}
+              title={flatMode === "animate" ? ANIMATE_TITLE : undefined}
+              className="hit-44 h-9 shrink-0 rounded-[10px] px-4 font-semibold"
+            >
+              {busyLabel || (flatMode === "animate" ? "Animate" : "Generate")}
             </Button>
           </form>
         </Card>
       </div>
     </section>
+  );
+}
+
+/** An Animate job on this asset, on the stage: its stages (skeleton video, LTX-2.3, frames, strip…), the bar and
+ * Cancel. It follows the job from the store, so one picked back up after a reload shows here too. */
+function AnimateProgress({ job, onError }: { job: Job; onError: (text: string) => void }) {
+  // The 1 s ticker: stage seconds and time left move between polls.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const pct = overlayPct(job.progress, job.state, job);
+  const p = job.progress;
+  const steps: StepperStep[] = (p?.stages || []).map((st, i) => ({ label: st.label, time: stageSubText(p!, i, job.state, job) || undefined }));
+  const cancel = async () => {
+    const err = await cancelJob();
+    if (err) onError(err);
+  };
+  return (
+    <div className="absolute inset-x-3 bottom-3 flex justify-center">
+      <Card size="hud" role="region" aria-label="Animate" className={cn(PANEL, "w-full max-w-[34rem] gap-0 p-3 text-ink")}>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="m-0 truncate text-[0.95rem] font-semibold">{job.title || `Animating ${displayStem(job.stem)}`}</h2>
+          <Button type="button" variant="outline" disabled={!!job.stopping} onClick={() => void cancel()} className="hit-44 h-9 shrink-0 rounded-[10px] px-4">
+            {job.stopping ? "Stopping…" : "Cancel"}
+          </Button>
+        </div>
+        {steps.length ? <Stepper size="sm" aria-label="Animate stages" steps={steps} current={p!.stage_index} className="mt-2" /> : null}
+        <div className="mt-2">
+          <Progress value={pct} tone="blue" size="hud" aria-label="Animate progress" />
+          <p className="mt-1 mb-0 text-[0.78rem] text-ink-3 tabular-nums" aria-live="polite">
+            {overlayPctText(p, job.state, pct, job)}
+          </p>
+        </div>
+      </Card>
+    </div>
   );
 }
 

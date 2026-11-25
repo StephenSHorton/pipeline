@@ -1,7 +1,7 @@
 // The 2D sheet's factory calls. POSTs to /2d/* queue a flow refresh in factoryJson, so the rail and the versions
 // strip follow a revise without a call here.
 import { arrayBufferToBase64, enc, factoryJson } from "@/lib/api";
-import type { ClipFields, FlatFlags, Sheet, StepsAnswer, StepsBody } from "./flat";
+import type { ClipFields, FlatFlags, Sheet, Skeleton, StepsAnswer, StepsBody } from "./flat";
 
 /** GET /2d/<stem>: parts, mechanics, note, center. A miss is null (a stem with no sheet yet). */
 export const getSheet = (stem: string) => factoryJson<Sheet>(`/2d/${enc(stem)}`).catch(() => null);
@@ -21,3 +21,9 @@ export async function clipFields(files: (Blob & { name: string })[]): Promise<Cl
   for (const f of files) frames.push(arrayBufferToBase64(await f.arrayBuffer()));
   return { frames };
 }
+
+/** GET /2d/skeletons: the skeleton clips Pipeline ships, for Animate's picker. A miss is an empty list. */
+export const getSkeletons = () =>
+  factoryJson<{ skeletons?: Skeleton[]; default?: string }>("/2d/skeletons")
+    .then((d) => ({ list: Array.isArray(d.skeletons) ? d.skeletons : [], pick: String(d.default || "") }))
+    .catch(() => ({ list: [] as Skeleton[], pick: "" }));

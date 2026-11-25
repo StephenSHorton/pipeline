@@ -114,7 +114,7 @@ export interface UploadResult {
 }
 
 export type JobState = "running" | "ok" | "error" | "cancelled";
-export type JobKind = "rig" | "render" | "flat2d" | "ideas" | "";
+export type JobKind = "rig" | "render" | "flat2d" | "ideas" | "animate" | "";
 
 export interface JobStarted {
   ok: boolean;

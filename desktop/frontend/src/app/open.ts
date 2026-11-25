@@ -14,6 +14,7 @@ export function openAsset(stem: string, stage?: Stage): void {
 export function jobStage(j: Pick<Job, "kind" | "spec" | "stack">): Stage | undefined {
   if (j.kind === "rig") return "rig";
   if (j.kind === "ideas") return "ideas";
+  if (j.kind === "animate") return "flat";
   if (isStackDraw(j)) return "stack";
   if (j.kind === "flat2d") return (j.spec as { intent?: { output?: string } } | undefined)?.intent?.output === "sprite" ? "flat" : "concept";
   return undefined;
