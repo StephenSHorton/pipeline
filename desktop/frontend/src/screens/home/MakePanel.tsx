@@ -24,6 +24,8 @@ import { toast } from "@/lib/ui";
 import { onJobChip, openAsset } from "@/app/open";
 import { navigate, UNSORTED } from "@/app/router";
 import { cn } from "@/lib/utils";
+import { BuildingForm, JoinForm } from "./BuildingPanel";
+import { loadStackMode, saveStackMode, STACK_MODES, type StackMode } from "./building";
 import { startDrawThen3d, startHomeJob } from "./chain";
 import { KIND_TAB } from "./Library";
 import {
@@ -93,6 +95,13 @@ function useNarrow(): boolean {
 /** project: the route's ?project=, the project new assets are filed into (Unsorted, from the Library, is none). */
 export function MakePanel({ project }: { project?: string }) {
   const [kind, setKindState] = useState<AssetOutput>(loadKind);
+  // Under Sprite stack: anything (the usual form), a building from drawn walls, or buildings joined.
+  const [stackModeState, setStackModeState] = useState<StackMode>(loadStackMode);
+  const stackMode: StackMode = kind === "stack" ? stackModeState : "thing";
+  const pickStackMode = (m: StackMode) => {
+    setStackModeState(m);
+    saveStackMode(m);
+  };
   const [text, setText] = useState("");
   const [photo, setPhoto] = useState<Photo | null>(null);
   const [options, setOptions] = useState(false);
@@ -319,9 +328,20 @@ export function MakePanel({ project }: { project?: string }) {
       <h1 id="mk-h" className="m-0 mb-[0.35rem] text-center text-[1.65rem] font-bold tracking-[-0.025em]">
         Make something
       </h1>
-      <p className="m-0 mb-[1.4rem] text-center text-[0.95rem] text-ink-3">{isThreeD(kind) ? "A photo, a few words, or both. We draw every angle." : "A photo or a few words. We draw the picture."}</p>
+      <p className="m-0 mb-[1.4rem] text-center text-[0.95rem] text-ink-3">
+        {stackMode === "building"
+          ? "A city building: one plain wall drawn, then its front and back added."
+          : stackMode === "join"
+            ? "Buildings you made, joined into a row or a corner."
+            : isThreeD(kind)
+              ? "A photo, a few words, or both. We draw every angle."
+              : "A photo or a few words. We draw the picture."}
+      </p>
+
+      {stackMode === "building" ? <BuildingForm project={intoId} /> : stackMode === "join" ? <JoinForm project={intoId} /> : null}
 
       <form
+        hidden={stackMode !== "thing"}
         onSubmit={(e) => void submit(e)}
         onDragEnter={onDrag}
         onDragOver={onDrag}
@@ -423,10 +443,24 @@ export function MakePanel({ project }: { project?: string }) {
         </TabsList>
       </Tabs>
 
+      {kind === "stack" ? (
+        <Tabs value={stackMode} onValueChange={(v) => typeof v === "string" && pickStackMode(v as StackMode)} className="mt-2 items-center">
+          <TabsList aria-label="What kind of sprite stack" className="mx-auto h-auto">
+            {STACK_MODES.map((m) => (
+              <TabsTrigger key={m.id} value={m.id} title={m.hint} className="min-h-9 px-3 text-[0.8rem]">
+                {m.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      ) : null}
+
       <div className="mt-4 flex flex-col items-center gap-2">
-        <p aria-live="polite" className="m-0 max-w-[32rem] text-center text-[0.85rem] leading-normal text-ink-3">
-          {routeLine}
-        </p>
+        {stackMode === "thing" ? (
+          <p aria-live="polite" className="m-0 max-w-[32rem] text-center text-[0.85rem] leading-normal text-ink-3">
+            {routeLine}
+          </p>
+        ) : null}
         {/* The summary is the Options button: one outline button that says what Make will use and opens the
             choices. While they are open it says Hide options, so nothing is listed twice. Into sits beside it: the
             project Make files into, the same ?project= the Library shows. */}
@@ -449,6 +483,7 @@ export function MakePanel({ project }: { project?: string }) {
           />
           <Button
             variant="outline"
+            hidden={stackMode !== "thing"}
             onClick={() => setOptions((o) => !o)}
             aria-expanded={options}
             aria-controls="mk-options"
@@ -460,7 +495,7 @@ export function MakePanel({ project }: { project?: string }) {
           </Button>
         </div>
 
-        {options ? (
+        {options && stackMode === "thing" ? (
           <div id="mk-options" className="flex flex-wrap justify-center gap-[0.4rem]">
             {ps1 ? (
               <>
@@ -548,7 +583,7 @@ export function MakePanel({ project }: { project?: string }) {
           </div>
         ) : null}
 
-        {line ? (
+        {line && stackMode === "thing" ? (
           <p role={line.state === "error" ? "alert" : "status"} className={cn("m-0 text-center text-[0.82rem]", line.state === "error" ? "font-medium text-danger-text" : "text-ink-3")}>
             {line.text}
           </p>

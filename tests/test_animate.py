@@ -292,6 +292,56 @@ class AnimateTests(unittest.TestCase):
         self.assertEqual(argv.count("--image"), 1)
         self.assertIsNone(doc["side"])
 
+    def test_remove_erases_a_first_pass_and_guides_a_second(self):
+        stub = {"FLAT2D_STILL": "stub", "FLAT2D_STUB_LOAD": "0", "FLAT2D_STUB_STEP": "0"}
+        with mock.patch.dict(os.environ, stub):
+            doc = self.run_it(remove="backpack", keep="chest rig and radio")
+        argv = json.loads((self.base / "ltx-call.json").read_text())["argv"]  # the second pass
+        at = [i for i, a in enumerate(argv) if a == "--image"]
+        self.assertEqual(len(at), 2)
+        self.assertTrue(argv[at[0] + 1].endswith("/guide.png"))
+        self.assertTrue(argv[at[1] + 1].endswith("/.animate/walk/keys/0024.png"))
+        self.assertEqual(argv[at[1] + 2:at[1] + 4], ["24", "0.8"])
+        work = self.root / "out" / "op" / "flat" / "anim" / "walk"
+        for rel in ("first/0024.png", "keys/0024.png"):
+            with Image.open(work / rel) as im:
+                self.assertEqual(im.size, (256, 256), rel)
+        self.assertFalse((work / "first_clip.mp4").exists())
+        self.assertFalse((work / "first_frames").exists())
+        rm = doc["remove"]
+        self.assertEqual((rm["what"], rm["keep"], rm["frames"], rm["strength"]),
+                         ("backpack", "chest rig and radio", [24], 0.8))
+        self.assertIn("Remove only the backpack", rm["prompt"])
+        self.assertIn("Keep the chest rig and radio exactly", rm["prompt"])
+        self.assertEqual(len(rm["keys"]), 1)
+        self.assertEqual(rm["keys"][0]["frame"], 24)
+        self.assertIsInstance(rm["keys"][0]["pose_pct"], float)
+        self.assertEqual(json.loads((work / "anim.json").read_text())["remove"]["frames"], [24])
+
+    def test_without_remove_there_is_one_pass(self):
+        self.assertIsNone(self.run_it()["remove"])
+
+    def test_remove_frames(self):
+        self.assertEqual(A.remove_frames(73), [24, 48, 72])
+        self.assertEqual(A.remove_frames(49), [24, 48])
+        self.assertEqual(A.remove_frames(25), [24])
+        self.assertEqual(A.remove_frames(17), [16])
+        self.assertEqual(A.remove_frames(73, "60, 12,12"), [12, 60])
+        for bad in ("0", "73", "a,b", "1,2,3,4,5,6,7,8,9"):
+            with self.assertRaises(A.AnimateError, msg=bad):
+                A.remove_frames(73, bad)
+        self.assertNotIn("Keep the", A.erase_prompt("backpack"))
+
+    def test_remove_refusals(self):
+        with self.assertRaisesRegex(A.AnimateError, "keep goes with remove"):
+            self.run_it(keep="chest rig")
+        with self.assertRaisesRegex(A.AnimateError, "remove-frames"):
+            self.run_it(remove="backpack", remove_at="30")
+        with mock.patch.dict(os.environ, {"FLAT2D_STILL": "z-image"}), \
+                mock.patch("flat2d.sheet.edit_backend", return_value=""):
+            with self.assertRaisesRegex(A.AnimateError, "photo-edit model"):
+                self.run_it(remove="backpack")
+
     def test_side_view_refusals(self):
         with self.assertRaises(A.AnimateError):
             self.run_it(side="../../etc/hosts")
@@ -397,6 +447,19 @@ class RouteTests(unittest.TestCase):
         self.assertIn("LoRA", doc["error"])
         self.assertEqual(http_json(self.base_url + "/status")[1]["state"], "idle")
 
+    def test_skeleton_list(self):
+        code, doc = http_json(self.base_url + "/2d/skeletons")
+        self.assertEqual(code, 200)
+        self.assertEqual([s["name"] for s in doc["skeletons"]], SK.shipped())
+        self.assertEqual(doc["default"], "walk_side")
+        by = {s["name"]: s for s in doc["skeletons"]}
+        self.assertEqual(by["walk_side"], {"name": "walk_side", "label": "Walk, side on", "action": "walk"})
+        self.assertEqual(by["walker_run_left"]["label"], "Run, facing left")
+        actions = [s["action"] for s in doc["skeletons"]]
+        self.assertEqual(len(set(actions)), len(actions))  # one strip per skeleton: none overwrites another
+        for a in actions:  # every default strip name is one POST /2d/animate takes
+            self.assertEqual(factory_http.animate_argv("py", self.root, "op", {"prompt": "x", "action": a})[-1], a)
+
     def test_animate_job(self):
         code, doc = self.post({"prompt": "The soldier faces right and walks to the right.", "frames": 17,
                                "size": 256, "action": "walk"})
@@ -419,6 +482,16 @@ class RouteTests(unittest.TestCase):
                                                                  "side_frame": 30})
         self.assertEqual(argv[argv.index("--side") + 1], "flat/side.png")
         self.assertEqual(argv[argv.index("--side-frame") + 1], "30")
+
+    def test_remove_and_keep_reach_the_command_line(self):
+        argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "walks right", "remove": " backpack ",
+                                                                 "keep": "chest rig"})
+        self.assertEqual(argv[argv.index("--remove") + 1], "backpack")
+        self.assertEqual(argv[argv.index("--keep") + 1], "chest rig")
+        with self.assertRaises(ValueError):
+            factory_http.animate_argv("py", self.root, "op", {"prompt": "walks right", "keep": "chest rig"})
+        with self.assertRaises(ValueError):
+            factory_http.animate_argv("py", self.root, "op", {"prompt": "walks right", "remove": "x" * 121})
 
     def test_failed_job_says_why(self):
         with mock.patch.dict(os.environ, {"FAKE_LTX_FAIL": "1"}):

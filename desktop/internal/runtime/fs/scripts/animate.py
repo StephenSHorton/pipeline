@@ -6,10 +6,13 @@ frames, transparent cut-outs and a sprite strip, saved as a new 2D Version of th
     python scripts/animate.py --root R --stem S --prompt "The soldier faces right and walks to the right ..." \\
         [--skeleton walk_side] [--action walk] [--picture flat/source.png] [--seed 42] [--frames 73] [--size 704]
         [--side flat/views/side.png [--side-frame 24] [--side-strength 0.8]]
+        [--remove "backpack" [--keep "chest rig, radio and pouches"] [--remove-frames 24,48,72]]
 
 What it writes, under out/<stem>/:
   flat/anim/<action>/guide.png      the picture LTX starts from: the character, square, on its ground
   flat/anim/<action>/side.png       with --side: the side view, fitted the same way, LTX's second guide
+  flat/anim/<action>/first/         with --remove: the first pass's frames at --remove-frames, as LTX drew them
+  flat/anim/<action>/keys/          with --remove: the same frames with the named kit erased, LTX's later guides
   flat/anim/<action>/control.json   the skeleton per frame (24 fps), and skeleton.mp4 drawn from it
   flat/anim/<action>/clip.mp4       what LTX-2.3 made (frame 0 is the guide picture)
   flat/anim/<action>/frames/        every frame, NNNN.png
@@ -29,6 +32,17 @@ not the first frame) at --side-frame, by default one second in (frame 44 tested 
 face the way the prompt says the character moves. Its character is cut out, scaled to the first picture's
 character's height and stood on the same spot, on the same ground (flat/anim/<action>/side.png). It costs some
 skeleton accuracy: the character holds the side view's pose around that frame.
+
+--remove "backpack" stops invented kit without that cost. Animate runs LTX twice: a first pass from the front
+picture alone (which follows the skeleton, and invents the kit), then Qwen-Image-Edit erases the named kit from that
+pass's own frames at --remove-frames (default every second from frame 24, and the last frame), keeping the pose LTX
+drew under the skeleton; those frames are the second pass's keyframe guides (strength 0.8). --keep names the kit
+that must stay (asked only to remove the backpack, the model took the operator's chest rig too, and the guide carried
+that through the whole clip). An erased frame whose skeleton (Apple Vision) is more than 2.5% off the control's (or 1% further than
+the first pass's own frame, when that is already off) is erased again with the next seed, up to three tries, keeping
+the closest. About three times as long as one pass. On the
+operator's walk: about 1.9% (front picture alone 1.80%, side view 5.1%), no backpack. The edit model is freed before
+the second pass.
 
 LTX runs as its own process, the LTX venv's python under -I, from the ltx-2-mlx clone's source folders
 (scripts/ltx_run.py), with local paths only and HF_HUB_OFFLINE=1, so it never downloads. Where it looks (each
@@ -68,6 +82,19 @@ LICENCE = "LTX-2 Community License Agreement (Lightricks), see NOTICE"
 DISCLOSURE = ("Machine-generated: made with the LTX-2.3 video model. Under the LTX-2 Community License, content "
               "published from it must say plainly that it is machine-generated.")
 STAGES = ("skeleton", "guide", "ltx", "frames", "cutouts", "strip", "pose_check")
+REMOVE_STAGES = ("skeleton", "guide", "first_pass", "erase", "ltx", "frames", "cutouts", "strip", "pose_check")
+KEY_STRENGTH = 0.8
+KEY_TRIES = 3
+KEY_POSE_PCT = 2.5  # an erased frame further than this from the control's skeleton is erased again
+# What the edit model is asked, with the kit named: erase only that, keep the pose and everything else. Naming the
+# kit that stays matters: asked only to remove a backpack, it took the operator's chest rig too.
+ERASE_PROMPT = ("Remove only the {what} from the person, together with anything that holds it on, such as straps. "
+                "{keep}Keep everything else exactly the same: the pose, position, size, face, hair, clothes, "
+                "everything else they wear or carry, the lighting and the background.")
+
+
+def erase_prompt(what: str, keep: str | None = None) -> str:
+    return ERASE_PROMPT.format(what=what, keep=f"Keep the {keep} exactly as they are. " if keep else "")
 PICTURES = ("lifted.png", "flat/source.png", "input.png", "input.jpg", "input.jpeg", "input.webp")
 
 
@@ -125,10 +152,12 @@ def check_ltx(paths: dict[str, Path]) -> None:
 
 def ltx_argv(paths: dict[str, Path], *, prompt: str, out: Path, control: Path, guide: Path, size: int,
              frames: int, seed: int, side: Path | None = None, side_frame: int = FPS,
-             side_strength: float = 0.8) -> list[str]:
+             side_strength: float = 0.8, keys: list[tuple[Path, int]] = ()) -> list[str]:
     images = ["--image", str(guide), "0", "1.0"]
     if side is not None:  # a later frame: ltx-2-mlx binds it as a keyframe guide, not the first latent
         images += ["--image", str(side), str(side_frame), f"{side_strength:g}"]
+    for path, frame in keys:  # --remove's erased frames, keyframe guides the same way
+        images += ["--image", str(path), str(frame), f"{KEY_STRENGTH:g}"]
     return [str(paths["python"]), "-I", str(HERE / "ltx_run.py"), str(paths["clone"]), "ic-lora",
             "--model", str(paths["model"]), "--gemma", str(paths["gemma"]),
             "--lora", str(paths["lora"]), "1.0",
@@ -260,6 +289,82 @@ def fit_side(picture: Path, guide: Path, size: int, out: Path, ground: tuple[int
     return True
 
 
+# ------------------------------------------------------------------ erasing invented kit (--remove)
+
+def remove_frames(frames: int, spec: str | None = None) -> list[int]:
+    """The frames whose kit is erased and that guide the second pass: by default every second from frame 24 and the
+    last frame (24, 48, 72 for 73 frames), or the given ones ("24,48,72"), each 1 to frames-1, at most 8."""
+    if spec is None or not str(spec).strip():
+        picks = list(range(FPS, frames - 1, FPS)) + [frames - 1]
+    else:
+        try:
+            picks = [int(x) for x in str(spec).replace(" ", "").split(",") if x]
+        except ValueError:
+            raise AnimateError("remove-frames must be frame numbers, like 24,48,72") from None
+        if not picks or any(not 1 <= f <= frames - 1 for f in picks):
+            raise AnimateError(f"remove-frames must be from 1 to {frames - 1} (frame 0 is the first picture)")
+    picks = sorted(set(picks))
+    if len(picks) > 8:
+        raise AnimateError("at most 8 remove-frames")
+    return picks
+
+
+def erase_kit(sources: list[Path], picks: list[int], prompt: str, dest: Path, seed: int,
+              control: list[dict], tool: Path | None) -> tuple[list[Path], list[dict]]:
+    """Each frame with the named kit erased by the photo-edit model (Qwen-Image-Edit-2511, flat2d), the same size,
+    saved under dest with the same name. With bin/bodypose, a result whose skeleton is more than KEY_POSE_PCT off
+    the control's at that frame is erased again with the next seed (KEY_TRIES in all) and the closest kept. The
+    edit model is freed after, before LTX needs the memory. Returns the files and, per frame, its seed and error."""
+    from PIL import Image
+
+    from flat2d import optional as O
+
+    dest.mkdir(parents=True, exist_ok=True)
+    out, notes = [], []
+    try:
+        for src, frame in zip(sources, picks):
+            with Image.open(src) as im:
+                size, before = im.size, im.convert("RGB")
+            best = None
+            # The first pass's own frame may already be off the skeleton: an edit is only asked to stay near it.
+            own = key_pose(tool, before, control[frame], dest.parent) if tool else None
+            limit = max(KEY_POSE_PCT, (own or 0) + 1.0)
+            for k in range(KEY_TRIES if tool else 1):
+                got = O.edit_image(prompt, src, seed=seed + k, width=size[0], height=size[1])
+                got = getattr(got, "image", got).convert("RGB")
+                if got.size != size:
+                    got = got.resize(size, Image.LANCZOS)
+                pct = key_pose(tool, got, control[frame], dest.parent) if tool else None
+                if best is None or (pct is not None and (best[1] is None or pct < best[1])):
+                    best = (got, pct, seed + k)
+                if pct is not None and pct <= limit:
+                    break
+            target = dest / src.name
+            best[0].save(target)
+            out.append(target)
+            notes.append({"frame": frame, "seed": best[2], "pose_pct": best[1], "first_pass_pose_pct": own})
+    finally:
+        O.unload()
+    return out, notes
+
+
+def key_pose(tool: Path, im, joints: dict, scratch: Path) -> float | None:
+    """How far a picture's skeleton (Apple Vision) is from the given joints, % of the width; None if none found."""
+    one = scratch / ".pose"  # beside the run's control.json, as bin/bodypose's stand-in in the tests reads it
+    if one.exists():
+        shutil.rmtree(one)
+    one.mkdir()
+    try:
+        im.save(one / "0000.png")
+        got = SK.read_frames(tool, one, one / "pose.json")
+    finally:
+        shutil.rmtree(one, ignore_errors=True)
+    if not got or not got[0]:
+        return None
+    res = SK.pose_error([joints], got[:1])
+    return res["mean_joint_error_pct"] if res["frames_compared"] else None
+
+
 # ------------------------------------------------------------------ after LTX
 
 def split_frames(clip: Path, dest: Path) -> list[Path]:
@@ -357,7 +462,8 @@ def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> 
 def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", action: str = "walk",
             picture: str | None = None, seed: int = 42, frames: int = 73, size: int = 704, every: int = 3,
             cell: int = 256, skeleton_fps: float = FPS, check: bool = True, save: bool = True,
-            side: str | None = None, side_frame: int | None = None, side_strength: float = 0.8) -> dict:
+            side: str | None = None, side_frame: int | None = None, side_strength: float = 0.8,
+            remove: str | None = None, remove_at: str | None = None, keep: str | None = None) -> dict:
     from flat2d.atlas import action_name
 
     import flow
@@ -383,13 +489,27 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
         raise AnimateError(f"side-frame must be 1 to {frames - 1} (frame 0 is the first picture)")
     if side and not 0 < side_strength <= 1:
         raise AnimateError("side-strength must be above 0 and at most 1")
+    remove = " ".join(str(remove or "").split()) or None
+    keep = " ".join(str(keep or "").split()) or None
+    if remove and len(remove) > 120:
+        raise AnimateError("remove is too long: name the kit to erase in a few words, like backpack")
+    if keep and not remove:
+        raise AnimateError("keep goes with remove: it names the kit that stays when the removed kit is erased")
+    if keep and len(keep) > 200:
+        raise AnimateError("keep is too long: name the kit that stays in a few words")
+    picks = remove_frames(frames, remove_at) if remove else []
+    if remove:
+        from flat2d.sheet import edit_backend
+
+        if not edit_backend():
+            raise AnimateError("--remove needs the photo-edit model (Qwen-Image-Edit, mflux), which is not set up")
     paths = ltx_paths(root)
     check_ltx(paths)
     pic = pick_picture(folder, picture)
     side_pic = pick_picture(folder, side) if side else None
     control_src = SK.named(skeleton)
 
-    print("STAGES " + " ".join(STAGES), flush=True)
+    print("STAGES " + " ".join(REMOVE_STAGES if remove else STAGES), flush=True)
     t0 = time.time()
     if save:  # what was there is kept as a Version before this run changes the 2D files
         flow.autosave(root, stem, ("flat",))
@@ -401,7 +521,8 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
     work.mkdir(parents=True)
     try:
         doc = _run(root, stem, folder, work, paths, pic, control_src, side_pic=side_pic, side_frame=side_frame,
-                   side_strength=side_strength, prompt=prompt, action=action, seed=seed,
+                   side_strength=side_strength, remove=remove, keep=keep, picks=picks, prompt=prompt, action=action,
+                   seed=seed,
                    frames=frames, size=size, every=every, cell=cell, skeleton_fps=skeleton_fps, check=check, t0=t0)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
@@ -414,7 +535,9 @@ def animate(root: Path, stem: str, *, prompt: str, skeleton: str = "walk_side", 
 
 
 def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path], pic: Path, control_src: Path, *,
-         side_pic: Path | None, side_frame: int, side_strength: float, prompt: str, action: str, seed: int,
+         side_pic: Path | None, side_frame: int, side_strength: float, remove: str | None, keep: str | None,
+         picks: list[int],
+         prompt: str, action: str, seed: int,
          frames: int, size: int, every: int, cell: int, skeleton_fps: float, check: bool, t0: float) -> dict:
     from flat2d.atlas import save_cells
     from flat2d.store import write_center
@@ -431,17 +554,51 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
     if side_pic is not None:
         side_fitted = fit_side(side_pic, work / "guide.png", size, work / "side.png", tuple(ground), lift_tool(root))
 
+    keys: list[tuple[Path, int]] = []
+    t_ltx = time.time()
+    if remove:
+        stage("first_pass", "First pass with LTX-2.3")
+        first = work / "first_clip.mp4"
+        argv = ltx_argv(paths, prompt=prompt, out=first, control=work / "skeleton.mp4", guide=work / "guide.png",
+                        size=size, frames=frames, seed=seed)
+        rc = subprocess.run(argv, env=ltx_env(), cwd=str(root), stdin=subprocess.DEVNULL).returncode
+        if rc != 0 or not first.is_file():
+            raise AnimateError(f"LTX-2.3 stopped (exit {rc}) without a first-pass clip")
+        every_frame = split_frames(first, work / "first_frames")
+        (work / "first").mkdir()
+        sources = []
+        for f in picks:
+            if f >= len(every_frame):
+                raise AnimateError(f"the first pass has no frame {f}")
+            sources.append(work / "first" / f"{f:04d}.png")
+            shutil.copy(every_frame[f], sources[-1])
+        shutil.rmtree(work / "first_frames")
+        first.unlink()
+        ltx_s = time.time() - t_ltx
+
+        stage("erase", f"Erase the {remove}")
+        t_erase = time.time()
+        erased, key_notes = erase_kit(sources, picks, erase_prompt(remove, keep), work / "keys", seed, control,
+                                      bodypose_tool(root) if check else None)
+        for n in key_notes:
+            print(f"animate: frame {n['frame']} erased (seed {n['seed']}), skeleton within {n['pose_pct']}% "
+                  f"(first pass {n['first_pass_pose_pct']}%)", flush=True)
+        erase_s = round(time.time() - t_erase, 1)
+        keys = list(zip(erased, picks))
+        t_ltx = time.time()
+    else:
+        ltx_s = 0.0
+
     stage("ltx", "Animate with LTX-2.3")
     clip = work / "clip.mp4"
     clip.unlink(missing_ok=True)
     argv = ltx_argv(paths, prompt=prompt, out=clip, control=work / "skeleton.mp4", guide=work / "guide.png",
                     size=size, frames=frames, seed=seed, side=work / "side.png" if side_pic else None,
-                    side_frame=side_frame, side_strength=side_strength)
-    t_ltx = time.time()
+                    side_frame=side_frame, side_strength=side_strength, keys=keys)
     rc = subprocess.run(argv, env=ltx_env(), cwd=str(root), stdin=subprocess.DEVNULL).returncode
     if rc != 0 or not clip.is_file():
         raise AnimateError(f"LTX-2.3 stopped (exit {rc}) without a clip")
-    ltx_s = round(time.time() - t_ltx, 1)
+    ltx_s = round(ltx_s + time.time() - t_ltx, 1)
 
     stage("frames", "Cut the frames")
     frame_files = split_frames(clip, work / "frames")
@@ -472,6 +629,9 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
         "picture": pic.relative_to(folder).as_posix(),
         "side": {"picture": side_pic.relative_to(folder).as_posix(), "frame": side_frame,
                  "strength": side_strength, "fitted_to_figure": side_fitted} if side_pic else None,
+        "remove": {"what": remove, "keep": keep, "frames": picks, "strength": KEY_STRENGTH,
+                   "edit_model": "Qwen-Image-Edit-2511", "prompt": erase_prompt(remove, keep), "seconds": erase_s,
+                   "keys": key_notes} if remove else None,
         "skeleton": control_src.stem if control_src.parent == SK.SKELETONS else str(control_src),
         "prompt": prompt,
         "seed": seed,
@@ -511,6 +671,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="a side view under out/<stem>/, facing the way the character moves: a second guide")
     ap.add_argument("--side-frame", type=int, default=None, help=f"the frame the side view guides (default {FPS})")
     ap.add_argument("--side-strength", type=float, default=0.8, help="how hard the side view pulls, 0 to 1")
+    ap.add_argument("--remove", default=None,
+                    help="kit the model invents, to erase (like backpack): a first pass, then its frames erased and "
+                         "used as guides for a second")
+    ap.add_argument("--keep", default=None,
+                    help="with --remove: kit that must stay (like chest rig, radio and pouches)")
+    ap.add_argument("--remove-frames", default=None,
+                    help=f"the frames erased and used as guides (default every {FPS} from {FPS}, and the last)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--frames", type=int, default=73)
     ap.add_argument("--size", type=int, default=704)
@@ -521,7 +688,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         animate(Path(a.root), a.stem, prompt=a.prompt, skeleton=a.skeleton, action=a.action, picture=a.picture,
                 seed=a.seed, frames=a.frames, size=a.size, every=a.every, cell=a.cell, skeleton_fps=a.skeleton_fps,
-                check=not a.no_check, side=a.side, side_frame=a.side_frame, side_strength=a.side_strength)
+                check=not a.no_check, side=a.side, side_frame=a.side_frame, side_strength=a.side_strength,
+                remove=a.remove, remove_at=a.remove_frames, keep=a.keep)
     except (AnimateError, SK.SkeletonError, ValueError) as e:
         print(f"animate: {e}", file=sys.stderr, flush=True)
         return 1

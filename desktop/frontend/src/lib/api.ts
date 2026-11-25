@@ -56,6 +56,8 @@ export interface Asset {
   title: string;
   has_mesh: boolean;
   has_stack: boolean;
+  /** Its stack is a building (stack.json maker "walls": drawn walls, or buildings joined). Absent from an older factory. */
+  building?: boolean;
   has_flat: boolean;
   has_ideas: boolean;
   has_psx: boolean;
@@ -114,7 +116,8 @@ export interface UploadResult {
 }
 
 export type JobState = "running" | "ok" | "error" | "cancelled";
-export type JobKind = "rig" | "render" | "flat2d" | "ideas" | "";
+/** building: a building's walls drawn and built into a sprite stack (POST /2d/building). */
+export type JobKind = "rig" | "render" | "flat2d" | "ideas" | "animate" | "building" | "";
 
 export interface JobStarted {
   ok: boolean;
@@ -190,6 +193,8 @@ export interface JobResult {
   ran?: string[];
   /** A stack draw (POST /2d/draw with stack): the stack it carved. */
   stack?: { file: string; size: { width: number; length: number; height: number }; colors: number; layers: number };
+  /** A building (POST /2d/building): the window bays it was built with, as drawn and as asked. */
+  bays?: { drawn?: number; wide?: number; deep?: number };
 }
 
 export interface CancelResponse {
