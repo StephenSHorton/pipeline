@@ -193,6 +193,118 @@ def pose_error(control: list[dict], clip: list[dict], skip: int = 0) -> dict[str
     }
 
 
+# The skeleton as a tree from the hips (Vision's root): (parent, joint, the part whose length it is). Each part's
+# length is fitted on its own; left and right share one.
+TREE = [("root", "neck_1_joint", "torso"),
+        ("neck_1_joint", "left_shoulder_1_joint", "shoulders"), ("neck_1_joint", "right_shoulder_1_joint", "shoulders"),
+        ("left_shoulder_1_joint", "left_forearm_joint", "upper_arm"),
+        ("right_shoulder_1_joint", "right_forearm_joint", "upper_arm"),
+        ("left_forearm_joint", "left_hand_joint", "forearm"), ("right_forearm_joint", "right_hand_joint", "forearm"),
+        ("root", "left_upLeg_joint", "hips"), ("root", "right_upLeg_joint", "hips"),
+        ("left_upLeg_joint", "left_leg_joint", "thigh"), ("right_upLeg_joint", "right_leg_joint", "thigh"),
+        ("left_leg_joint", "left_foot_joint", "shin"), ("right_leg_joint", "right_foot_joint", "shin"),
+        ("neck_1_joint", "head_joint", "head"),
+        ("head_joint", "left_eye_joint", "face"), ("head_joint", "right_eye_joint", "face"),
+        ("head_joint", "left_ear_joint", "face"), ("head_joint", "right_ear_joint", "face")]
+PARTS = ("torso", "shoulders", "upper_arm", "forearm", "hips", "thigh", "shin", "head", "face")
+FEET = ("left_foot_joint", "right_foot_joint")
+RATIO_BAND = 2.0  # a part is fitted to at most this many times (or 1/this of) the whole body's scale
+
+
+def _sure(j: dict, name: str) -> bool:
+    return name in j and len(j[name]) >= 3 and j[name][2] > CONFIDENT
+
+
+def _height(j: dict) -> float | None:
+    """Neck to the lower foot, in picture heights: the body's size the whole fit is scaled by."""
+    feet = [j[f][1] for f in FEET if _sure(j, f)]
+    if not _sure(j, "neck_1_joint") or not feet:
+        return None
+    h = max(feet) - j["neck_1_joint"][1]
+    return h if h > 0.05 else None
+
+
+def _part_lengths(j: dict) -> dict[str, float]:
+    """Each part's length in a pose (left and right averaged where both are read)."""
+    got: dict[str, list[float]] = {}
+    for parent, child, part in TREE:
+        if _sure(j, parent) and _sure(j, child):
+            got.setdefault(part, []).append(((j[child][0] - j[parent][0]) ** 2 +
+                                             (j[child][1] - j[parent][1]) ** 2) ** 0.5)
+    return {p: sum(v) / len(v) for p, v in got.items() if sum(v) / len(v) > 1e-3}
+
+
+def refit(frames: list[dict], target: dict) -> tuple[list[dict], dict[str, Any]]:
+    """The clip refitted to a picture's own body (target: the joints Vision read from it, the character standing
+    as the clip's first frame stands): each part (torso, shoulder and hip widths, upper arm, forearm, thigh, shin,
+    head) takes the picture's length, the motion stays the clip's, the hips start where the picture's are and the
+    lower foot stays on the picture's ground line (rising and falling with the clip's, as a run's does).
+
+    A part's bone is scaled, not set to a length, so a limb the clip foreshortens (a turn, a stride towards the
+    camera) stays foreshortened. A part the picture has no sure read of, or one the clip lacks, takes the body's
+    scale (neck to feet) instead; each is kept within RATIO_BAND of that scale. Raises SkeletonError when the
+    picture has no neck, hips or feet to fit to."""
+    first = frames[0] if frames else {}
+    h_pic, h_ctl = _height(target), _height(first)
+    if not h_pic or not h_ctl or not _sure(target, "root") or not _sure(first, "root"):
+        raise SkeletonError("the picture's skeleton has no neck, hips and feet to fit to")
+    scale = h_pic / h_ctl
+    pic, ctl = _part_lengths(target), _part_lengths(first)
+    ratios, fitted = {}, []
+    for part in PARTS:
+        r = pic[part] / ctl[part] if part in pic and part in ctl else None
+        if r is not None:
+            r = min(max(r, scale / RATIO_BAND), scale * RATIO_BAND)
+            fitted.append(part)
+        ratios[part] = r if r is not None else scale
+    ground = max(target[f][1] for f in FEET if _sure(target, f))
+    c_ground0 = max(first[f][1] for f in FEET if f in first)
+    c_root0 = first["root"]
+    out = []
+    for j in frames:
+        rel = {"root": (0.0, 0.0)}
+        for parent, child, part in TREE:
+            if child in j and parent in j and parent in rel:
+                dx, dy = j[child][0] - j[parent][0], j[child][1] - j[parent][1]
+                px, py = rel[parent]
+                rel[child] = (px + dx * ratios[part], py + dy * ratios[part])
+        for name in j:  # a joint off the tree (not one Vision names): the body's scale about the hips
+            if name not in rel:
+                rel[name] = ((j[name][0] - j["root"][0]) * scale, (j[name][1] - j["root"][1]) * scale)
+        x0 = target["root"][0] + (j["root"][0] - c_root0[0]) * scale
+        feet = [rel[f][1] for f in FEET if f in rel]
+        if feet:  # the lower foot on the ground line, lifted as far (in this body's size) as the clip lifts it
+            c_low = max(j[f][1] for f in FEET if f in j)
+            y0 = ground + (c_low - c_ground0) * scale - max(feet)
+        else:
+            y0 = target["root"][1] + (j["root"][1] - c_root0[1]) * scale
+        out.append({n: [round(x0 + x, 4), round(y0 + y, 4)] + list(j[n][2:3] or [1.0]) for n, (x, y) in rel.items()})
+    xs = [v[0] for fr in out for v in fr.values()]
+    ys = [v[1] for fr in out for v in fr.values()]
+    info = {"scale": round(scale, 3), "ratios": {p: round(r, 3) for p, r in ratios.items()},
+            "fitted_parts": fitted, "box": [round(min(xs), 3), round(min(ys), 3), round(max(xs), 3),
+                                            round(max(ys), 3)]}
+    return out, info
+
+
+def read_picture(bodypose: Path, picture: Path, scratch: Path) -> dict:
+    """One picture's skeleton by Apple Vision (bin/bodypose), {} when none is read or the tool fails."""
+    folder = Path(scratch) / "start"
+    if folder.exists():
+        shutil.rmtree(folder)
+    folder.mkdir(parents=True)
+    shutil.copyfile(picture, folder / "0000.png")
+    read = Path(scratch) / "start.json"
+    try:
+        got = read_frames(bodypose, folder, read)
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        got = []
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+        read.unlink(missing_ok=True)
+    return got[0] if got else {}
+
+
 def read_frames(bodypose: Path, frames_dir: Path, out: Path) -> list[dict]:
     """Each frame's skeleton by Apple Vision (bin/bodypose), as joints per frame ({} where none was found)."""
     subprocess.run([str(bodypose), str(frames_dir), str(out)], check=True, stdout=subprocess.DEVNULL)

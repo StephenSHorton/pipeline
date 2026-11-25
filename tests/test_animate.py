@@ -462,6 +462,97 @@ class AnimateTests(unittest.TestCase):
         with self.assertRaisesRegex(A.AnimateError, "side-strength"):
             self.run_it(side="input.png", side_strength=0)
 
+    def draw_side(self, rel: str, nose: str = "left") -> None:
+        """A side view on white: a dark body with a nose sticking out on one side, so a mirror shows."""
+        im = Image.new("RGB", (300, 500), (255, 255, 255))
+        for y in range(80, 460):
+            for x in range(130, 170):
+                im.putpixel((x, y), (60, 80, 50))
+        nx = range(100, 130) if nose == "left" else range(170, 200)
+        for y in range(100, 130):
+            for x in nx:
+                im.putpixel((x, y), (60, 80, 50))
+        path = self.root / "out" / "op" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        im.save(path)
+
+    def nose_side(self) -> str:
+        """Which side of the fitted side guide's body the nose is on."""
+        with Image.open(self.root / "out" / "op" / "flat" / "anim" / "walk" / "side.png") as im:
+            rgb = im.convert("RGB")
+        dark = rgb.point(lambda v: 255 if v < 150 else 0).convert("L")
+        body = dark.getbbox()
+        w, h = rgb.size
+        # A row through the nose (drawn 5% to 13% down the figure).
+        row = body[1] + (body[3] - body[1]) // 10
+        xs = [x for x in range(w) if dark.getpixel((x, row))]
+        mid = [x for x in range(w) if dark.getpixel((x, body[3] - 5))]
+        centre = (min(mid) + max(mid)) / 2
+        return "left" if (min(xs) + max(xs)) / 2 < centre else "right"
+
+    def test_side_with_no_picture_finds_the_assets_own(self):
+        self.draw_side("flat/views/side.png", nose="left")  # the pixel sheet's side view: front to the LEFT
+        doc = self.run_it(side=A.FIND_SIDE, prompt="The soldier faces left and walks to the left.")
+        argv = json.loads((self.base / "ltx-call.json").read_text())["argv"]
+        self.assertEqual(argv.count("--image"), 2)
+        self.assertEqual(doc["side"]["picture"], "flat/views/side.png")
+        self.assertEqual((doc["side"]["found"], doc["side"]["facing"], doc["side"]["moves"]), (True, "left", "left"))
+        self.assertFalse(doc["side"]["mirrored"])
+        self.assertEqual(self.nose_side(), "left")
+
+    def test_side_view_facing_the_wrong_way_is_mirrored(self):
+        self.draw_side("character/views/side.png", nose="left")  # the sprite stack's copy, front to the LEFT
+        doc = self.run_it(side=A.FIND_SIDE)  # "faces right and walks to the right"
+        self.assertEqual(doc["side"]["picture"], "character/views/side.png")
+        self.assertEqual((doc["side"]["facing"], doc["side"]["moves"], doc["side"]["mirrored"]),
+                         ("left", "right", True))
+        self.assertEqual(self.nose_side(), "right")
+        # The drawn view itself is left as it was.
+        with Image.open(self.root / "out" / "op" / "character" / "views" / "side.png") as im:
+            self.assertEqual(im.getpixel((110, 110)), (60, 80, 50))
+
+    def test_the_turnaround_profile_facing_the_move_is_picked(self):
+        self.draw_side("flat/views/right.png", nose="right")
+        self.draw_side("flat/views/left.png", nose="left")
+        doc = self.run_it(side=A.FIND_SIDE, skeleton="walker_walk_left", prompt="The soldier walks.")
+        self.assertEqual(doc["side"]["picture"], "flat/views/left.png")
+        self.assertEqual((doc["side"]["moves"], doc["side"]["mirrored"]), ("left", False))
+        doc = self.run_it(side=A.FIND_SIDE)
+        self.assertEqual(doc["side"]["picture"], "flat/views/right.png")
+        self.assertFalse(doc["side"]["mirrored"])
+        # A left panel drawn head-on (the turnaround's 'side' flaw) is passed over: the right one, mirrored.
+        (self.root / "out" / "op" / "flat" / "views.json").write_text(json.dumps({"flaws": ["side"]}))
+        doc = self.run_it(side=A.FIND_SIDE, skeleton="walker_walk_left", prompt="The soldier walks.")
+        self.assertEqual(doc["side"]["picture"], "flat/views/right.png")
+        self.assertTrue(doc["side"]["mirrored"])
+        self.assertEqual(self.nose_side(), "left")
+        self.assertFalse((self.root / "out" / "op" / "flat" / "anim" / "walk" / "side-mirrored.png").exists())
+
+    def test_side_with_no_picture_refusals(self):
+        with self.assertRaisesRegex(A.AnimateError, "no side view of its own"):
+            self.run_it(side=A.FIND_SIDE)
+        self.draw_side("flat/views/side.png")
+        with self.assertRaisesRegex(A.AnimateError, "moves left or right"):
+            self.run_it(side=A.FIND_SIDE, prompt="The soldier walks on the spot.")
+
+    def test_which_way_the_character_moves(self):
+        self.assertEqual(A.moving_way("walker_run_left", "faces right"), "left")  # the skeleton's name wins
+        self.assertEqual(A.moving_way("walk_side", "The soldier faces right and walks to the right."), "right")
+        self.assertEqual(A.moving_way("walk_side", "She walks left, her left arm swinging"), "left")
+        self.assertEqual(A.moving_way("walk_side", "a robot heading leftward"), "left")
+        self.assertIsNone(A.moving_way("walk_side", "his left foot then his right foot"))
+        self.assertIsNone(A.moving_way("walk_side", "faces left, then turns to the right"))
+
+    def test_side_with_no_picture_on_the_command_line(self):
+        with mock.patch.object(A, "animate", return_value={}) as run:
+            self.assertEqual(A.main(["--root", str(self.root), "--stem", "op", "--prompt", "walks right",
+                                     "--side", "--side-frame", "12"]), 0)
+        self.assertEqual(run.call_args.kwargs["side"], A.FIND_SIDE)
+        self.assertEqual(run.call_args.kwargs["side_frame"], 12)
+        with mock.patch.object(A, "animate", return_value={}) as run:
+            A.main(["--root", str(self.root), "--stem", "op", "--prompt", "walks right", "--side", "flat/x.png"])
+        self.assertEqual(run.call_args.kwargs["side"], "flat/x.png")
+
     def test_skeleton_check(self):
         doc = self.run_it()
         check = doc["pose_check"]
@@ -617,6 +708,13 @@ class RouteTests(unittest.TestCase):
                                                                  "side_frame": 30})
         self.assertEqual(argv[argv.index("--side") + 1], "flat/side.png")
         self.assertEqual(argv[argv.index("--side-frame") + 1], "30")
+
+    def test_own_side_view_reaches_the_command_line(self):
+        argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "walks right", "side": True,
+                                                                 "side_frame": 30})
+        self.assertEqual(argv[argv.index("--side") + 1], "--side-frame")  # --side with no picture
+        self.assertNotIn("--side", factory_http.animate_argv("py", self.root, "op",
+                                                             {"prompt": "walks right", "side": False}))
 
     def test_failed_job_says_why(self):
         with mock.patch.dict(os.environ, {"FAKE_LTX_FAIL": "1"}):

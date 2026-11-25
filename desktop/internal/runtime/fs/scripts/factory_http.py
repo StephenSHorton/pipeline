@@ -247,8 +247,8 @@ STAGE_LABELS = {
     "check": "Check the rig",
     "fbx": "FBX for s&box",
     # scripts/animate.py
-    "skeleton": "Draw the skeleton video",
     "guide": "Fit the picture",
+    "skeleton": "Fit and draw the skeleton video",
     "ltx": "Animate with LTX-2.3",
     "frames": "Cut the frames",
     "cutouts": "Cut out the character",
@@ -426,7 +426,7 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     default walk_side), "action"?: the strip's name (default walk), "picture"?: a picture under out/<stem>/ (default
     the concept still), "seed"?, "frames"?: 8k+1 (default 73), "size"?: 256 to 1024 in 32s (default 704),
     "every"?: every n'th frame goes in the strip (default 3), "side"?: a side view under out/<stem>/ as a second
-    guide, "side_frame"?: the frame it guides (default 24)}."""
+    guide (true: the asset's own side view, turned to face the way the prompt says), "side_frame"?: the frame it guides (default 24)}."""
     import skeleton as SK
     from flat2d.atlas import action_name
     from flat2d.store import FlatError
@@ -454,7 +454,9 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
             raise ValueError("picture must be a path inside the asset")
         argv += ["--picture", rel]
     side = body.get("side")
-    if side not in (None, ""):
+    if side is True:  # the asset's own side view (animate.py --side with no picture)
+        argv.append("--side")
+    elif side not in (None, "", False):
         rel = str(side)
         if rel.startswith("/") or ".." in Path(rel).parts:
             raise ValueError("side must be a path inside the asset")
