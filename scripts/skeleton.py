@@ -247,6 +247,30 @@ def pose_error(control: list[dict], clip: list[dict], skip: int = 0) -> dict[str
     }
 
 
+# Where a body stands across the frame: the mean x of its torso's joints (hips, neck, the tops of the legs).
+TORSO = ("root", "neck_1_joint", "left_upLeg_joint", "right_upLeg_joint")
+
+
+def drift(control: list[dict], clip: list[dict], skip: int = 0) -> dict[str, Any]:
+    """How far across the clip's body stands from the control's, frame by frame from skip, in percent of the width
+    (positive: to the right): the mean x of the TORSO joints confident in both. Mean (signed), mean of its size,
+    and the worst frame."""
+    per = []
+    for i in range(skip, min(len(control), len(clip))):
+        A, B = control[i] or {}, clip[i] or {}
+        ks = [n for n in TORSO if n in A and n in B and A[n][2] > CONFIDENT and B[n][2] > CONFIDENT]
+        if ks:
+            per.append(sum(B[n][0] - A[n][0] for n in ks) / len(ks) * 100)
+    worst = max(per, key=abs) if per else 0.0
+    return {
+        "from_frame": skip,
+        "frames_compared": len(per),
+        "mean_pct": round(sum(per) / max(1, len(per)), 2),
+        "mean_abs_pct": round(sum(abs(d) for d in per) / max(1, len(per)), 2),
+        "worst_pct": round(worst, 2),
+    }
+
+
 # The skeleton as a tree from the hips (Vision's root): (parent, joint, the part whose length it is). Each part's
 # length is fitted on its own; left and right share one.
 TREE = [("root", "neck_1_joint", "torso"),
