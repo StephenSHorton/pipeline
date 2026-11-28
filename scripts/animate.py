@@ -54,7 +54,9 @@ guide picture's skeleton and each part of the shipped one (torso, shoulder and h
 thigh, shin, head) takes the picture's length, the hips start where the picture's are and the feet stay on its
 ground line. Moving and scaling alone left a realistic operator ~6% off the cartoon-built walker while standing
 still (docs/animate-operator-cycles.md). Without bin/bodypose, or with no skeleton read, it is used as shipped. A
-cycle made for the asset's own sprite-stack character is not refitted: it already has that body's proportions.
+cycle made for the asset's own sprite-stack character has that body's build, but its rig pivots the thighs at the
+crotch where the picture's hips (as Vision and LTX see them) are at the top of the thigh: only its torso, hip width
+and legs are fitted (skeleton.HIP_PARTS), its arms and head kept.
 
 --side with no picture uses the asset's own side view, the one the 2D stage drew (find_side): the turnaround's
 flat/views/right.png or left.png (head right, head left), else the pixel sheet's flat/views/side.png or the sprite
@@ -796,18 +798,19 @@ def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> 
     return res
 
 
-def fit_control(root: Path, control: list[dict], work: Path) -> tuple[list[dict], dict]:
+def fit_control(root: Path, control: list[dict], work: Path,
+                parts: tuple[str, ...] | None = None) -> tuple[list[dict], dict]:
     """The skeleton refitted to the guide picture's own body (skeleton.refit: its hips, shoulders, limb lengths
-    and feet, read by Apple Vision), so a character built unlike the skeleton's does not start off it. Without
-    bin/bodypose, or when Vision reads no neck, hips and feet in the picture, the skeleton is used as shipped and
-    the returned note says why."""
+    and feet, read by Apple Vision; or only the parts named), so a character built unlike the skeleton's does not
+    start off it. Without bin/bodypose, or when Vision reads no neck, hips and feet in the picture, the skeleton is
+    used as shipped and the returned note says why."""
     tool = bodypose_tool(root)
     if not tool:
         print("animate: no bin/bodypose; the skeleton is used as shipped, not fitted to the picture", flush=True)
         return control, {"fitted": False, "why": "no bin/bodypose"}
     target = SK.read_picture(tool, work / "guide.png", work)
     try:
-        fitted, info = SK.refit(control, target)
+        fitted, info = SK.refit(control, target, parts)
     except SK.SkeletonError as e:
         print(f"animate: {e}; the skeleton is used as shipped", flush=True)
         return control, {"fitted": False, "why": str(e)}
@@ -956,11 +959,9 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
                             if skeleton_fps != FPS else SK.load(control_src), frames)
     if shrink < 1.0:
         control = SK.scale_about(control, figure["x"], figure["ground"], shrink)
-    if made_for == "this character":  # made from this character's own rig: its proportions are already the body's,
-        # and Vision's read of a drawn picture would only bend them (the walker: thighs x1.5, torso x0.64)
-        fit = {"fitted": False, "why": "the cycle is made for this character's own body"}
-    else:
-        control, fit = fit_control(root, control, work)
+    # A cycle made from this character's own rig has its build, but the rig pivots the thighs at the crotch where
+    # the picture's hips are higher (skeleton.HIP_PARTS): only the hips and legs are fitted, the arms and head kept.
+    control, fit = fit_control(root, control, work, SK.HIP_PARTS if made_for == "this character" else None)
     (work / "control.json").write_text(json.dumps({"fps": FPS, "fit": fit,
                                                    "frames": [{"joints2d": j} for j in control]}) + "\n")
     SK.draw_video(control, size, size, FPS, work / "skeleton.mp4")
