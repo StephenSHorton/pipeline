@@ -10,6 +10,19 @@
 // the body over the origin facing +x; one loop moves it `travel` along +x (0 for the attack). Feet are solved like
 // the rig's: a planted foot is a fixed point on the ground, knees and elbows come from two-bone IK, so no bone
 // stretches and a planted foot never slides.
+//
+// The animation principles (pipeline#8) are built into the cycles, and on by default; `principles: false` gives the
+// plain cycles pipeline#14 made, kept to compare against. With them:
+//  - slow in / slow out: every key pose is eased into and out of, never linear;
+//  - timing: the punch holds its guard and its wind-up, strikes in two frames, and stops dead for three frames on
+//    impact (hit-stop; the plain punch already held its hit that long);
+//  - anticipation: the punch coils back, down and away before it strikes;
+//  - follow-through and overlap: hips lead, then shoulders, then the fist; the arms swing behind the shoulders and
+//    the forearms behind the upper arms; the head trails the body and settles after it;
+//  - arcs: hands swing on arcs, the fist comes back on a curve, not the line it went out on;
+//  - exaggeration: the bob, twist, lean and arm swing are pushed about 25% past the plain cycles.
+// The feet, the stride and the frame counts are the same with and without, so the two can be laid side by side and
+// still loop, keep bones their length and never slide a planted foot.
 import { solveTwoBone, type ArmPose, type LegPose, type Pose, type RigConfig, type V3 } from "./rig";
 
 export const SKELETON_FORMAT = "pipeline-skeleton-cycle";
@@ -68,12 +81,17 @@ export interface SkeletonFrame {
   shoulders: number;
   /** The upper body's tilt forward (radians). */
   lean: number;
+  /** The head's own turn from the shoulders and its tilt forward past the lean (radians), when it trails the body
+   * (the principles); absent, it turns with the shoulders and tilts with the lean. */
+  head?: { turn: number; nod: number };
 }
 
 export interface SkeletonCycle {
   format: typeof SKELETON_FORMAT;
   version: 1;
   name: CycleName;
+  /** Made with the animation principles (pipeline#8), or plain (pipeline#14's). */
+  principles: boolean;
   fps: number;
   /** Frames in one loop: frame `frames` is frame 0 moved `travel` along +x. */
   frames: number;
@@ -114,6 +132,7 @@ interface Build {
   contact: [boolean, boolean];
   footYaw?: [number, number];
   arms: [Arm, Arm];
+  head?: { turn: number; nod: number };
 }
 
 const SIDES = ["right", "left"] as const;
@@ -158,11 +177,13 @@ function build(b: Body, s: Build): SkeletonFrame {
     j[`${n}_forearm_joint`] = arm.elbow ?? solveTwoBone(sh, arm.hand, b.upperArm, b.foreArm, arm.hint ?? [-1, 0, 0]);
     j[`${n}_hand_joint`] = arm.hand;
   }
-  // the head, in the shoulders' turn, tilted with the lean
+  // the head, in the shoulders' turn, tilted with the lean (and, trailing, by its own turn and nod)
   const pivot = add(s.pelvis, scale(up, b.neck));
   const h = b.head;
+  const hy = s.head ? s.shoulders + s.head.turn : s.shoulders;
+  const hl = s.head ? s.lean + s.head.nod : s.lean;
   const headPt = (f: number, l: number, u: number): V3 => {
-    const p = yawed(s.shoulders, f * Math.cos(s.lean) + u * Math.sin(s.lean), l, u * Math.cos(s.lean) - f * Math.sin(s.lean));
+    const p = yawed(hy, f * Math.cos(hl) + u * Math.sin(hl), l, u * Math.cos(hl) - f * Math.sin(hl));
     return add(pivot, p);
   };
   j.head_joint = headPt(0.34 * h, 0, 0.42 * h);
@@ -170,7 +191,9 @@ function build(b: Body, s: Build): SkeletonFrame {
     j[`${SIDES[i]}_eye_joint`] = headPt(0.3 * h, sideSign(i) * 0.16 * h, 0.5 * h);
     j[`${SIDES[i]}_ear_joint`] = headPt(0, sideSign(i) * 0.42 * h, 0.45 * h);
   }
-  return { joints: j, contact: s.contact, footYaw: yaw, hips: s.hips, shoulders: s.shoulders, lean: s.lean };
+  const out: SkeletonFrame = { joints: j, contact: s.contact, footYaw: yaw, hips: s.hips, shoulders: s.shoulders, lean: s.lean };
+  if (s.head) out.head = { ...s.head };
+  return out;
 }
 
 /** Standing still facing +x, arms hanging: where every cycle's turn starts. */
@@ -200,17 +223,52 @@ interface Gait {
   elbowBend: number;
   /** >1 lifts the swinging heel early, behind the body (a run); 1 is an even arc. */
   heelKick: number;
+  /** The principles' overlap and follow-through; absent in the plain gaits. */
+  overlap?: Overlap;
+}
+
+/** Follow-through and overlap in a gait, as parts of a loop (0..1) each part runs behind the one that drives it. */
+interface Overlap {
+  /** Where in the loop the hips are lowest: a walk's down pose, just after the foot lands. */
+  bobLow: number;
+  /** The upper arm behind the shoulders' swing, and the forearm behind the upper arm. */
+  armLag: number;
+  foreLag: number;
+  /** The head nods forward after the body drops (radians), this far behind the low. */
+  headNod: number;
+  headLag: number;
+  /** How much of the shoulders' turn the head takes back, to keep looking ahead. */
+  headHold: number;
+  /** The upper body pitches with the bob (radians), this far behind the low. */
+  leanBob: number;
+  leanLag: number;
 }
 
 const legLen = (b: Body) => b.thigh + b.shin;
 
-function gaitOf(name: "walk" | "run", b: Body): Gait {
+function gaitOf(name: "walk" | "run", b: Body, principles = true): Gait {
   const L = legLen(b);
   // a walk's stride and lift as the sprite stack's own rig has them (28.6 and 3.06 cells for 18 of leg)
+  if (!principles)
+    return name === "walk"
+      ? { stride: 1.55 * L, duty: 0.6, lift: 0.17 * L, bob: 0.03 * L, twist: 0.14, lean: 0.03, armSwing: 0.42, elbowBend: 0, heelKick: 1 }
+      : { stride: 2.5 * L, duty: 0.36, lift: 0.42 * L, bob: 0.06 * L, twist: 0.22, lean: 0.2, armSwing: 0.75, elbowBend: 1.45, heelKick: 1.8 };
+  // The same feet (stride, duty, lift, heel kick), the body above them pushed about 25% further (exaggeration), and
+  // the arms and head running behind it (overlap). A walk drops into its down pose just after each foot lands and
+  // rises over the passing pose; a run is lowest mid-stance, as a spring.
   return name === "walk"
-    ? { stride: 1.55 * L, duty: 0.6, lift: 0.17 * L, bob: 0.03 * L, twist: 0.14, lean: 0.03, armSwing: 0.42, elbowBend: 0, heelKick: 1 }
-    : { stride: 2.5 * L, duty: 0.36, lift: 0.42 * L, bob: 0.06 * L, twist: 0.22, lean: 0.2, armSwing: 0.75, elbowBend: 1.45, heelKick: 1.8 };
+    ? {
+        stride: 1.55 * L, duty: 0.6, lift: 0.17 * L, bob: 0.045 * L, twist: 0.18, lean: 0.05, armSwing: 0.55, elbowBend: 0.3, heelKick: 1,
+        overlap: { bobLow: 0.07, armLag: 0.04, foreLag: 0.05, headNod: 0.05, headLag: 0.06, headHold: 0.6, leanBob: 0.015, leanLag: 0.04 },
+      }
+    : {
+        stride: 2.5 * L, duty: 0.36, lift: 0.42 * L, bob: 0.075 * L, twist: 0.27, lean: 0.25, armSwing: 0.9, elbowBend: 1.45, heelKick: 1.8,
+        overlap: { bobLow: 0.18, armLag: 0.04, foreLag: 0.05, headNod: 0.07, headLag: 0.06, headHold: 0.6, leanBob: 0.03, leanLag: 0.05 },
+      };
 }
+
+/** Where in the loop a gait's hips are lowest. */
+const bobLowOf = (g: Gait) => g.overlap?.bobLow ?? g.duty / 2;
 
 /** The pelvis height that keeps every planted foot in reach through the loop (as the rig lowers its hips). */
 function gaitHip(b: Body, g: Gait, samples = 240) {
@@ -224,12 +282,13 @@ function gaitHip(b: Body, g: Gait, samples = 240) {
     // the right foot (side 0) is planted; its ground distance from the hip; the hips' twist moves the hip too
     const far = Math.abs(stance / 2 - pi * g.stride) + b.hipHalf * Math.sin(Math.abs(g.twist));
     const most = b.ankle + Math.sqrt(Math.max(1, reach * reach - far * far));
-    base = Math.min(base, most + g.bob * Math.cos(TAU * 2 * (p - g.duty / 2)));
+    base = Math.min(base, most + g.bob * Math.cos(TAU * 2 * (p - bobLowOf(g))));
   }
   return base;
 }
 
 function gaitFrame(b: Body, g: Gait, hipBase: number, p: number): SkeletonFrame {
+  if (g.overlap) return gaitFrameOverlap(b, g, g.overlap, hipBase, p);
   const stance = g.duty * g.stride;
   const x = p * g.stride;
   // lowest mid-stance, highest mid-swing (for a run, in the flight)
@@ -272,6 +331,51 @@ function gaitFrame(b: Body, g: Gait, hipBase: number, p: number): SkeletonFrame 
   });
 }
 
+/** The feet of a gait at loop position p, as gaitFrame places them: planted ones fixed on the ground. */
+function gaitFeet(b: Body, g: Gait, p: number) {
+  const stance = g.duty * g.stride;
+  const ankles: V3[] = [];
+  const contact: boolean[] = [];
+  for (let i = 0; i < 2; i++) {
+    const pi = (((p + i * 0.5) % 1) + 1) % 1;
+    const tdX = (p - pi) * g.stride + b.hipFwd + stance / 2;
+    const y = sideSign(i) * b.hipHalf;
+    if (pi < g.duty) {
+      ankles.push([tdX, y, b.ankle]);
+      contact.push(true);
+    } else {
+      const u = (pi - g.duty) / (1 - g.duty);
+      const lift = g.lift * Math.sin(Math.PI * Math.pow(u, 1 / g.heelKick));
+      ankles.push([tdX + g.stride * ease(u), y, b.ankle + lift]);
+      contact.push(false);
+    }
+  }
+  return { ankles: ankles as [V3, V3], contact: contact as [boolean, boolean] };
+}
+
+/** A gait with the principles: the same feet as the plain one; the hips' bob eased round the down pose, the
+ * upper body pitching after it, the arms swinging behind the shoulders bone by bone (upper arm, then forearm: a
+ * drag, never a stiff pendulum) and the head nodding after the body and holding its look ahead. */
+function gaitFrameOverlap(b: Body, g: Gait, o: Overlap, hipBase: number, p: number): SkeletonFrame {
+  const low = o.bobLow;
+  const pelvis: V3 = [p * g.stride, 0, hipBase - g.bob * Math.cos(TAU * 2 * (p - low))];
+  const lean = g.lean + o.leanBob * Math.cos(TAU * 2 * (p - low - o.leanLag));
+  const tw = g.twist * Math.cos(TAU * p);
+  const hips = tw;
+  const shoulders = -1.2 * tw;
+  const { ankles, contact } = gaitFeet(b, g, p);
+  const arms = [0, 1].map((i): Arm => {
+    const s = sideSign(i);
+    const sh = shoulderAt(b, pelvis, lean, shoulders, i);
+    const upper = s * g.armSwing * Math.cos(TAU * (p - o.armLag)) - lean * 0.5;
+    const fore = s * g.armSwing * Math.cos(TAU * (p - o.armLag - o.foreLag)) - lean * 0.5 + g.elbowBend;
+    const elbow = add(sh, [Math.sin(upper) * b.upperArm, 0, -Math.cos(upper) * b.upperArm]);
+    return { elbow, hand: add(elbow, [Math.sin(fore) * b.foreArm, 0, -Math.cos(fore) * b.foreArm]) };
+  }) as [Arm, Arm];
+  const head = { turn: -o.headHold * shoulders, nod: o.headNod * Math.cos(TAU * 2 * (p - low - o.headLag)) };
+  return build(b, { pelvis, hips, shoulders, lean, ankles, contact, arms, head });
+}
+
 /** A right straight punch from a guard, and back to the guard: feet planted all through, left foot forward. */
 function attackFrame(b: Body, p: number): SkeletonFrame {
   const L = legLen(b);
@@ -306,19 +410,115 @@ function attackFrame(b: Body, p: number): SkeletonFrame {
   });
 }
 
+/** Ease in only: a strike speeds up into the hit. */
+const easeIn = (t: number) => t * t;
+
+/** A key: [frame of the 24-frame punch, value, the ease into it (slow in / slow out unless named)]. */
+type Key = [number, number, ((t: number) => number)?];
+/** The value at loop position t (0..1) on keys from frame 0 to frame 24, eased between each pair. Equal keys either
+ * side of a span hold it still. */
+function track(t: number, keys: Key[]) {
+  const f = t * 24;
+  for (let i = 1; i < keys.length; i++) {
+    const [f1, v1, e] = keys[i];
+    if (f <= f1) {
+      const [f0, v0] = keys[i - 1];
+      return f1 === f0 ? v1 : lerp(v0, v1, (e ?? ease)((f - f0) / (f1 - f0)));
+    }
+  }
+  return keys[keys.length - 1][1];
+}
+
+// The punch with the principles, as key poses on its 24 frames: guard held (0-3), the wind-up (3-9: anticipation,
+// coiled back and down, the fist drawn to the cheek) held a frame, the strike in two frames (10-12, speeding in;
+// hips first, then shoulders, then the fist), impact held dead for three frames (12-14, hit-stop), the shoulders
+// and lean carrying on past it (16, follow-through), and the slow way back to the guard (16-22), the fist on a
+// low arc and the head settling last. The feet are the plain punch's.
+const P_HIPS: Key[] = [[0, -0.42], [3, -0.42], [9, -0.57], [10, -0.57], [11, 0.04, easeIn], [12, 0.08], [14, 0.08], [15, 0.12], [21, -0.42], [24, -0.42]];
+const P_SHOULDERS: Key[] = [[0, -0.55], [3, -0.55], [9, -0.87], [10, -0.87], [11, -0.35, easeIn], [12, 0.4], [14, 0.4], [16, 0.52], [22, -0.55], [24, -0.55]];
+const P_LEAN: Key[] = [[0, 0.06], [3, 0.06], [9, -0.06], [10, -0.06], [12, 0.18, easeIn], [14, 0.18], [16, 0.24], [22, 0.06], [24, 0.06]];
+/** The pelvis forward and its drop, in leg lengths. */
+const P_FWD: Key[] = [[0, 0], [3, 0], [9, -0.09], [10, -0.09], [11, 0.06, easeIn], [12, 0.1], [14, 0.1], [16, 0.13], [22, 0], [24, 0]];
+const P_CROUCH: Key[] = [[0, 0.1], [3, 0.1], [9, 0.14], [10, 0.14], [12, 0.125], [14, 0.125], [16, 0.135], [22, 0.1], [24, 0.1]];
+/** The right fist: drawn back (0..1), out to the hit (0..1), and the dip of its way back (0..1). */
+const P_DRAW: Key[] = [[0, 0], [3, 0], [9, 1], [10, 1], [12, 0], [24, 0]];
+const P_OUT: Key[] = [[0, 0], [10, 0], [12, 1, easeIn], [16, 1], [22, 0], [24, 0]];
+const P_DIP: Key[] = [[0, 0], [16, 0], [19, 1], [22, 0], [24, 0]];
+/** The left fist pulled back to the chin as the right goes out (0..1), back last. */
+const P_PULL: Key[] = [[0, 0], [10, 0], [12, 1], [16, 1], [23, 0], [24, 0]];
+/** The head: chin down in the wind-up, left behind by the lunge, thrown on after it, settling. */
+const P_NOD: Key[] = [[0, 0], [3, 0], [9, 0.07], [10, 0.07], [12, -0.06], [14, -0.06], [17, 0.1], [20, -0.02], [23, 0], [24, 0]];
+
+function attackFramePrincipled(b: Body, p: number): SkeletonFrame {
+  const L = legLen(b);
+  const arm = b.upperArm + b.foreArm;
+  const t = ((p % 1) + 1) % 1;
+  const lean = track(t, P_LEAN);
+  const hips = track(t, P_HIPS);
+  const shoulders = track(t, P_SHOULDERS);
+  const pelvis: V3 = [track(t, P_FWD) * L, 0, b.standHip - track(t, P_CROUCH) * L];
+  const ankles: [V3, V3] = [
+    [-0.36 * L + b.hipFwd, -1.25 * b.hipHalf, b.ankle],
+    [0.3 * L + b.hipFwd, 1.1 * b.hipHalf, b.ankle],
+  ];
+  // the lunge and the wind-up move the hips further over the feet than the plain punch: on a body standing with
+  // near-straight legs, sink the hips as far as it takes to keep both planted feet in reach (they must not slide)
+  const most = L - 0.03;
+  for (let i = 0; i < 2; i++) {
+    const hip = hipAt(b, pelvis, hips, i);
+    const far = Math.hypot(hip[0] - ankles[i][0], hip[1] - ankles[i][1]);
+    pelvis[2] = Math.min(pelvis[2], ankles[i][2] + Math.sqrt(Math.max(1, most * most - far * far)));
+  }
+  const chin = b.neck + 0.2 * b.head;
+  const draw = track(t, P_DRAW);
+  const out = track(t, P_OUT);
+  const pull = track(t, P_PULL);
+  const left: Arm = {
+    hand: add(pelvis, [0.34 * arm - 0.1 * arm * pull, 0.12 * b.shoulderHalf, chin + 0.04 * b.head * pull]),
+    hint: [-0.2, 0.6, -1],
+  };
+  const shR = shoulderAt(b, pelvis, lean, shoulders, 0);
+  const guardR: V3 = add(pelvis, [0.24 * arm, -0.35 * b.shoulderHalf, chin - 0.1 * b.head]);
+  // drawn back to the cheek, on a curve out to the side (an arc, not a line)
+  const back: V3 = [
+    guardR[0] - 0.16 * arm * draw,
+    guardR[1] - 0.25 * b.shoulderHalf * Math.sin(Math.PI * Math.min(1, draw)) * (1 - out),
+    guardR[2] + 0.08 * b.head * draw,
+  ];
+  const strikeR: V3 = add(shR, [0.97 * arm * Math.cos(0.12), 0.45 * b.shoulderHalf, -0.03 * arm]);
+  const dip = track(t, P_DIP);
+  const right: Arm = {
+    hand: [lerp(back[0], strikeR[0], out), lerp(back[1], strikeR[1], out), lerp(back[2], strikeR[2], out) - 0.12 * arm * dip],
+    hint: [-0.3 - 0.3 * draw, -0.6 * (1 - out), -1],
+  };
+  // the head keeps its eyes on the target: it takes back part of the shoulders' turn from the guard
+  const head = { turn: -0.6 * (shoulders - P_SHOULDERS[0][1]), nod: track(t, P_NOD) };
+  // a fist never past the arm's reach (a body with short arms and wide shoulders): pulled in towards its shoulder
+  const shL = shoulderAt(b, pelvis, lean, shoulders, 1);
+  for (const [sh, a] of [[shR, right], [shL, left]] as [V3, Arm][]) {
+    const d = dist(a.hand, sh);
+    if (d > arm - 0.02) a.hand = add(sh, scale([a.hand[0] - sh[0], a.hand[1] - sh[1], a.hand[2] - sh[2]], (arm - 0.02) / d));
+  }
+  return build(b, {
+    pelvis, hips, shoulders, lean, ankles, contact: [true, true], footYaw: [-0.7, -0.25], arms: [right, left], head,
+  });
+}
+
 export interface CycleOptions {
   fps?: number;
   /** Frames in one loop. */
   frames?: number;
+  /** The animation principles (pipeline#8); on unless false, which gives pipeline#14's plain cycle. */
+  principles?: boolean;
 }
 
 /** Frames a loop has by default at 24 fps (LTX's rate): a walk's two steps in 28, a run's in 18, a punch in 24. */
 export const CYCLE_FRAMES: Record<CycleName, number> = { walk: 28, run: 18, attack: 24 };
 
 /** One cycle's frame at loop position p (0..1, any real: p = 1 is frame 0 moved one travel on). */
-export function cycleFrameAt(name: CycleName, b: Body, p: number): SkeletonFrame {
-  if (name === "attack") return attackFrame(b, p);
-  const g = gaitOf(name, b);
+export function cycleFrameAt(name: CycleName, b: Body, p: number, principles = true): SkeletonFrame {
+  if (name === "attack") return principles ? attackFramePrincipled(b, p) : attackFrame(b, p);
+  const g = gaitOf(name, b, principles);
   const fr = gaitFrame(b, g, gaitHip(b, g), p - Math.floor(p));
   const shift = Math.floor(p) * g.stride;
   return shift ? moveFrame(fr, shift) : fr;
@@ -330,9 +530,12 @@ export function cycleTravel(name: CycleName, b: Body) {
 
 export function makeCycle(name: CycleName, b: Body, o: CycleOptions = {}): SkeletonCycle {
   const frames = o.frames ?? CYCLE_FRAMES[name];
+  const principles = o.principles ?? true;
   const poses: SkeletonFrame[] = [];
-  for (let k = 0; k < frames; k++) poses.push(cycleFrameAt(name, b, k / frames));
-  return { format: SKELETON_FORMAT, version: 1, name, fps: o.fps ?? 24, frames, travel: cycleTravel(name, b), body: b, poses };
+  for (let k = 0; k < frames; k++) poses.push(cycleFrameAt(name, b, k / frames, principles));
+  return {
+    format: SKELETON_FORMAT, version: 1, name, principles, fps: o.fps ?? 24, frames, travel: cycleTravel(name, b), body: b, poses,
+  };
 }
 
 /** Frame k of a cycle, any k: whole loops move it on by `travel`. */
@@ -340,6 +543,13 @@ export function cycleFrame(c: SkeletonCycle, k: number): SkeletonFrame {
   const loops = Math.floor(k / c.frames);
   const f = c.poses[k - loops * c.frames];
   return loops ? moveFrame(f, loops * c.travel) : f;
+}
+
+/** Frame k of a cycle on the spot: its travel so far taken back (not the pelvis, which sways: a punch leans in on
+ * planted feet), so the ground moves under it as on a treadmill. What a video model's skeleton and the side-by-side
+ * compare play. */
+export function spotFrame(c: SkeletonCycle, k: number): SkeletonFrame {
+  return moveFrame(cycleFrame(c, k), -(k / c.frames) * c.travel);
 }
 
 function moveFrame(f: SkeletonFrame, dx: number): SkeletonFrame {
@@ -390,8 +600,11 @@ export function blendFrames(bd: Body, a: SkeletonFrame, b: SkeletonFrame, t: num
     );
     return { hand: add(sh, scale(off, want / ol)), hint };
   }) as [Arm, Arm];
+  const ha = a.head ?? { turn: 0, nod: 0 };
+  const hb = b.head ?? { turn: 0, nod: 0 };
+  const head = a.head || b.head ? { turn: lerp(ha.turn, hb.turn, t), nod: lerp(ha.nod, hb.nod, t) } : undefined;
   return build(bd, {
-    pelvis, hips, shoulders, lean, arms,
+    pelvis, hips, shoulders, lean, arms, head,
     ankles: [J("right_foot_joint"), J("left_foot_joint")],
     contact: [a.contact[0] && b.contact[0], a.contact[1] && b.contact[1]],
     footYaw: [lerp(a.footYaw[0], b.footYaw[0], t), lerp(a.footYaw[1], b.footYaw[1], t)],
@@ -456,8 +669,13 @@ export function rigPose(f: SkeletonFrame, body: Body, x: number, y: number, h: n
   // where the head turns: on the line from the pelvis up through the shoulders' centre, at the neck's height
   const k = body.neck / body.spine;
   const neck: V3 = [pelvis[0] + (top[0] - pelvis[0]) * k, pelvis[1] + (top[1] - pelvis[1]) * k, pelvis[2] + (top[2] - pelvis[2]) * k];
-  return {
+  const P: Pose = {
     x, y, heading: h, phase, pelvis, top, neck, hipsAngle: h + f.hips, shouldersAngle: h + f.shoulders, legs, arms,
     lean: f.lean,
   };
+  if (f.head) {
+    P.headAngle = h + f.shoulders + f.head.turn;
+    P.headLean = f.lean + f.head.nod;
+  }
+  return P;
 }

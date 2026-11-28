@@ -56,6 +56,9 @@ import {
 } from "./stack";
 import { createStackView, loadImage, type PaintMode, type StackView } from "./view";
 import { TowerPanel } from "./TowerPanel";
+import { PrinciplesCompare } from "./PrinciplesCompare";
+import { COMPARE_COPY, compareFromSearch } from "./character/compare";
+import type { CharacterDoc } from "./character/parts";
 import { towerable } from "@/screens/home/building";
 
 const CUBBIES: StackCubby[] = ["stack-look", "stack-sliders", "stack-palette", "paint"];
@@ -104,6 +107,9 @@ function StackBody({ stem, flowVersion }: StageProps) {
   const [saving, setSaving] = useState(false);
   /** The asset's Version is a walking character (pipeline#2), which offers a choice of motion. */
   const [walking, setWalking] = useState(false);
+  /** The walking character's doc and part strips, for the principles compare (pipeline#8). */
+  const [character, setCharacter] = useState<{ doc: CharacterDoc; strips: Map<string, ArrayLike<number>> } | null>(null);
+  const [comparing, setComparing] = useState(() => compareFromSearch(location.search));
   const [motion, setMotion] = useState<WalkMotion>(() => motionFromSearch(location.search));
   const ownSave = useRef(0);
   const toggles = useRef<Partial<Record<StackCubby, HTMLButtonElement | null>>>({});
@@ -165,6 +171,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
       setDefaults(d);
       setMeta(m);
       setWalking(!!walker);
+      setCharacter(walker);
       if (walker) v.loadCharacter(m, next, walker.doc, walker.strips);
       else v.load(m, img, next);
       setPhase("ready");
@@ -315,6 +322,11 @@ function StackBody({ stem, flowVersion }: StageProps) {
                     ))}
                   </div>
                 ) : null}
+                {walking && character ? (
+                  <Button type="button" variant="outline" title={COMPARE_COPY.openTitle} onClick={() => setComparing(true)} className={cn(ACTION, "self-start")}>
+                    {COMPARE_COPY.open}
+                  </Button>
+                ) : null}
                 <Group label="Stack">
                   {togglesFor(state).map((b) => (
                     <Toggle key={b.key} on={state[b.key]} title={b.title} onClick={() => update({ [b.key]: !state[b.key] })}>
@@ -446,6 +458,7 @@ function StackBody({ stem, flowVersion }: StageProps) {
           ) : null}
         </div>
       </div>
+      {comparing && ready && character ? <PrinciplesCompare doc={character.doc} strips={character.strips} onClose={() => setComparing(false)} /> : null}
     </section>
   );
 }

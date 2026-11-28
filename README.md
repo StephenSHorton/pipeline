@@ -156,9 +156,20 @@ drawn as OpenPose-18). A cycle is made for a body (`bodyFromRig(rig, height)`), 
 and is solved like the rig: planted feet never slide, knees and elbows are two-bone IK, no bone stretches, the last
 frame leads into the first. Facing left is the same cycle turned to heading π.
 
+The cycles have the **animation principles** built in (pipeline#8), on by default: the punch holds its guard, winds
+up back and down (anticipation), strikes in two frames hips-first, stops dead three frames on the hit (hit-stop, as the plain one did),
+carries on past it and settles slowly, the fist back on a low arc; the walk and run drop into their down pose after
+a foot lands, swing the arms behind the shoulders bone by bone, nod the head after the body and hold its look ahead;
+bob, twist, lean and arm swing are about 25% bigger. Every pose is eased. The feet, frame counts and travel are the
+plain cycles', so `makeCycle(name, body, { principles: false })` (and `skeleton-cycle.ts --plain`) gives pipeline#14's
+cycle exactly, to compare. A frame may carry `head: {turn, nod}`, which `rigPose` passes on as `Pose.headAngle` /
+`headLean`. In the app, the Stack stage's **Compare principles** (Look panel, a walking character; or
+`?compare=principles`) plays the walk and the punch without and with, side by side: the OpenPose skeleton a video
+model follows, and the walker's own parts on the same frames, on the spot at 24 fps.
+
 - `rigPose(frame, body, x, y, heading)` gives the rig's `Pose` for a frame, so `placeParts` hangs the stack's parts
   on it as it does for the walk (the torso and head now lean with `Pose.lean`). `createWalkView({ cycle: "run" })`
-  plays a cycle round the Stack stage's lap; the stage has no picker for it yet.
+  plays a cycle round the Stack stage's lap (`principles: false` the plain one; `spot` on the spot).
 - `cd desktop/frontend && bun scripts/skeleton-cycle.ts --character ../../out/<s>/stack --front ../../out/<s>/character/views/front.png --out <dir>`
   writes, for each cycle and facing: `<cycle>_<facing>.cycle.json` (`"format": "pipeline-skeleton-cycle"`: `fps`,
   `frames` in a loop, `travel` per loop in cells, `body`, and per frame `joints`, `contact`, `footYaw`, `hips`,
@@ -168,7 +179,8 @@ frame leads into the first. Facing left is the same cycle turned to heading π.
   scale) and `start.png` (the drawn front view on white, standing where the skeleton's first frame stands: LTX's
   first frame). Each clip turns from facing the camera over `--turn` frames (16), then plays the loop on the spot,
   73 frames in all. Each pose file also has `"figure": {"top", "ground", "x"}` (0..1): where the standing figure
-  is, which Animate fits a character's start picture to. `--pose-only` writes only the pose files (no videos).
+  is, which Animate fits a character's start picture to. `--pose-only` writes only the pose files (no videos);
+  `--plain` makes the cycles without the principles.
   `scripts/skeletons/walker_<cycle>_<facing>.json` holds these side views for the walker.
 - **Animate with a cycle:** `POST /2d/animate/<stem>` `{"cycle": "walk"|"run"|"attack", "facing"?: "right"|"left"}`
   (or `python scripts/animate.py --stem S --cycle run --facing left`); `GET /2d/animate/<stem>` lists what it

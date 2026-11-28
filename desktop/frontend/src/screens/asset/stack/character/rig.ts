@@ -114,6 +114,10 @@ export interface Pose {
   arms: ArmPose[];
   /** The upper body's tilt forward along the heading (radians); the walk leaves it out (upright). */
   lean?: number;
+  /** The head's own turn and forward tilt, when it trails the body (pipeline#8); else it turns with the shoulders
+   * and tilts with the lean. */
+  headAngle?: number;
+  headLean?: number;
 }
 
 const TAU = Math.PI * 2;

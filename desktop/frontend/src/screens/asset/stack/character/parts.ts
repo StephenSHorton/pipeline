@@ -153,7 +153,7 @@ export function placeParts(doc: CharacterDoc, P: Pose): Map<string, Placement | 
         break;
       }
       case "head":
-        out.set(part.name, leaning(P.neck, P.shouldersAngle, P.heading, P.lean ?? 0));
+        out.set(part.name, leaning(P.neck, P.headAngle ?? P.shouldersAngle, P.heading, P.headLean ?? P.lean ?? 0));
         break;
       case "thigh":
         out.set(part.name, limb(leg.hip, leg.knee, c.thigh, P.hipsAngle));

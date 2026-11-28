@@ -6,11 +6,12 @@
 //
 //   bun scripts/skeleton-cycle.ts --character ../../out/walker/stack --front ../../out/walker/character/views/front.png \
 //     --out /tmp/cycles [--cycle walk|run|attack|all] [--facing right|left|both] [--frames 73] [--turn 16] [--size 704]
-//     [--pose-only]
+//     [--pose-only] [--plain]
 //
 // Each pose file also says where the standing figure is in the picture ("figure": its top, its ground line and its
 // middle, 0..1 of the picture): the Animate stage (scripts/animate.py) fits a character's start picture to that box.
 // --pose-only writes only the pose files (what Animate reads), no videos; it is what Animate runs for a character.
+// --plain makes the cycles without the animation principles (pipeline#8): pipeline#14's, to compare against.
 //
 // Every clip turns from facing the camera (the start picture) to the side over --turn frames, then plays the loop
 // on the spot. Frame k of the skeleton video and frame k of the stack video are the same pose.
@@ -20,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { isCharacterDoc, partCells, placeParts, placePoint, type CharacterDoc } from "../src/screens/asset/stack/character/parts";
 import type { V3 } from "../src/screens/asset/stack/character/rig";
 import { bodyFromRig, CYCLES, makeCycle, rigPose, shot, type CycleName, type JointName } from "../src/screens/asset/stack/character/skeleton";
+import { OPENPOSE, OPENPOSE_COLORS, OPENPOSE_LIMBS, seenJoints } from "../src/screens/asset/stack/character/openpose";
 
 const arg = (k: string, d?: string) => {
   const i = process.argv.indexOf(`--${k}`);
@@ -35,6 +37,7 @@ const turn = Number(arg("turn", "16"));
 const W = Number(arg("size", "704"));
 const H = W;
 const poseOnly = process.argv.includes("--pose-only");
+const principles = !process.argv.includes("--plain");
 mkdirSync(out, { recursive: true });
 
 function readRGBA(file: string): { w: number; h: number; px: Uint8Array } {
@@ -117,26 +120,10 @@ function line(px: Uint8Array, a: [number, number], b: [number, number], r: numbe
     }
 }
 
-// OpenPose-18, as runners/skeleton_video.py draws it: the Vision joint for each index, limbs and colours
-const OP: JointName[] = ["head_joint", "neck_1_joint", "right_shoulder_1_joint", "right_forearm_joint", "right_hand_joint",
-  "left_shoulder_1_joint", "left_forearm_joint", "left_hand_joint", "right_upLeg_joint", "right_leg_joint",
-  "right_foot_joint", "left_upLeg_joint", "left_leg_joint", "left_foot_joint", "right_eye_joint",
-  "left_eye_joint", "right_ear_joint", "left_ear_joint"];
-const LIMBS = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13],
-  [1, 0], [0, 14], [14, 16], [0, 15], [15, 17]];
-const COLORS = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0], [0, 255, 0],
-  [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255],
-  [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]];
-
-/** Joints the camera sees: an eye or ear on the far side of the head is left out, as a pose detector would. */
-function seen(j: Record<JointName, V3>): Partial<Record<JointName, V3>> {
-  const s: Partial<Record<JointName, V3>> = { ...j };
-  const mid = (j.left_ear_joint[1] + j.right_ear_joint[1]) / 2;
-  const reach = Math.abs(j.left_ear_joint[1] - j.right_ear_joint[1]) / 2;
-  for (const n of ["left_eye_joint", "right_eye_joint", "left_ear_joint", "right_ear_joint"] as JointName[])
-    if (j[n][1] - mid > 0.35 * reach) delete s[n];
-  return s;
-}
+const OP = OPENPOSE;
+const LIMBS = OPENPOSE_LIMBS;
+const COLORS = OPENPOSE_COLORS;
+const seen = seenJoints;
 
 function skeletonFrame(j: Partial<Record<JointName, V3>>): Uint8Array {
   const px = new Uint8Array(W * H * 4);
@@ -206,7 +193,7 @@ function stackFrame(pose: ReturnType<typeof rigPose>): Uint8Array {
 
 const names = (which === "all" ? CYCLES : [which]) as CycleName[];
 for (const name of names) {
-  const cycle = makeCycle(name, body);
+  const cycle = makeCycle(name, body, { principles });
   for (const facing of facings) {
     const stem = `${name}_${facing}`;
     const s = shot(cycle, facing, total, turn);

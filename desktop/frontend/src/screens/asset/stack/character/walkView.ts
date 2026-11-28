@@ -21,7 +21,7 @@ import {
   Vector3,
 } from "three";
 import { createWalker, lapPoint, place, pose, step, type Pose, type Walker } from "./rig";
-import { bodyFromRig, cycleFrame, makeCycle, rigPose, type CycleName } from "./skeleton";
+import { bodyFromRig, cycleFrame, makeCycle, rigPose, spotFrame, type CycleName } from "./skeleton";
 import { partCells, partKind, placeParts, type CharacterDoc, type CharacterPart, type PartCells, type Placement } from "./parts";
 
 export interface WalkViewOptions {
@@ -39,6 +39,11 @@ export interface WalkViewOptions {
   look?: "cubes" | "slices";
   /** Play a code-made skeleton cycle (pipeline#14) round the lap instead of the rig's own walk. */
   cycle?: CycleName;
+  /** The cycle with the animation principles (pipeline#8, the default) or plain (pipeline#14's). */
+  principles?: boolean;
+  /** Play the cycle on the spot here (rig cells; h its heading), as on a treadmill, not round the lap: the
+   * side-by-side compare (pipeline#8) stands its walkers still so their motion can be laid next to each other. */
+  spot?: { x: number; y: number; h: number };
 }
 
 /** A slice's darkening in the sprite-stack look: the lowest layer at 0.62 of its colour, the top at full. Darker
@@ -203,12 +208,17 @@ export function createWalkView(o: WalkViewOptions): WalkView {
   // A skeleton cycle round the same lap: its frames at its own rate, the body moved along the circle by the cycle's
   // own travel and turned along it (on the spot for the attack, which does not travel).
   const body = bodyFromRig(doc.rig, doc.height);
-  const cyc = o.cycle ? makeCycle(o.cycle, body) : null;
+  const cyc = o.cycle ? makeCycle(o.cycle, body, { principles: o.principles ?? true }) : null;
   let cycFrame = 0;
   let cycAcc = 0;
   const cycWhere = { x: start.x, y: start.y, h: start.h };
   function cyclePose(): Pose {
     const c = cyc!;
+    if (o.spot) {
+      const k = cycFrame % c.frames;
+      Object.assign(cycWhere, o.spot);
+      return rigPose(spotFrame(c, k), body, o.spot.x, o.spot.y, o.spot.h, k / c.frames);
+    }
     const f = cycleFrame(c, cycFrame % c.frames);
     const own = ((cycFrame % c.frames) / c.frames) * c.travel; // the travel, not the pelvis (it sways)
     const circ = strides * walker.c.stride;

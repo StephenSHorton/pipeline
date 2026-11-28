@@ -268,9 +268,9 @@ export function motionFromSearch(search = ""): WalkMotion {
 }
 export const MOTION_BUTTONS: { motion: WalkMotion; label: string; title: string }[] = [
   { motion: "rig", label: "Rig walk", title: "The rig's own walk: planted feet that stay on their square." },
-  { motion: "walk", label: "Walk", title: "The skeleton's walk, made in code (the same frames as the walk video)." },
-  { motion: "run", label: "Run", title: "The skeleton's run, made in code." },
-  { motion: "attack", label: "Attack", title: "The skeleton's punch, made in code. It stays on the spot." },
+  { motion: "walk", label: "Walk", title: "The skeleton's walk, made in code with the animation principles (the same frames as the walk video)." },
+  { motion: "run", label: "Run", title: "The skeleton's run, made in code with the animation principles." },
+  { motion: "attack", label: "Attack", title: "The skeleton's punch, made in code with the animation principles. It stays on the spot." },
 ];
 
 export type StackToggle ="pixel" | "main" | "outline" | "auto" | "shade" | "lit";
