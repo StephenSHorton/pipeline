@@ -72,6 +72,26 @@ class CharacterTest(unittest.TestCase):
         self.assertLess(rig["standHip"], m["crotch"])  # knees a little bent when standing
 
 
+class KneeTest(unittest.TestCase):
+    """pipeline#36: the knee is the hollow between the calf and the thigh, not halfway up to the crotch."""
+
+    def test_a_straight_leg_bends_halfway(self) -> None:
+        m = C.carve_character(person())[2]
+        self.assertEqual(m["knee"], m["ankle"] + round((m["crotch"] - m["ankle"]) / 2))
+
+    def test_the_knee_is_the_hollow_above_the_calf(self) -> None:
+        views = person()
+        side = views["side"][1].copy()
+        rows = lambda a, b: slice(H - b, H - a)
+        side[rows(5, 10), 2:10] = True  # a calf (or a boot's cuff), deeper than the leg
+        side[rows(15, 17), 3] = False  # the hollow under the knee, shallower
+        views["side"] = (views["side"][0], side)
+        m = C.carve_character(views)[2]
+        half = m["ankle"] + round((m["crotch"] - m["ankle"]) / 2)
+        self.assertIn(m["knee"], (15, 16))
+        self.assertGreater(m["knee"], half)
+
+
 class SmallBodyTest(unittest.TestCase):
     """pipeline#6: the body shrunk to a flat sprite stack's size (32 or 64 layers) and cut into parts again."""
 

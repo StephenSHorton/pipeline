@@ -629,6 +629,42 @@ def _runs(row) -> list[tuple[int, int]]:
     return [(int(a), int(b)) for a, b in zip(r[::2], r[1::2])]
 
 
+def _knee(front, side, runs, ankle: int, crotch: int, lo: int, hi: int) -> int:
+    """The knee's layer (pipeline#36): the leg's thinnest layer, front width times side depth, in the upper part of
+    the leg (from 40% of the way up from the ankle to 2 layers under the crotch), when it is thinner than the leg
+    somewhere below it (the calf, a boot's cuff) and somewhere above it (the thigh): the hollow under the knee.
+
+    A drawing's crotch is where its trousers part, which can be well under the hip joint: the walker's is a third
+    of its height up, its knee where Vision reads it and its side view hollows, 17 of 64 layers. Halfway from ankle
+    to crotch put the knee on its boot tops (13). A leg with no hollow (straight, blocky) keeps halfway."""
+    import numpy as np
+
+    half = ankle + round((crotch - ankle) / 2)
+    if side is None or crotch - ankle < 8:
+        return half
+
+    def thickness(h: int) -> float:
+        legs = [r for r in runs[h] if r[1] > lo and r[0] < hi] or runs[h]
+        width = sum(b - a for a, b in legs) / max(1, len(legs))
+        cols = np.flatnonzero(side[h])
+        depth = cols.max() - cols.min() + 1 if len(cols) else 0
+        return width * depth
+
+    t = np.array([thickness(h) for h in range(ankle, crotch)], float)
+    k = max(1, round((crotch - ankle) / 24)) * 2 + 1  # smooth out a stray cell or a drawn crease
+    t = np.convolve(np.pad(t, k // 2, mode="edge"), np.ones(k) / k, mode="valid")
+    a, b = ankle + int(np.ceil(0.4 * (crotch - ankle))), crotch - 2
+    if b <= a:
+        return half
+    band = t[a - ankle:b - ankle]
+    i = int(band.argmin())  # the lowest of equal thinnest layers
+    h = a + i
+    below, above = t[:h - ankle], t[h - ankle + 1:]
+    if not len(below) or not len(above) or below.max() <= t[h - ankle] * 1.03 or above.max() <= t[h - ankle] * 1.03:
+        return half
+    return h
+
+
 def measure(front, side=None) -> dict:
     """Joint heights and columns from the front silhouette (front[H, W], layer 0 at the bottom; side[H, L] the
     side silhouette, only for the depth L).
@@ -637,7 +673,9 @@ def measure(front, side=None) -> dict:
     layer where it is one, and its run is the hips, whose columns are the torso's all the way up. Arms: everything
     outside the torso's columns, from the layer with the most of it, down to the hands and up to the shoulders
     (the drawn arms may touch the body: they are told apart by column, not by a gap). The neck is the narrowest
-    layer above the shoulders. Knees and elbows sit halfway along their limbs; the ankle is the top of the foot."""
+    layer above the shoulders. The knee is where the leg is thinnest between the calf (or a boot's cuff) and the
+    thigh (_knee), or halfway along the leg when it has no such hollow; elbows sit halfway along the arms; the
+    ankle is the top of the foot."""
     import numpy as np
 
     H, W = front.shape
@@ -690,7 +728,7 @@ def measure(front, side=None) -> dict:
     arm_w = max(arm_w, 2)
     leg_len = crotch - sole
     ankle = sole + max(2, round(leg_len / 6))
-    knee = ankle + round((crotch - ankle) / 2)
+    knee = _knee(front, side, runs, ankle, crotch, lo, hi)
     elbow = hand + round((shoulder + 1 - hand) / 2)
     mid = (t0 + t1 - 1) / 2
     return {"H": H, "L": L, "W": W, "sole": sole, "ankle": ankle, "knee": knee, "crotch": crotch, "hand": hand,
