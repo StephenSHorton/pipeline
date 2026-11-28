@@ -365,10 +365,44 @@ def fit_guide(picture: Path, size: int, out: Path, figure: dict | None = None,
     return ground, shrink
 
 
+def _runs(m, axis: int):
+    """For each True pixel of a 2-D mask, the length of the unbroken run of True it is in along axis (0: down a
+    column, 1: along a row); 0 where False."""
+    import numpy as np
+
+    b = np.moveaxis(m, axis, 1).astype(np.int8)
+    out = np.zeros(b.shape, dtype=np.int32)
+    for i, row in enumerate(b):
+        d = np.diff(np.concatenate(([0], row, [0])))
+        starts, ends = np.where(d == 1)[0], np.where(d == -1)[0]
+        for s, e in zip(starts, ends):
+            out[i, s:e] = e - s
+    return np.moveaxis(out, 1, axis)
+
+
+# A drawn line, not a body: a run along at least LINE_LONG of the frame that is at most LINE_THIN of it thick. The
+# 2D stage's side views can carry a panel's border (the walker's pixel-sheet side view has one down its left and
+# along its foot), and counted as the character they put its box, and so the fitted figure, off to one side.
+LINE_LONG, LINE_THIN = 0.5, 0.02
+
+
+def _drop_lines(m):
+    """The mask without long thin straight lines (LINE_*), across or down, and their soft edges (a few pixels
+    round them, which break into short runs a line's own test misses)."""
+    from scipy import ndimage
+
+    h, w = m.shape
+    across, down = _runs(m, 1), _runs(m, 0)
+    line = ((across >= LINE_LONG * w) & (down <= LINE_THIN * h)) | ((down >= LINE_LONG * h) & (across <= LINE_THIN * w))
+    if line.any():
+        line = ndimage.binary_dilation(line, iterations=max(2, round(0.005 * max(h, w))))
+    return m & ~line
+
+
 def _figure_box(im, ground: tuple[int, int, int], lift: Path | None, scratch: Path):
     """The character's box in a picture: Apple Vision's foreground (bin/lift-subject) when it is there, else what
-    stands off the ground colour (rows and columns with enough of it; a box that runs into the frame's edge, as a
-    studio floor's shading does, counts as not found).
+    stands off the ground colour (rows and columns with enough of it, drawn lines left out (_drop_lines); a box that
+    runs into the frame's edge, as a studio floor's shading does, counts as not found).
     Returns (cut-out RGBA or None, box or None)."""
     import numpy as np
     from PIL import Image
@@ -385,7 +419,7 @@ def _figure_box(im, ground: tuple[int, int, int], lift: Path | None, scratch: Pa
             if box:
                 return cut, box
     a = np.asarray(im.convert("RGB")).astype(int)
-    m = np.abs(a - np.array(ground)).sum(2) > 60
+    m = _drop_lines(np.abs(a - np.array(ground)).sum(2) > 60)
     rows = np.where(m.sum(1) > m.shape[1] * 0.01)[0]
     cols = np.where(m.sum(0) > m.shape[0] * 0.01)[0]
     if not len(rows) or not len(cols):
@@ -788,11 +822,13 @@ def bodypose_tool(root: Path) -> Path | None:
     return None
 
 
-def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> dict:
-    """The result's skeleton (Apple Vision) against the control, frame by frame from frame 1."""
+def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path, turn: int = 0) -> dict:
+    """The result's skeleton (Apple Vision) against the control, frame by frame from frame 1, and how far across the
+    body stands from the control's (SK.drift) after the turn (from frame turn + 1; from frame 1 with no turn)."""
     got = SK.read_frames(tool, frames_dir, out)
     res = SK.pose_error(control, got, skip=1)
     res["frames_with_skeleton"] = sum(1 for j in got if j)
+    res["drift"] = SK.drift(control, got, skip=turn + 1)
     return res
 
 
@@ -1032,9 +1068,11 @@ def _run(root: Path, stem: str, folder: Path, work: Path, paths: dict[str, Path]
     pose = None
     tool = bodypose_tool(root) if check else None
     if tool:
-        pose = check_pose(tool, work / "frames", control, work / "pose.json")
+        pose = check_pose(tool, work / "frames", control, work / "pose.json", turn=meta["turn_frames"] or 0)
         print(f"animate: skeleton within {pose['mean_joint_error_pct']}% of the control "
-              f"(moving joints {pose['mean_limb_error_pct']}%)", flush=True)
+              f"(moving joints {pose['mean_limb_error_pct']}%); the body {pose['drift']['mean_pct']:+}% across "
+              f"from the skeleton's middle from frame {pose['drift']['from_frame']} "
+              f"(worst {pose['drift']['worst_pct']:+}%)", flush=True)
     else:
         print("animate: no bin/bodypose; the skeleton check was skipped", flush=True)
 

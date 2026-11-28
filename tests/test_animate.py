@@ -193,6 +193,17 @@ class SkeletonTests(unittest.TestCase):
         b = [{"head_joint": [0.5, 0.5, 1.0], "root": [0.9, 0.6, 1.0]}]
         self.assertEqual(SK.pose_error(a, b)["mean_joint_error_pct"], 0)
 
+    def test_drift_is_how_far_across_the_body_stands(self):
+        a = [{"root": [0.5, 0.6, 1.0], "neck_1_joint": [0.5, 0.3, 1.0], "head_joint": [0.5, 0.2, 1.0]}] * 6
+        b = [{"root": [0.4, 0.6, 1.0], "neck_1_joint": [0.4, 0.3, 1.0], "head_joint": [0.9, 0.2, 1.0]}] * 3 + \
+            [{"root": [0.53, 0.6, 1.0], "neck_1_joint": [0.51, 0.3, 0.1]}] * 3  # a low-confidence neck is left out
+        res = SK.drift(a, b, skip=1)
+        self.assertEqual((res["from_frame"], res["frames_compared"]), (1, 5))
+        self.assertAlmostEqual(res["mean_pct"], (-10 * 2 + 3 * 3) / 5, places=2)  # the head is not the torso
+        self.assertAlmostEqual(res["mean_abs_pct"], (10 * 2 + 3 * 3) / 5, places=2)
+        self.assertAlmostEqual(res["worst_pct"], -10, places=2)
+        self.assertEqual(SK.drift(a, a)["worst_pct"], 0)
+
     def test_drawn_frame_has_openpose_colours(self):
         im = SK.draw_frame(SK.load(SK.named("walk_side"))[0], 256, 256)
         colours = {c for _, c in im.getcolors(256 * 256)}
@@ -717,6 +728,38 @@ class AnimateTests(unittest.TestCase):
         check = doc["pose_check"]
         self.assertEqual(check["frames_compared"], 24)  # frame 0 is the picture, not a pose
         self.assertAlmostEqual(check["mean_joint_error_pct"], 1.0, places=1)
+
+    def test_skeleton_check_says_the_drift_after_the_turn(self):
+        doc = self.run_it(skeleton="walker_walk_right", action="walk-right")
+        drift = doc["pose_check"]["drift"]
+        self.assertEqual(drift["from_frame"], SK.info(SK.named("walker_walk_right"))["turn_frames"] + 1)
+        self.assertLess(abs(drift["mean_pct"]), 3)
+
+    def test_side_view_with_a_drawn_border_stands_where_the_picture_does(self):
+        """The walker's pixel-sheet side view has a panel border down one side and along its foot: without
+        lift-subject the border is not counted as the character, so the side figure is centred on the first
+        picture's, not pulled off to one side (pipeline#33)."""
+        g = self.root / "g.png"
+        A.fit_guide(add_front_view(self.root), 704, g, {"top": 0.0909, "ground": 0.9091, "x": 0.5})
+        side = Image.new("RGB", (660, 580), (255, 0, 255))
+        for y in range(20, 560):
+            for x in range(300, 400):  # the character, right of the middle of its picture
+                side.putpixel((x, y), (30, 30, 200))
+            for x in range(70, 78):  # the panel's border, down the left
+                side.putpixel((x, y), (0, 0, 0))
+        for y in range(572, 578):  # and along the foot, across the whole picture
+            for x in range(0, 660):
+                side.putpixel((x, y), (0, 0, 0))
+        side.save(self.root / "side.png")
+        out = self.root / "side-fitted.png"
+        self.assertTrue(A.fit_side(self.root / "side.png", g, 704, out, (255, 255, 255), None))
+        with Image.open(out) as im:
+            box = ImageChops.invert(im.convert("L")).point(lambda v: 255 if v > 40 else 0).getbbox()
+        with Image.open(g) as im:
+            front = ImageChops.invert(im.convert("L")).point(lambda v: 255 if v > 40 else 0).getbbox()
+        self.assertAlmostEqual((box[0] + box[2]) / 2, (front[0] + front[2]) / 2, delta=3)
+        self.assertAlmostEqual(box[3], front[3], delta=3)
+        self.assertLess(box[2] - box[0], 0.3 * 704)  # the figure alone, no border in it
 
     def test_skeleton_is_fitted_to_the_picture(self):
         doc = self.run_it(skeleton="walker_walk_right", action="walk-right")
