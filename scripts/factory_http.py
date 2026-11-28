@@ -432,7 +432,7 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     out/<stem>/ (default the concept still; with a cycle the front view), "seed"?, "frames"?: 8k+1 (default 73),
     "size"?: 256 to 1024 in 32s (default 704), "every"?: every n'th frame goes in the strip (default 3), "side"?: a
     side view under out/<stem>/ as a second guide (true: the asset's own side view, turned to face the way the
-    character moves), "side_frame"?: the frame it guides (default 24), "remove"?: kit the model invents, erased
+    character moves; false: none; left out: the asset's own when it has one and the way is known), "side_frame"?: the frame it guides (default 24), "remove"?: kit the model invents, erased
     from a first pass's frames that then guide a second (like "backpack"), "keep"?: with remove, kit that must
     stay}."""
     import skeleton as SK
@@ -476,6 +476,8 @@ def animate_argv(python: Path | str, root: Path, stem: str, body: dict[str, Any]
     side = body.get("side")
     if side is True:  # the asset's own side view (animate.py --side with no picture)
         argv.append("--side")
+    elif side is False:  # the picture as the only guide; left out, animate.py uses the asset's own when it can
+        argv.append("--no-side")
     elif side not in (None, "", False):
         rel = str(side)
         if rel.startswith("/") or ".." in Path(rel).parts:

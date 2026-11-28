@@ -642,6 +642,76 @@ class AnimateTests(unittest.TestCase):
             A.main(["--root", str(self.root), "--stem", "op", "--prompt", "walks right", "--side", "flat/x.png"])
         self.assertEqual(run.call_args.kwargs["side"], "flat/x.png")
 
+    def anim_doc(self, action: str = "walk") -> dict:
+        return json.loads((self.root / "out" / "op" / "flat" / "anim" / action / "anim.json").read_text())
+
+    def cli(self, *extra: str) -> int:
+        return A.main(["--root", str(self.root), "--stem", "op", "--prompt",
+                       "The soldier faces right and walks to the right.", "--frames", "25", "--size", "256", *extra])
+
+    def test_no_side_on_the_command_line_uses_the_assets_own(self):
+        self.draw_side("flat/views/side.png", nose="left")  # front to the LEFT; the prompt walks right
+        self.assertEqual(self.cli(), 0)
+        doc = self.anim_doc()
+        self.assertEqual(doc["side"]["picture"], "flat/views/side.png")
+        self.assertEqual((doc["side"]["moves"], doc["side"]["mirrored"], doc["side"]["default"]),
+                         ("right", True, True))
+        self.assertIsNone(doc["side_skipped"])
+        self.assertEqual(self.nose_side(), "right")
+        argv = json.loads((self.base / "ltx-call.json").read_text())["argv"]
+        self.assertEqual(argv.count("--image"), 2)  # the picture and the side view
+
+    def test_no_side_keeps_the_picture_as_the_only_guide(self):
+        self.draw_side("flat/views/side.png")
+        self.assertEqual(self.cli("--no-side"), 0)
+        doc = self.anim_doc()
+        self.assertIsNone(doc["side"])
+        self.assertIsNone(doc["side_skipped"])  # told not to: nothing was skipped
+        argv = json.loads((self.base / "ltx-call.json").read_text())["argv"]
+        self.assertEqual(argv.count("--image"), 1)
+        self.assertFalse((self.root / "out" / "op" / "flat" / "anim" / "walk" / "side.png").exists())
+
+    def test_the_default_falls_back_to_one_guide(self):
+        # No side view of its own: the run goes on with the picture alone, and says why.
+        self.assertEqual(self.cli(), 0)
+        self.assertIsNone(self.anim_doc()["side"])
+        self.assertIn("no side view of its own", self.anim_doc()["side_skipped"])
+        # A side view, but no way to tell which way the character moves: not guessed.
+        self.draw_side("flat/views/side.png")
+        doc = self.run_it(side=A.SIDE_IF_ANY, prompt="The soldier walks on the spot.")
+        self.assertIsNone(doc["side"])
+        self.assertIn("left or right", doc["side_skipped"])
+        # The Python call's own default is still no side view.
+        doc = self.run_it()
+        self.assertIsNone(doc["side"])
+        self.assertIsNone(doc["side_skipped"])
+        # --remove is the other way to stop invented kit: the default leaves the side view out with it.
+        self.assertEqual(A.default_side(self.root / "out" / "op", "walk_side", "walks to the right", "backpack"),
+                         (None, "--remove stops invented kit without one"))
+        self.assertEqual(A.default_side(self.root / "out" / "op", "walk_side", "walks to the right", None),
+                         (A.FIND_SIDE, None))
+
+    def test_the_default_leaves_the_side_view_out_with_remove(self):
+        # --remove's first erased frame and the side view would both guide frame 24: the erased frames win.
+        self.draw_side("flat/views/side.png")
+        stub = {"FLAT2D_STILL": "stub", "FLAT2D_STUB_LOAD": "0", "FLAT2D_STUB_STEP": "0"}
+        with mock.patch.dict(os.environ, stub):
+            self.assertEqual(self.cli("--remove", "backpack"), 0)
+        doc = self.anim_doc()
+        self.assertIsNone(doc["side"])
+        self.assertIn("--remove", doc["side_skipped"])
+        argv = json.loads((self.base / "ltx-call.json").read_text())["argv"]  # the second pass
+        self.assertEqual([argv[i + 1].rsplit("/", 1)[-1] for i, x in enumerate(argv) if x == "--image"],
+                         ["guide.png", "0024.png"])
+
+    def test_side_options_on_the_command_line(self):
+        for extra, want in (((), A.SIDE_IF_ANY), (("--no-side",), None), (("--side",), A.FIND_SIDE)):
+            with mock.patch.object(A, "animate", return_value={}) as run:
+                self.assertEqual(self.cli(*extra), 0)
+            self.assertEqual(run.call_args.kwargs["side"], want, extra)
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+            self.cli("--side", "--no-side")
+
     def test_skeleton_check(self):
         doc = self.run_it()
         check = doc["pose_check"]
@@ -865,6 +935,9 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--action") + 1], "attack-left")  # one strip per cycle and facing
         self.assertIn("turns to face left", argv[argv.index("--prompt") + 1])
         self.assertNotIn("--skeleton", argv)
+        for side, want in ((None, []), (True, ["--side"]), (False, ["--no-side"])):
+            argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "x", "side": side})
+            self.assertEqual([x for x in argv if x in ("--side", "--no-side")], want, side)
         argv = factory_http.animate_argv("py", self.root, "op", {"cycle": "attack"})
         self.assertEqual(argv[argv.index("--action") + 1], "attack-right")
         argv = factory_http.animate_argv("py", self.root, "op", {"prompt": "x", "skeleton": "walker_run_left"})
