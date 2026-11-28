@@ -8,7 +8,7 @@
 #   weights/gemma-3-12b-it-4bit: the text encoder (the Hugging Face cache's copy is used when it is there). All
 #   under the LTX-2 Community License (see NOTICE) except Gemma (Gemma Terms of Use).
 # - bin/bodypose: Apple Vision's body pose per frame (scripts/bodypose.swift), for the skeleton check. Built from a
-#   checkout only (the installed app ships no .swift); without it the check is skipped.
+#   checkout (or the copy the app ships beside animate.py); scripts/animate.py builds it itself when it is missing.
 # Already have the files elsewhere? Link them in place first (ln -s <dir> weights/ltx-2.3-mlx-q8 ...) and this
 # script keeps them.
 set -euo pipefail
@@ -26,6 +26,12 @@ need uv
 need swiftc
 need ffmpeg
 mkdir -p "$BIN" "$WEIGHTS" "$ROOT/vendor"
+
+# First, so the skeleton fit works even when a download below stops the script.
+if [[ -f "$ROOT/scripts/bodypose.swift" ]] && [[ ! -x "$BIN/bodypose" || "$ROOT/scripts/bodypose.swift" -nt "$BIN/bodypose" ]]; then
+  echo "animate: building bodypose (Vision)"
+  swiftc -O -o "$BIN/bodypose" "$ROOT/scripts/bodypose.swift" -framework Vision -framework AppKit
+fi
 
 if [[ ! -d "$LTX/packages/ltx-pipelines-mlx/src" ]]; then
   echo "animate: cloning dgrauet/ltx-2-mlx at $LTX_COMMIT"
@@ -65,11 +71,6 @@ GEMMA_CACHE="${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}/models--m
 if [[ ! -f "$WEIGHTS/gemma-3-12b-it-4bit/config.json" ]] && ! ls "$GEMMA_CACHE"/*/config.json >/dev/null 2>&1; then
   echo "animate: Gemma 3 12B (4-bit, MLX) text encoder"
   "$HF" download mlx-community/gemma-3-12b-it-4bit --local-dir "$WEIGHTS/gemma-3-12b-it-4bit"
-fi
-
-if [[ -f "$ROOT/scripts/bodypose.swift" ]] && [[ ! -x "$BIN/bodypose" || "$ROOT/scripts/bodypose.swift" -nt "$BIN/bodypose" ]]; then
-  echo "animate: building bodypose (Vision)"
-  swiftc -O -o "$BIN/bodypose" "$ROOT/scripts/bodypose.swift" -framework Vision -framework AppKit
 fi
 
 echo "animate: ready (LTX-2.3 in $LTX, weights in $WEIGHTS, bodypose in $BIN)"

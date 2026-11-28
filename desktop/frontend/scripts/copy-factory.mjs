@@ -8,6 +8,9 @@ const repo = join(desktop, "..");
 const src = join(repo, "scripts");
 const dest = join(desktop, "internal", "runtime", "fs", "scripts");
 const keepExt = new Set([".py", ".sh", ".json", ".md"]);  // .md: the workbench playbook its MCP server reads
+// The Swift helpers stay out (two are built into the app binary), except bodypose: Animate (animate.py) builds
+// bin/bodypose from this copy on a Mac with swiftc, so the installed app's skeleton fit runs too.
+const keepFiles = new Set(["bodypose.swift"]);
 
 function copyDir(from, to) {
   mkdirSync(to, { recursive: true });
@@ -19,7 +22,7 @@ function copyDir(from, to) {
       copyDir(fp, join(to, name));
       continue;
     }
-    if (!keepExt.has(extname(name).toLowerCase())) continue;
+    if (!keepExt.has(extname(name).toLowerCase()) && !keepFiles.has(name)) continue;
     copyFileSync(fp, join(to, name));
   }
 }

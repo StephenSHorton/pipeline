@@ -3,9 +3,9 @@
 The desktop app ships desktop/internal/runtime/fs/scripts (filled by
 desktop/frontend/scripts/copy-factory.mjs).  Anything that differs from
 scripts/ is code the installed app runs but the repo does not test, so the
-only allowed differences are the Swift helpers, which are never shipped as
-scripts: two are built into the app binary, and bodypose (the Animate
-stage's skeleton check) is built from a checkout by bootstrap.sh animate.
+only allowed differences are two Swift helpers, which are built into the app
+binary. bodypose.swift (the Animate stage's skeleton fit and check) does ship:
+animate.py builds bin/bodypose from it when it is missing.
 """
 import shutil
 import subprocess
@@ -19,7 +19,6 @@ DST = ROOT / "desktop" / "internal" / "runtime" / "fs" / "scripts"
 KNOWN = {
     "Only in scripts: lift-subject.swift",
     "Only in scripts: preview-glb.swift",
-    "Only in scripts: bodypose.swift",
 }
 
 
@@ -44,6 +43,9 @@ class RuntimeMirror(unittest.TestCase):
         self.assertIn("ground_bird.json", plans)
         for name in ("fbx_check.py", "heat_bind.py", "rig_render_bl.py"):
             self.assertTrue((DST / "blender" / name).is_file(), name)
+
+    def test_bodypose_source_ships(self):
+        self.assertTrue((DST / "bodypose.swift").is_file())
 
     def test_copy_factory_keeps_json(self):
         js = (ROOT / "desktop" / "frontend" / "scripts" / "copy-factory.mjs").read_text()

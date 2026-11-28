@@ -91,7 +91,8 @@ overridable by environment):
   PIPELINE_LTX_GEMMA   <root>/weights/gemma-3-12b-it-4bit, else the Hugging Face cache's
                        mlx-community/gemma-3-12b-it-4bit snapshot
   PIPELINE_BODYPOSE    <root>/bin/bodypose (scripts/bodypose.swift): reads the guide picture's skeleton, which
-                       the shipped skeleton is refitted to, and the result's skeleton for the check
+                       the shipped skeleton is refitted to, and the result's skeleton for the check. Missing,
+                       Animate builds it there itself from scripts/bodypose.swift (swiftc, Xcode's tools)
 scripts/bootstrap.sh animate sets these up. About 40 GB at its peak and a minute or so a clip: one big model at a
 time on the Mac (the factory runs it in its one job slot, after freeing the draw model).
 """
@@ -782,12 +783,54 @@ def strip_cells(cutouts: list[Path], every: int, cell_h: int, margin: int = 4, l
     return cells, [int(p.stem) for p in picks], list(box)
 
 
+def _runnable(p: Path) -> bool:
+    return p.is_file() and os.access(p, os.X_OK)
+
+
 def bodypose_tool(root: Path) -> Path | None:
+    """Apple Vision's body pose reader: PIPELINE_BODYPOSE when set (and only it), else <root>/bin/bodypose or the
+    one beside these scripts, else built into <root>/bin from scripts/bodypose.swift (a checkout's, or the copy the
+    app ships beside animate.py) when swiftc is on this Mac. None when there is none and it cannot be built."""
     env = os.environ.get("PIPELINE_BODYPOSE")
-    for p in ([Path(env)] if env else []) + [root / "bin" / "bodypose", HERE.parent / "bin" / "bodypose"]:
-        if p.is_file() and os.access(p, os.X_OK):
+    if env:
+        return Path(env) if _runnable(Path(env)) else None
+    for p in (root / "bin" / "bodypose", HERE.parent / "bin" / "bodypose"):
+        if _runnable(p):
             return p
-    return None
+    return build_bodypose(root)
+
+
+def _dev_tools() -> bool:
+    """Xcode's command line tools are installed: without them macOS's /usr/bin/swiftc is a stub that asks to install
+    them, which a run must never set off."""
+    if sys.platform != "darwin":
+        return True
+    try:
+        return subprocess.run(["xcode-select", "-p"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def build_bodypose(root: Path) -> Path | None:
+    """<root>/bin/bodypose compiled from scripts/bodypose.swift, as scripts/bootstrap.sh does; None when there is no
+    source, no swiftc or no Xcode command line tools, or the build fails (the run then goes on without the fit and the check)."""
+    src = next((s for s in (root / "scripts" / "bodypose.swift", HERE / "bodypose.swift") if s.is_file()), None)
+    swiftc = shutil.which("swiftc")
+    if not src or not swiftc or not _dev_tools():
+        return None
+    out = root / "bin" / "bodypose"
+    print(f"animate: building bin/bodypose from {src} (Apple Vision)", flush=True)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(f".bodypose.{os.getpid()}")
+        subprocess.run([swiftc, "-O", "-o", str(tmp), str(src), "-framework", "Vision", "-framework", "AppKit"],
+                       check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=600)
+        tmp.replace(out)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"animate: could not build bin/bodypose ({e})", flush=True)
+        return None
+    return out if _runnable(out) else None
 
 
 def check_pose(tool: Path, frames_dir: Path, control: list[dict], out: Path) -> dict:
