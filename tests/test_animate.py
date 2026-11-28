@@ -35,10 +35,11 @@ from test_factory_http import http_json  # noqa: E402
 
 FFMPEG = shutil.which("ffmpeg")
 CYCLE_MAKER = A.cycle_maker(ROOT)
-# the walker's rig (out/walker/stack/character.json, pipeline#6) without its parts: what skeleton-cycle.ts reads
+# the walker's rig (out/walker/stack/character.json, pipeline#6; hips and knees where its drawing has them,
+# pipeline#36) without its parts: what skeleton-cycle.ts reads
 WALKER = {"format": "pipeline-sprite-character", "version": 1, "stem": "walker", "height": 64, "parts": [],
-          "rig": {"thigh": 9, "shin": 9, "ankle": 4, "hipHalf": 4.5, "hipFwd": -2.0, "kneeHint": 1, "standHip": 21.28,
-                  "stride": 28.6, "duty": 0.6, "lift": 3.06, "bob": 0.55, "twist": 0.14, "spine": 26, "neck": 28,
+          "rig": {"thigh": 12, "shin": 14, "ankle": 4, "hipHalf": 3.5, "hipFwd": -1.0, "kneeHint": 1, "standHip": 28.96,
+                  "stride": 39.0, "duty": 0.6, "lift": 4.42, "bob": 0.75, "twist": 0.14, "spine": 18, "neck": 20,
                   "arms": True, "shoulderHalf": 9.5, "shoulderFwd": -3.0, "upperArm": 12, "foreArm": 13,
                   "armSwing": 0.45}}
 
@@ -245,20 +246,26 @@ class RefitTests(unittest.TestCase):
                  for j in walker]
         before = SK.pose_error(moved[:9], [OPERATOR] * 9, skip=1)["mean_joint_error_pct"]
         after = SK.pose_error(fitted[:9], [OPERATOR] * 9, skip=1)["mean_joint_error_pct"]
-        self.assertGreater(before, 6)
-        self.assertLess(after, before / 1.8)
+        # (the walker's hips and knees where its drawing has them, pipeline#36, start it nearer a real body: 4.9%)
+        self.assertGreater(before, 4.5)
+        self.assertLess(after, before / 1.5)
 
     def test_hip_parts_only(self):
-        """The walker's own cycle against Vision's read of its drawn front view (pipeline#34): the rig's hips at the
-        crotch (0.637), the picture's at the top of the thigh (0.522). Fitting the hip parts alone brings the hips
-        and feet onto the picture's and keeps the arms and head the rig's."""
+        """The walker's own cycle against Vision's read of its drawn front view (pipeline#34): the picture's hips at
+        the top of the thigh (0.522). Fitting the hip parts alone brings the hips and feet onto the picture's and
+        keeps the arms and head the rig's. Since pipeline#36 the rig's own hips are there too (0.539, not the crotch's
+        0.637) and its knees at the drawn knee, so the fit only nudges them."""
         walker = SK.load(SK.named("walker_walk_right"))
         fitted, info = SK.refit(walker, WALKER_DRAWN, SK.HIP_PARTS)
         self.assertEqual(info["fitted_parts"], list(SK.HIP_PARTS))
         f0, w0 = fitted[0], walker[0]
         for j in ("root", "left_upLeg_joint", "right_upLeg_joint", "left_foot_joint", "right_foot_joint"):
             self.assertLess(abs(f0[j][1] - WALKER_DRAWN[j][1]), 0.03, j)
-        self.assertGreater(abs(w0["root"][1] - WALKER_DRAWN["root"][1]), 0.1)  # unfitted, 11% off
+        self.assertLess(abs(w0["root"][1] - WALKER_DRAWN["root"][1]), 0.03)  # unfitted, 2% off (11% before #36)
+        for side in ("left", "right"):  # the rig's knees where Vision reads the drawn ones
+            self.assertLess(abs(w0[f"{side}_leg_joint"][1] - WALKER_DRAWN[f"{side}_leg_joint"][1]), 0.015, side)
+        for part in ("thigh", "shin"):  # so the legs are stretched far less than #34's x1.53 and x1.42
+            self.assertLess(abs(info["ratios"][part] / info["scale"] - 1), 0.2, part)
         for f in SK.FEET:  # drawn feet apart: the legs spread to stand where the picture's feet are
             self.assertLess(abs(f0[f][0] - WALKER_DRAWN[f][0]), 0.01, f)
         # side-on the hips come (nearly) together, and the spread with them: the feet step where they would without it
@@ -794,7 +801,7 @@ class AnimateTests(unittest.TestCase):
         control = json.loads((work / "control.json").read_text())
         self.assertTrue(control["fit"]["fitted"])
         self.assertEqual(doc["skeleton_fit"], control["fit"])
-        self.assertGreater(control["fit"]["ratios"]["thigh"], 1.5)  # the operator's long legs
+        self.assertGreater(control["fit"]["ratios"]["thigh"], 1.25)  # the operator's long legs
         f0 = control["frames"][0]["joints2d"]
         self.assertLess(abs(f0["root"][1] - OPERATOR["root"][1]), 0.01)
         self.assertNotAlmostEqual(f0["root"][1], SK.load(SK.named("walker_walk_right"))[0]["root"][1], places=2)

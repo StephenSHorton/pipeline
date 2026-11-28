@@ -629,6 +629,42 @@ def _runs(row) -> list[tuple[int, int]]:
     return [(int(a), int(b)) for a, b in zip(r[::2], r[1::2])]
 
 
+def _knee(front, side, runs, ankle: int, crotch: int, lo: int, hi: int) -> int:
+    """The knee's layer (pipeline#36): the leg's thinnest layer, front width times side depth, in the upper part of
+    the leg (from 40% of the way up from the ankle to 2 layers under the crotch), when it is thinner than the leg
+    somewhere below it (the calf, a boot's cuff) and somewhere above it (the thigh): the hollow under the knee.
+
+    A drawing's crotch is where its trousers part, which can be well under the hip joint: the walker's is a third
+    of its height up, its knee where Vision reads it and its side view hollows, 17 of 64 layers. Halfway from ankle
+    to crotch put the knee on its boot tops (13). A leg with no hollow (straight, blocky) keeps halfway."""
+    import numpy as np
+
+    half = ankle + round((crotch - ankle) / 2)
+    if side is None or crotch - ankle < 8:
+        return half
+
+    def thickness(h: int) -> float:
+        legs = [r for r in runs[h] if r[1] > lo and r[0] < hi] or runs[h]
+        width = sum(b - a for a, b in legs) / max(1, len(legs))
+        cols = np.flatnonzero(side[h])
+        depth = cols.max() - cols.min() + 1 if len(cols) else 0
+        return width * depth
+
+    t = np.array([thickness(h) for h in range(ankle, crotch)], float)
+    k = max(1, round((crotch - ankle) / 24)) * 2 + 1  # smooth out a stray cell or a drawn crease
+    t = np.convolve(np.pad(t, k // 2, mode="edge"), np.ones(k) / k, mode="valid")
+    a, b = ankle + int(np.ceil(0.4 * (crotch - ankle))), crotch - 2
+    if b <= a:
+        return half
+    band = t[a - ankle:b - ankle]
+    i = int(band.argmin())  # the lowest of equal thinnest layers
+    h = a + i
+    below, above = t[:h - ankle], t[h - ankle + 1:]
+    if not len(below) or not len(above) or below.max() <= t[h - ankle] * 1.03 or above.max() <= t[h - ankle] * 1.03:
+        return half
+    return h
+
+
 def measure(front, side=None) -> dict:
     """Joint heights and columns from the front silhouette (front[H, W], layer 0 at the bottom; side[H, L] the
     side silhouette, only for the depth L).
@@ -637,7 +673,9 @@ def measure(front, side=None) -> dict:
     layer where it is one, and its run is the hips, whose columns are the torso's all the way up. Arms: everything
     outside the torso's columns, from the layer with the most of it, down to the hands and up to the shoulders
     (the drawn arms may touch the body: they are told apart by column, not by a gap). The neck is the narrowest
-    layer above the shoulders. Knees and elbows sit halfway along their limbs; the ankle is the top of the foot."""
+    layer above the shoulders. The knee is where the leg is thinnest between the calf (or a boot's cuff) and the
+    thigh (_knee), or halfway along the leg when it has no such hollow; elbows sit halfway along the arms; the
+    ankle is the top of the foot."""
     import numpy as np
 
     H, W = front.shape
@@ -690,10 +728,16 @@ def measure(front, side=None) -> dict:
     arm_w = max(arm_w, 2)
     leg_len = crotch - sole
     ankle = sole + max(2, round(leg_len / 6))
-    knee = ankle + round((crotch - ankle) / 2)
+    knee = _knee(front, side, runs, ankle, crotch, lo, hi)
     elbow = hand + round((shoulder + 1 - hand) / 2)
+    # The hip joint: the knee sits halfway along the leg, so the hip is as far above the knee as the ankle is below
+    # it. A leg with no knee hollow (knee halfway to the crotch) pivots at the crotch, as before; otherwise the hip
+    # is in the trouser seat above the crotch (the walker's at 32 of 64, under its belt; Vision reads 31), never
+    # more than a third of the way up to the shoulders.
+    hip = max(crotch, min(2 * knee - ankle, crotch + (shoulder - crotch) // 3))
     mid = (t0 + t1 - 1) / 2
-    return {"H": H, "L": L, "W": W, "sole": sole, "ankle": ankle, "knee": knee, "crotch": crotch, "hand": hand,
+    return {"H": H, "L": L, "W": W, "sole": sole, "ankle": ankle, "knee": knee, "crotch": crotch, "hip": hip,
+            "hand": hand,
             "elbow": elbow, "shoulder": shoulder, "neck": neck, "top": top, "torso_cols": [int(t0), int(t1)],
             "mid": mid, "arm_w": arm_w}
 
@@ -701,7 +745,8 @@ def measure(front, side=None) -> dict:
 def assign(solid, m: dict):
     """Each solid cell's part, as a label volume: 0 empty, then PART_NAMES order (1-based). By layer and column:
     above the neck the head; outside the torso's columns between the hands and the shoulders an arm; below the
-    crotch a leg; the rest the torso. Right is the character's right (low columns)."""
+    crotch a leg, and from the crotch up to the hip joint (the trouser seat) the thigh on that side of the middle;
+    the rest the torso. Right is the character's right (low columns)."""
     import numpy as np
 
     H, L, W = solid.shape
@@ -720,7 +765,7 @@ def assign(solid, m: dict):
                 name = "head"
             elif arm:
                 name = ("forearm_" if h < m["elbow"] else "upperarm_") + side
-            elif h < m["crotch"]:
+            elif h < m.get("hip", m["crotch"]):
                 name = ("foot_" if h < m["ankle"] else "shin_" if h < m["knee"] else "thigh_") + side
             else:
                 name = "torso"
@@ -881,7 +926,8 @@ def make_parts(root: Path, stem: str, show: bool = True) -> dict:
         result = exploded(parts, m)
         SV.write_stack(result, asset / "stack", "character/parts", stem)
         autosave(root, stem, ("stack",), made_from=("concept",))
-    print("measured:", {k: m[k] for k in ("sole", "ankle", "knee", "crotch", "hand", "elbow", "shoulder", "neck", "top")})
+    print("measured:", {k: m[k] for k in ("sole", "ankle", "knee", "crotch", "hip", "hand", "elbow", "shoulder", "neck",
+                                          "top")})
     return {"measure": m, "parts": listing}
 
 CHARACTER_FORMAT = "pipeline-sprite-character"
@@ -896,7 +942,8 @@ PART_JOINTS = {
 def rig_numbers(m: dict, parts: dict) -> dict:
     """The rig in cells, from the measured joints and the parts' axes (see rig.ts RigConfig)."""
     mid_r = (m["L"] - 1) / 2
-    thigh = m["crotch"] - m["knee"]
+    hip = m.get("hip", m["crotch"])
+    thigh = hip - m["knee"]
     shin = m["knee"] - m["ankle"]
     leg = thigh + shin + m["ankle"]
     ax = {n: parts[n]["axis"] for n in PART_NAMES}
@@ -908,7 +955,7 @@ def rig_numbers(m: dict, parts: dict) -> dict:
         "standHip": round(m["ankle"] + 0.96 * (thigh + shin), 2),
         "stride": round(1.3 * leg, 2), "duty": 0.6, "lift": round(0.17 * (thigh + shin), 2),
         "bob": round(0.025 * leg, 2), "twist": 0.14,
-        "spine": m["shoulder"] - m["crotch"], "neck": m["neck"] - m["crotch"],
+        "spine": m["shoulder"] - hip, "neck": m["neck"] - hip,
         "arms": True,
         "shoulderHalf": round((ax["upperarm_L"][1] - ax["upperarm_R"][1]) / 2, 2),
         "shoulderFwd": round((ax["upperarm_L"][0] + ax["upperarm_R"][0]) / 2 - mid_r, 2),
@@ -967,7 +1014,7 @@ def make_character(root: Path, stem: str, source: str = "carved", layers: int | 
         kind = name.split("_")[0]
         top, reach = PART_JOINTS[kind]
         info = write_strip(parts[name]["cells"], dest / f"part_{name}.png")
-        joint_layer = {"torso": m["crotch"], "head": m["neck"], "thigh": m["crotch"], "shin": m["knee"],
+        joint_layer = {"torso": m["hip"], "head": m["neck"], "thigh": m["hip"], "shin": m["knee"],
                        "foot": m["ankle"], "upperarm": m["shoulder"], "forearm": m["elbow"]}[kind]
         side = name[-1] if "_" in name else None
         listing.append({
@@ -981,7 +1028,7 @@ def make_character(root: Path, stem: str, source: str = "carved", layers: int | 
         "units": "cells: one cell is one cube of the part stacks",
         "frame": {"forward": "+x (image x in a strip cell)", "left": "+y (image y in a strip cell)", "up": "+z (slice)"},
         "height": int(m["top"]),
-        "measure": {k: m[k] for k in ("sole", "ankle", "knee", "crotch", "hand", "elbow", "shoulder", "neck", "top")},
+        "measure": {k: m[k] for k in ("sole", "ankle", "knee", "crotch", "hip", "hand", "elbow", "shoulder", "neck", "top")},
         "rig": rig,
         "walk": {"stride": rig["stride"], "duty": rig["duty"], "speed": rig["stride"], "fps": 60,
                  "lap": {"strides": 6, "frames": 360}},

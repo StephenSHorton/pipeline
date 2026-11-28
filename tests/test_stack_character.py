@@ -72,6 +72,43 @@ class CharacterTest(unittest.TestCase):
         self.assertLess(rig["standHip"], m["crotch"])  # knees a little bent when standing
 
 
+class KneeTest(unittest.TestCase):
+    """pipeline#36: the knee is the hollow between the calf and the thigh, not halfway up to the crotch."""
+
+    def test_a_straight_leg_bends_halfway(self) -> None:
+        m = C.carve_character(person())[2]
+        self.assertEqual(m["knee"], m["ankle"] + round((m["crotch"] - m["ankle"]) / 2))
+
+    def test_the_knee_is_the_hollow_above_the_calf(self) -> None:
+        views = person()
+        side = views["side"][1].copy()
+        rows = lambda a, b: slice(H - b, H - a)
+        side[rows(5, 10), 2:10] = True  # a calf (or a boot's cuff), deeper than the leg
+        side[rows(15, 17), 3] = False  # the hollow under the knee, shallower
+        views["side"] = (views["side"][0], side)
+        m = C.carve_character(views)[2]
+        half = m["ankle"] + round((m["crotch"] - m["ankle"]) / 2)
+        self.assertIn(m["knee"], (15, 16))
+        self.assertGreater(m["knee"], half)
+        # the hip is as far above the knee as the ankle is below it: in the seat, above the crotch
+        self.assertEqual(m["hip"], min(2 * m["knee"] - m["ankle"], m["crotch"] + (m["shoulder"] - m["crotch"]) // 3))
+        self.assertGreater(m["hip"], m["crotch"])
+        solid, rgba, _ = C.carve_character(views)
+        parts = C.cut_parts(solid, rgba, m)
+        C.check_cut(solid, rgba, parts)
+        for side in "RL":  # the thighs reach up through the seat to the hip; the torso starts there
+            thigh = parts["thigh_" + side]
+            self.assertEqual(thigh["z0"] + thigh["cells"].shape[0], m["hip"])
+        self.assertEqual(parts["torso"]["z0"], m["hip"])
+        rig = C.rig_numbers(m, parts)
+        self.assertEqual(rig["thigh"], m["hip"] - m["knee"])
+        self.assertEqual(rig["spine"], m["shoulder"] - m["hip"])
+
+    def test_a_straight_leg_pivots_at_the_crotch(self) -> None:
+        m = C.carve_character(person())[2]
+        self.assertEqual(m["hip"], m["crotch"])
+
+
 class SmallBodyTest(unittest.TestCase):
     """pipeline#6: the body shrunk to a flat sprite stack's size (32 or 64 layers) and cut into parts again."""
 
