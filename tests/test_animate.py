@@ -946,6 +946,88 @@ class AnimateTests(unittest.TestCase):
 
 
 @unittest.skipUnless(FFMPEG, "needs ffmpeg")
+class BodyposeToolTests(unittest.TestCase):
+    """Where Animate finds Apple Vision's bodypose reader, and that it builds one itself when there is none."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "root"
+        self.here = Path(self.tmp.name) / "app" / "scripts"  # stands in for the folder animate.py runs from
+        self.here.mkdir(parents=True)
+        self.env = mock.patch.dict(os.environ)
+        self.env.start()
+        os.environ.pop("PIPELINE_BODYPOSE", None)
+        self.here_patch = mock.patch.object(A, "HERE", self.here)
+        self.here_patch.start()
+        self.tools_patch = mock.patch.object(A, "_dev_tools", return_value=True)
+        self.tools_patch.start()
+
+    def tearDown(self):
+        self.tools_patch.stop()
+        self.here_patch.stop()
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def tool(self, folder: Path) -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        p = folder / "bodypose"
+        p.write_text("#!/bin/sh\n")
+        p.chmod(0o755)
+        return p
+
+    def test_the_variable_alone_when_it_is_set(self):
+        self.tool(self.root / "bin")
+        os.environ["PIPELINE_BODYPOSE"] = str(self.root / "missing")
+        self.assertIsNone(A.bodypose_tool(self.root))
+        os.environ["PIPELINE_BODYPOSE"] = str(self.root / "bin" / "bodypose")
+        self.assertEqual(A.bodypose_tool(self.root), self.root / "bin" / "bodypose")
+
+    def test_the_roots_bin_then_the_one_beside_the_scripts(self):
+        beside = self.tool(self.here.parent / "bin")
+        self.assertEqual(A.bodypose_tool(self.root), beside)
+        own = self.tool(self.root / "bin")
+        self.assertEqual(A.bodypose_tool(self.root), own)
+
+    def test_built_from_the_source_beside_the_scripts_when_missing(self):
+        (self.here / "bodypose.swift").write_text("// source")
+        calls = []
+
+        def fake_swiftc(argv, **kw):
+            calls.append(argv)
+            out = Path(argv[argv.index("-o") + 1])
+            out.write_text("#!/bin/sh\n")
+            out.chmod(0o755)
+
+        with mock.patch.object(A.shutil, "which", return_value="/usr/bin/swiftc"), \
+                mock.patch.object(A.subprocess, "run", side_effect=fake_swiftc):
+            got = A.bodypose_tool(self.root)
+        self.assertEqual(got, self.root / "bin" / "bodypose")
+        self.assertEqual(calls[0][0], "/usr/bin/swiftc")
+        self.assertIn(str(self.here / "bodypose.swift"), calls[0])
+        self.assertIn("Vision", calls[0])
+
+    def test_a_checkouts_own_source_comes_first(self):
+        (self.root / "scripts").mkdir(parents=True)
+        (self.root / "scripts" / "bodypose.swift").write_text("// checkout")
+        (self.here / "bodypose.swift").write_text("// app")
+        with mock.patch.object(A.shutil, "which", return_value="/usr/bin/swiftc"), \
+                mock.patch.object(A.subprocess, "run", side_effect=A.subprocess.CalledProcessError(1, "swiftc")) as run:
+            self.assertIsNone(A.bodypose_tool(self.root))  # a failed build: the run goes on without it
+        self.assertIn(str(self.root / "scripts" / "bodypose.swift"), run.call_args[0][0])
+
+    def test_none_without_swiftc_or_source(self):
+        with mock.patch.object(A.shutil, "which", return_value=None):
+            (self.here / "bodypose.swift").write_text("// source")
+            self.assertIsNone(A.bodypose_tool(self.root))
+        with mock.patch.object(A.shutil, "which", return_value="/usr/bin/swiftc"), \
+                mock.patch.object(A, "_dev_tools", return_value=False), mock.patch.object(A.subprocess, "run") as run:
+            self.assertIsNone(A.bodypose_tool(self.root))  # the stub swiftc of a Mac without Xcode's tools
+        run.assert_not_called()
+        (self.here / "bodypose.swift").unlink()
+        with mock.patch.object(A.shutil, "which", return_value="/usr/bin/swiftc"):
+            self.assertIsNone(A.bodypose_tool(self.root))
+
+
 class RouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

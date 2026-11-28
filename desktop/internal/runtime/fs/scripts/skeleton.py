@@ -263,6 +263,14 @@ TREE = [("root", "neck_1_joint", "torso"),
 PARTS = ("torso", "shoulders", "upper_arm", "forearm", "hips", "thigh", "shin", "head", "face")
 FEET = ("left_foot_joint", "right_foot_joint")
 RATIO_BAND = 2.0  # a part is fitted to at most this many times (or 1/this of) the whole body's scale
+# What a cycle made for a character's own sprite-stack rig takes from its picture (pipeline#34): where the hips are.
+# The rig pivots its thighs at the crotch, where its thigh parts start; Vision, and the pose skeletons LTX learnt
+# from, put the hips at the top of the thigh, about where the belt is (the walker: 0.52 of the frame against the
+# rig's 0.64). The torso, hip width and leg bones take the picture's lengths so the hips move there with the neck
+# and feet where they were; the arms, shoulders and head keep the rig's, which Vision reads less surely. "stance":
+# the feet as far apart as the picture's (the walker is drawn standing feet apart, the rig's legs hang straight).
+HIP_PARTS = ("torso", "hips", "thigh", "shin", "stance")
+LEGS = tuple((f"{s}_upLeg_joint", f"{s}_leg_joint", f"{s}_foot_joint") for s in ("left", "right"))
 
 
 def _sure(j: dict, name: str) -> bool:
@@ -288,16 +296,21 @@ def _part_lengths(j: dict) -> dict[str, float]:
     return {p: sum(v) / len(v) for p, v in got.items() if sum(v) / len(v) > 1e-3}
 
 
-def refit(frames: list[dict], target: dict) -> tuple[list[dict], dict[str, Any]]:
+def refit(frames: list[dict], target: dict, parts: tuple[str, ...] | None = None) -> tuple[list[dict], dict[str, Any]]:
     """The clip refitted to a picture's own body (target: the joints Vision read from it, the character standing
     as the clip's first frame stands): each part (torso, shoulder and hip widths, upper arm, forearm, thigh, shin,
-    head) takes the picture's length, the motion stays the clip's, the hips start where the picture's are and the
-    lower foot stays on the picture's ground line (rising and falling with the clip's, as a run's does).
+    head; or only those named in parts) takes the picture's length, the motion stays the clip's, the hips start
+    where the picture's are and the lower foot stays on the picture's ground line (rising and falling with the
+    clip's, as a run's does).
 
     A part's bone is scaled, not set to a length, so a limb the clip foreshortens (a turn, a stride towards the
-    camera) stays foreshortened. A part the picture has no sure read of, or one the clip lacks, takes the body's
-    scale (neck to feet) instead; each is kept within RATIO_BAND of that scale. Raises SkeletonError when the
-    picture has no neck, hips or feet to fit to."""
+    camera) stays foreshortened. A part the picture has no sure read of, one the clip lacks, or one left out of
+    parts takes the body's scale (neck to feet) instead; each is kept within RATIO_BAND of that scale. Raises
+    SkeletonError when the picture has no neck, hips or feet to fit to.
+
+    With "stance" in parts, each leg is also spread sideways so the first frame's feet stand as far apart as the
+    picture's: the foot by a share of its hip's distance from the middle of the hips, the knee by half that. The
+    hips come together as the body turns side-on, so the spread goes with them."""
     first = frames[0] if frames else {}
     h_pic, h_ctl = _height(target), _height(first)
     if not h_pic or not h_ctl or not _sure(target, "root") or not _sure(first, "root"):
@@ -306,7 +319,7 @@ def refit(frames: list[dict], target: dict) -> tuple[list[dict], dict[str, Any]]
     pic, ctl = _part_lengths(target), _part_lengths(first)
     ratios, fitted = {}, []
     for part in PARTS:
-        r = pic[part] / ctl[part] if part in pic and part in ctl else None
+        r = pic[part] / ctl[part] if part in pic and part in ctl and (parts is None or part in parts) else None
         if r is not None:
             r = min(max(r, scale / RATIO_BAND), scale * RATIO_BAND)
             fitted.append(part)
@@ -314,7 +327,7 @@ def refit(frames: list[dict], target: dict) -> tuple[list[dict], dict[str, Any]]
     ground = max(target[f][1] for f in FEET if _sure(target, f))
     c_ground0 = max(first[f][1] for f in FEET if f in first)
     c_root0 = first["root"]
-    out = []
+    rels = []
     for j in frames:
         rel = {"root": (0.0, 0.0)}
         for parent, child, part in TREE:
@@ -325,6 +338,16 @@ def refit(frames: list[dict], target: dict) -> tuple[list[dict], dict[str, Any]]
         for name in j:  # a joint off the tree (not one Vision names): the body's scale about the hips
             if name not in rel:
                 rel[name] = ((j[name][0] - j["root"][0]) * scale, (j[name][1] - j["root"][1]) * scale)
+        rels.append(rel)
+    spread = _stance(rels[0], target) if rels and parts is not None and "stance" in parts else 0.0
+    out = []
+    for j, rel in zip(frames, rels):
+        if spread and all(n in rel for leg in LEGS for n in leg):
+            mid = (rel[LEGS[0][0]][0] + rel[LEGS[1][0]][0]) / 2
+            for hip, knee, foot in LEGS:
+                off = spread * (rel[hip][0] - mid)
+                rel[knee] = (rel[knee][0] + off / 2, rel[knee][1])
+                rel[foot] = (rel[foot][0] + off, rel[foot][1])
         x0 = target["root"][0] + (j["root"][0] - c_root0[0]) * scale
         feet = [rel[f][1] for f in FEET if f in rel]
         if feet:  # the lower foot on the ground line, lifted as far (in this body's size) as the clip lifts it
@@ -336,9 +359,22 @@ def refit(frames: list[dict], target: dict) -> tuple[list[dict], dict[str, Any]]
     xs = [v[0] for fr in out for v in fr.values()]
     ys = [v[1] for fr in out for v in fr.values()]
     info = {"scale": round(scale, 3), "ratios": {p: round(r, 3) for p, r in ratios.items()},
-            "fitted_parts": fitted, "box": [round(min(xs), 3), round(min(ys), 3), round(max(xs), 3),
+            "fitted_parts": fitted + (["stance"] if spread else []), "stance": round(spread, 3), "box": [round(min(xs), 3), round(min(ys), 3), round(max(xs), 3),
                                             round(max(ys), 3)]}
     return out, info
+
+
+def _stance(rel: dict, target: dict) -> float:
+    """How far to spread the legs (a share of each hip's distance from the middle of the hips) for the first frame's
+    feet to stand as far apart as the picture's; 0 when either has no sure read of both hips and feet."""
+    (lh, _, lf), (rh, _, rf) = LEGS
+    if not all(n in rel for n in (lh, rh, lf, rf)) or not all(_sure(target, n) for n in (lf, rf)):
+        return 0.0
+    half_hips = (rel[lh][0] - rel[rh][0]) / 2
+    if abs(half_hips) < 1e-3:
+        return 0.0
+    want = (target[lf][0] - target[rf][0]) / 2 - (rel[lf][0] - rel[rf][0]) / 2
+    return max(-RATIO_BAND, min(RATIO_BAND, want / half_hips))
 
 
 def read_picture(bodypose: Path, picture: Path, scratch: Path) -> dict:
