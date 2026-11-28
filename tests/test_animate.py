@@ -64,6 +64,9 @@ def main():
 # What Apple Vision reads from the operator picture (video-trials clips/operator-704.png): a realistic body, built
 # unlike the walker skeletons (hips at 0.479 against their 0.637, shoulders 0.15 wide against 0.24).
 OPERATOR = json.loads('''{"head_joint": [0.489, 0.13, 0.869], "left_ear_joint": [0.535, 0.129, 0.912], "left_eye_joint": [0.504, 0.114, 0.942], "left_foot_joint": [0.593, 0.851, 0.676], "left_forearm_joint": [0.645, 0.349, 0.8], "left_hand_joint": [0.677, 0.456, 0.794], "left_leg_joint": [0.563, 0.681, 0.644], "left_shoulder_1_joint": [0.582, 0.226, 0.817], "left_upLeg_joint": [0.548, 0.477, 0.546], "neck_1_joint": [0.506, 0.232, 0.803], "right_ear_joint": [0.459, 0.128, 0.529], "right_eye_joint": [0.474, 0.114, 0.927], "right_foot_joint": [0.459, 0.848, 0.773], "right_forearm_joint": [0.395, 0.363, 0.75], "right_hand_joint": [0.335, 0.457, 0.856], "right_leg_joint": [0.449, 0.662, 0.741], "right_shoulder_1_joint": [0.43, 0.239, 0.79], "right_upLeg_joint": [0.452, 0.481, 0.591], "root": [0.5, 0.479, 0.569]}''')
+# The walker's drawn front view (out/walker/character/views/front.png fitted as the walk cycle's guide), as Vision
+# reads it: its hips at the top of the thigh, 0.522 of the frame, where the walker rig's are at the crotch (0.637).
+WALKER_DRAWN = json.loads('''{"head_joint": [0.491, 0.205, 0.865], "left_ear_joint": [0.546, 0.197, 0.757], "left_eye_joint": [0.516, 0.189, 0.841], "left_foot_joint": [0.57, 0.849, 0.777], "left_forearm_joint": [0.615, 0.437, 0.819], "left_hand_joint": [0.627, 0.533, 0.828], "left_leg_joint": [0.562, 0.694, 0.652], "left_shoulder_1_joint": [0.583, 0.309, 0.768], "left_upLeg_joint": [0.54, 0.521, 0.68], "neck_1_joint": [0.494, 0.308, 0.776], "right_ear_joint": [0.443, 0.2, 0.738], "right_eye_joint": [0.469, 0.187, 0.755], "right_foot_joint": [0.422, 0.845, 0.7], "right_forearm_joint": [0.373, 0.432, 0.804], "right_hand_joint": [0.36, 0.537, 0.81], "right_leg_joint": [0.428, 0.686, 0.638], "right_shoulder_1_joint": [0.405, 0.307, 0.785], "right_upLeg_joint": [0.446, 0.523, 0.662], "root": [0.493, 0.522, 0.671]}''')
 
 FAKE_BODYPOSE = '''#!{python}
 # Stands in for bin/bodypose: the control skeleton back, every joint moved 1% of the width to the right; the
@@ -233,6 +236,30 @@ class RefitTests(unittest.TestCase):
         after = SK.pose_error(fitted[:9], [OPERATOR] * 9, skip=1)["mean_joint_error_pct"]
         self.assertGreater(before, 6)
         self.assertLess(after, before / 1.8)
+
+    def test_hip_parts_only(self):
+        """The walker's own cycle against Vision's read of its drawn front view (pipeline#34): the rig's hips at the
+        crotch (0.637), the picture's at the top of the thigh (0.522). Fitting the hip parts alone brings the hips
+        and feet onto the picture's and keeps the arms and head the rig's."""
+        walker = SK.load(SK.named("walker_walk_right"))
+        fitted, info = SK.refit(walker, WALKER_DRAWN, SK.HIP_PARTS)
+        self.assertEqual(info["fitted_parts"], list(SK.HIP_PARTS))
+        f0, w0 = fitted[0], walker[0]
+        for j in ("root", "left_upLeg_joint", "right_upLeg_joint", "left_foot_joint", "right_foot_joint"):
+            self.assertLess(abs(f0[j][1] - WALKER_DRAWN[j][1]), 0.03, j)
+        self.assertGreater(abs(w0["root"][1] - WALKER_DRAWN["root"][1]), 0.1)  # unfitted, 11% off
+        for f in SK.FEET:  # drawn feet apart: the legs spread to stand where the picture's feet are
+            self.assertLess(abs(f0[f][0] - WALKER_DRAWN[f][0]), 0.01, f)
+        # side-on the hips come (nearly) together, and the spread with them: the feet step where they would without it
+        plain, _ = SK.refit(walker, WALKER_DRAWN, ("torso", "hips", "thigh", "shin"))
+        for i in range(20, len(walker)):
+            for f in SK.FEET:
+                self.assertAlmostEqual(fitted[i][f][0], plain[i][f][0], delta=0.01, msg=(i, f))
+        for side in ("left", "right"):  # the arm keeps the rig's length (the body's scale, about 1)
+            for a, b in ((f"{side}_shoulder_1_joint", f"{side}_forearm_joint"),
+                         (f"{side}_forearm_joint", f"{side}_hand_joint")):
+                self.assertAlmostEqual(self.length(f0, a, b), self.length(w0, a, b) * info["scale"], places=3)
+        self.assertEqual(info["ratios"]["forearm"], info["scale"])
 
     def test_motion_is_kept(self):
         walker = SK.load(SK.named("walker_walk_right"))
@@ -785,7 +812,7 @@ class AnimateTests(unittest.TestCase):
         # no sprite-stack character here anyway; the refit to the picture's body (fit_control) is left out so the
         # cycle that went in can be compared with the shipped one
         with mock.patch.object(A, "cycle_maker", return_value=None), \
-                mock.patch.object(A, "fit_control", side_effect=lambda root, c, work: (c, {"fitted": False})):
+                mock.patch.object(A, "fit_control", side_effect=lambda root, c, work, parts=None: (c, {"fitted": False})):
             doc = self.run_it(prompt="", cycle="run", facing="left")
         self.assertEqual(doc["skeleton"], "walker_run_left")
         self.assertEqual(doc["cycle"], {"name": "run", "facing": "left", "made_for": "the walker", "turn_frames": 16,
@@ -817,13 +844,16 @@ class AnimateTests(unittest.TestCase):
             self.assertEqual(A.offered(self.root, "op")["cycles"][0]["made_for"], "this character")
             doc = self.run_it(prompt="", cycle="attack", size=704)  # the size the shipped ones are made at
         self.assertEqual(doc["cycle"]["made_for"], "this character")
-        self.assertFalse(doc["skeleton_fit"]["fitted"])  # its own body already: not refitted to the picture
+        # Its own build, with the hips and legs fitted to the picture's (pipeline#34), the arms and head kept.
+        self.assertTrue(doc["skeleton_fit"]["fitted"])
+        self.assertEqual(doc["skeleton_fit"]["fitted_parts"], list(SK.HIP_PARTS))
         anim = self.root / "out" / "op" / "flat" / "anim" / "attack-right"
         self.assertTrue((anim / "cycle" / "attack_right.pose.json").is_file())
-        # Made for the walker's own body, it is the walker's shipped attack, frame for frame.
+        # Made for the walker's own body, it is the walker's shipped attack, frame for frame, so fitted the same.
         control = json.loads((anim / "control.json").read_text())["frames"]
-        shipped = SK.load(SK.named("walker_attack_right"))
-        self.assertEqual([f["joints2d"] for f in control], shipped[:25])
+        shipped, _ = SK.refit(SK.load(SK.named("walker_attack_right"))[:25], OPERATOR, SK.HIP_PARTS)
+        self.assertEqual([f["joints2d"] for f in control], shipped)
+        self.assertLess(abs(control[0]["joints2d"]["root"][1] - OPERATOR["root"][1]), 0.01)
 
     def test_offered(self):
         with mock.patch.object(A, "cycle_maker", return_value=None):
