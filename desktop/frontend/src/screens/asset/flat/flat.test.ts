@@ -31,6 +31,7 @@ import {
   animateBody,
   animateEndLine,
   animatePicks,
+  ANIMATE_KIT_START,
   keepPick,
   promptForPick,
   type AnimateOffer,
@@ -330,6 +331,21 @@ describe("Animate", () => {
       remove: "backpack",
     });
     expect(animateBody("", picks[1], { remove: "", keep: "" })).toEqual({ cycle: "run", facing: "left" });
+  });
+  it("starts with the side-view switch on, and sends side only when it is off", () => {
+    expect(ANIMATE_KIT_START).toEqual({ remove: "", keep: "", side: true });
+    // On (the start, or left out): no side key, so the factory uses the asset's own side view.
+    expect(animateBody("", picks[1], { ...ANIMATE_KIT_START })).toEqual({ cycle: "run", facing: "left" });
+    expect(animateBody("walks right", picks[2], { side: true })).not.toHaveProperty("side");
+    // Off: "side": false, whatever else goes.
+    expect(animateBody("", picks[1], { ...ANIMATE_KIT_START, side: false })).toEqual({ cycle: "run", facing: "left", side: false });
+    expect(animateBody("walks right", picks[2], { remove: "backpack", side: false })).toEqual({
+      prompt: "walks right",
+      skeleton: "walk_side",
+      action: "walk",
+      remove: "backpack",
+      side: false,
+    });
   });
   it("posts a cycle as {cycle, facing}, and another skeleton with its own strip", () => {
     expect(animateBody(ready("run", "left"), picks[1])).toEqual({ cycle: "run", facing: "left" });

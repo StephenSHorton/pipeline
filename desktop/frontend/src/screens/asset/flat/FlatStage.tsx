@@ -54,6 +54,9 @@ import {
   keepPick,
   NO_OFFER,
   promptForPick,
+  ANIMATE_KIT_START,
+  SIDE_LABEL,
+  SIDE_TITLE,
   type AnimateKit,
   type AnimateOffer,
   type SheetState,
@@ -88,7 +91,8 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
   const [offer, setOffer] = useState<AnimateOffer>(NO_OFFER);
   const [pickValue, setPickValue] = useState("");
   // Animate's optional kit words: invented kit to erase (remove) and kit that must stay (keep).
-  const [kit, setKit] = useState<AnimateKit>({ remove: "", keep: "" });
+  // side: the asset's own side view as a second guide, on by default.
+  const [kit, setKit] = useState<AnimateKit>({ ...ANIMATE_KIT_START });
   const picks = animatePicks(offer);
   const pick = picks.find((p) => p.value === pickValue);
   const offerRef = useRef(offer);
@@ -434,7 +438,8 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
               {busyLabel || (flatMode === "animate" ? "Animate" : "Generate")}
             </Button>
             {flatMode === "animate" ? (
-              // A second row: both optional. Remove makes Animate run twice (a first pass, then the kit erased).
+              // A second row: Remove and Keep, both optional (Remove makes Animate run twice: a first pass, then the kit
+              // erased), and the Side view switch (on: the asset's own side view guides too; off sends "side": false).
               <div className="flex basis-full gap-1.5">
                 {(["remove", "keep"] as const).map((key) => (
                   <label key={key} className="contents">
@@ -452,6 +457,17 @@ export function FlatStage({ stem, stage, flow, flowVersion, enter }: StageProps)
                     />
                   </label>
                 ))}
+                <Button
+                  id="flat-animate-side"
+                  type="button"
+                  variant="hud-ghost"
+                  aria-pressed={kit.side !== false}
+                  title={SIDE_TITLE}
+                  onClick={() => setKit((k) => ({ ...k, side: k.side === false }))}
+                  className={cn(TOGGLE, "h-9 shrink-0 gap-1 rounded-[10px]")}
+                >
+                  {SIDE_LABEL}
+                </Button>
               </div>
             ) : null}
           </form>

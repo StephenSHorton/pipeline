@@ -426,7 +426,18 @@ export const ANIMATE_TITLE =
 export interface AnimateKit {
   remove?: string;
   keep?: string;
+  /** The asset's own side view as a second guide (the factory's default). false sends "side": false (--no-side):
+   * the picture is the only guide. */
+  side?: boolean;
 }
+
+/** What the Animate form starts with: no Remove or Keep, the side-view switch on. */
+export const ANIMATE_KIT_START: Readonly<Required<AnimateKit>> = { remove: "", keep: "", side: true };
+
+export const SIDE_LABEL = "Side view";
+export const SIDE_TITLE =
+  "On: the asset's own side view guides the run too, turned to face the way the character moves (when the asset " +
+  "has one). Off: the picture is the only guide.";
 
 /** The longest remove and keep the factory takes (scripts/factory_http.py animate_argv): a few words each. */
 export const KIT_MAX = { remove: 120, keep: 200 } as const;
@@ -451,7 +462,8 @@ export function animateBlock(prompt: string, pick: AnimatePick | undefined, anyJ
   return "";
 }
 
-export type AnimateBody = ({ cycle: string; facing: string; prompt?: string } | { prompt: string; skeleton: string; action?: string }) & AnimateKit;
+export type AnimateBody = ({ cycle: string; facing: string; prompt?: string } | { prompt: string; skeleton: string; action?: string }) &
+  Omit<AnimateKit, "side"> & { side?: false };
 
 /** POST /2d/animate/<stem>'s body. A cycle goes as {cycle, facing}, with the prompt only when it is not the ready
  * one; the factory names its strip after the cycle and facing (run-left), so no cycle overwrites another. Another
@@ -471,6 +483,8 @@ export function animateBody(prompt: string, pick: AnimatePick, kit: AnimateKit =
   const keep = words(kit.keep);
   if (remove) body.remove = remove;
   if (remove && keep) body.keep = keep;
+  // The side view is the factory's default: only turning it off is sent.
+  if (kit.side === false) body.side = false;
   return body;
 }
 

@@ -7,9 +7,9 @@ vi.mock("@/lib/jobs", async (orig) => ({ ...(await orig<typeof import("@/lib/job
 vi.mock("@/lib/ui", () => ({ askConfirm, toast: vi.fn() }));
 
 const { useJobs } = await import("@/lib/jobs");
-const { flatSpecs, jobOwns, panelAudio, redraw, reviseStep } = await import("./actions");
+const { animate, flatSpecs, jobOwns, panelAudio, redraw, reviseStep } = await import("./actions");
 const { clipFields } = await import("./api");
-const { emptyAudioAsset, mergeSheet } = await import("./flat");
+const { ANIMATE_KIT_START, animatePicks, emptyAudioAsset, mergeSheet } = await import("./flat");
 
 const g = globalThis as unknown as { fetch: typeof fetch };
 const realFetch = g.fetch;
@@ -120,5 +120,26 @@ describe("panelAudio", () => {
     const says: string[] = [];
     expect(await panelAudio("hen", "sound", "bolt", "af_heart", (t) => says.push(t))).toEqual({ rel: "sounds/asset.wav", status: "" });
     expect(says).toEqual(["Writing the sound."]);
+  });
+});
+
+describe("animate (Animate mode)", () => {
+  const picks = animatePicks({
+    cycles: [{ cycle: "run", facing: "left", action: "run-left", skeleton: "walker_run_left", made_for: "this character", prompt: "" }],
+    skeletons: [],
+  });
+  const sent = () => {
+    const [spec, opts] = startJob.mock.calls.at(-1) as unknown as [Record<string, unknown>, { path: string }];
+    return { path: opts.path, spec };
+  };
+  it("with the side-view switch on (the start), the job's body has no side", () => {
+    useJobs.setState({ busy: false });
+    expect(animate("hen", "", picks[0], { ...ANIMATE_KIT_START })).toEqual({ status: "", started: true });
+    expect(sent()).toEqual({ path: "/2d/animate/hen", spec: { stem: "hen", cycle: "run", facing: "left" } });
+  });
+  it("with it off, the request to /2d/animate carries side: false", () => {
+    useJobs.setState({ busy: false });
+    expect(animate("hen", "", picks[0], { ...ANIMATE_KIT_START, side: false })).toEqual({ status: "", started: true });
+    expect(sent()).toEqual({ path: "/2d/animate/hen", spec: { stem: "hen", cycle: "run", facing: "left", side: false } });
   });
 });
